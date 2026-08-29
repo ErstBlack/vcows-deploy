@@ -59,9 +59,15 @@ resource "libvirt_volume" "overlay" {
 resource "libvirt_volume" "seed" {
   for_each = var.vms
 
-  name   = each.value.seed_name
-  pool   = var.pool
-  target = { format = { type = "raw" } }
+  name = each.value.seed_name
+  pool = var.pool
+
+  // `iso`, not `raw`. libvirt inspects the uploaded content and reports the
+  // format it detects, so declaring `raw` made the provider's post-apply read
+  // disagree with its own plan -- "Provider produced inconsistent result after
+  // apply: .target.format.type: was raw, but now iso" -- and failed the apply
+  // after the volume had already been written. Found in the acceptance run.
+  target = { format = { type = "iso" } }
   create = { content = { url = each.value.seed_iso } }
 
   // Nothing here reads a base attribute, so without this edge these seeds are an
@@ -126,6 +132,18 @@ resource "libvirt_domain" "vm" {
     } : null
 
     boot_devices = [{ dev = "hd" }]
+  }
+
+  // libvirt refuses an EFI domain without ACPI outright -- "unsupported
+  // configuration: UEFI requires ACPI on this architecture" -- and since the
+  // provider writes exactly the XML it is handed, nothing supplies a default.
+  // APIC travels with it because that is what every x86_64 domain libvirt builds
+  // for itself carries; the rig's own guests are <acpi/><apic/>, recorded in
+  // tests/fixtures/libvirt/domain-unmarked-running.xml. Found in the acceptance
+  // run, where both domains failed to define.
+  features = {
+    acpi = true
+    apic = {}
   }
 
   devices = {

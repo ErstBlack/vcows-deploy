@@ -107,6 +107,13 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
       > /usr/local/bin/vcows \
  && chmod 0755 /usr/local/bin/vcows
 
+# The entrypoint writes ~/.ssh/config from the config's ssh_keyfile and
+# known_hosts, because neither libvirt nor the provider honours those as URI
+# parameters and both run ssh. Container glue: cli.py stays out of anyone's home
+# directory. See container/entrypoint.py for the measurements behind it.
+COPY container/entrypoint.py /usr/local/bin/vcows-entrypoint
+RUN chmod 0755 /usr/local/bin/vcows-entrypoint
+
 ENV PYTHONPATH=/opt/vcows \
     PYTHONDONTWRITEBYTECODE=1 \
     VCOWS_MANIFEST=/opt/vcows/manifest.json \
@@ -153,5 +160,5 @@ LABEL org.opencontainers.image.title="vcows-deploy" \
       vendor="vcows" \
       license="${IMAGE_LICENSES}"
 
-ENTRYPOINT ["/usr/local/bin/vcows"]
+ENTRYPOINT ["/usr/local/bin/vcows-entrypoint"]
 CMD ["--help"]

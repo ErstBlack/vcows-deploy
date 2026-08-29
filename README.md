@@ -86,8 +86,8 @@ target:
   libvirt:
     uri: qemu+ssh://vcows@hypervisor.example/system   # no query string
     pool: images                                       # must exist and be active
-    ssh_keyfile: /run/secrets/id_ed25519
-    known_hosts: /run/secrets/known_hosts
+    ssh_keyfile: /run/secrets/id_ed25519      # mounted; see below
+    known_hosts: /run/secrets/known_hosts     # mounted; see below
 image:
   source_qcow2: /images/golden.qcow2
   base_volume_name: golden.qcow2   # shared per host, uploaded once
@@ -118,6 +118,18 @@ reports what it is skipping and why, which is where you would see it.
 > **The config is a secret artifact.** Credentials are cleartext at v0.1,
 > deliberately and temporarily. Do not commit it, and do not ship it as an
 > example.
+
+### How the SSH credentials actually reach libvirt
+
+Neither client accepts them in the URI. libvirt's `qemu+ssh` ignores
+`known_hosts` (it is a libssh parameter), the OpenTofu provider spells it
+`knownhosts`, and the provider's `sshcmd` transport — the only one that reaches a
+modern split-daemon host — rejects both. What they share is that both run `ssh`,
+so the container's entrypoint writes `~/.ssh/config` from the two fields above
+before handing over to `vcows`. The files stay where you mounted them, read-only;
+nothing is copied.
+
+Mount your own `~/.ssh/config` into the container and it is left alone.
 
 ## The run directory
 

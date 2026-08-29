@@ -292,7 +292,21 @@ def test_every_problem_is_reported_not_just_the_first(cfg):
 # -- the URI ---------------------------------------------------------------
 
 
-def test_ssh_options_are_appended_not_accepted_from_the_operator():
+def test_preflight_and_the_provider_are_given_different_transports():
+    """Measured, not chosen. libvirt's own client does not recognise `sshcmd`
+    (`transport in URL not recognised`), and the provider's `ssh` dials a
+    monolithic socket a split-daemon host does not have, through a forward
+    SELinux refuses. One config, two clients, two schemes."""
+    target = {"uri": "qemu+ssh://vcows@vcows/system"}
+    assert schema.connection_uri(target) == "qemu+ssh://vcows@vcows/system"
+    assert schema.connection_uri(target, "sshcmd") == "qemu+sshcmd://vcows@vcows/system"
+
+
+def test_credentials_never_reach_the_uri():
+    """No spelling of the credential parameters works for both clients -- libvirt
+    ignores `known_hosts`, the provider's ssh dialer spells it `knownhosts`, and
+    `sshcmd` fails on either. They arrive through ~/.ssh/config instead, so a URI
+    carrying them would be a silently ignored promise."""
     uri = schema.connection_uri(
         {
             "uri": "qemu+ssh://vcows@vcows/system",
@@ -300,14 +314,8 @@ def test_ssh_options_are_appended_not_accepted_from_the_operator():
             "known_hosts": "/run/secrets/known_hosts",
         }
     )
-    assert uri.startswith("qemu+ssh://vcows@vcows/system?")
-    assert "keyfile=%2Frun%2Fsecrets%2Fid_ed25519" in uri
-    assert "known_hosts=%2Frun%2Fsecrets%2Fknown_hosts" in uri
-    # R-D refuses an operator-supplied query string, so this is the only thing
-    # that can build one -- which is what keeps no_verify=1 off the connection.
+    assert "?" not in uri
+    assert "keyfile" not in uri and "known_hosts" not in uri
+    # R-D still earns its keep: refusing an operator query string is what keeps
+    # no_verify=1 off the connection.
     assert "no_verify" not in uri
-
-
-def test_no_query_string_when_neither_option_is_configured():
-    uri = schema.connection_uri({"uri": "qemu+ssh://vcows@vcows/system"})
-    assert uri == "qemu+ssh://vcows@vcows/system"

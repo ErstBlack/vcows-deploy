@@ -53,12 +53,12 @@ def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
     seeds = prepared.artifacts["seed_isos"]
 
     return {
-        # The *assembled* URI, not the operator's. This provider's `qemu+ssh://`
-        # is the go-libvirt dialer, not the ssh binary -- it does not read
-        # ~/.ssh/config and falls back to a default key path that does not exist
-        # in the container, so without the keyfile and known_hosts vcows builds
-        # here, preflight would authenticate and the apply would not.
-        "uri": connection_uri(target),
+        # `sshcmd`, not the operator's `ssh`. The provider's qemu+ssh dials a
+        # monolithic socket that a split-daemon host does not have, through a
+        # forward SELinux refuses; qemu+sshcmd runs ssh and asks for
+        # virt-ssh-helper. libvirt's own client cannot use sshcmd at all, which
+        # is why preflight and the apply are handed different schemes.
+        "uri": connection_uri(target, "sshcmd"),
         "pool": target["pool"],
         "base_volume": {
             "name": base["name"],

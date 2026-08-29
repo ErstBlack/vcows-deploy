@@ -65,10 +65,14 @@ def _network_config(vm: dict) -> dict:
     time: interface names are assigned by the guest kernel and are not knowable
     from here.
 
-    The default route uses ``routes: [{to: default}]`` rather than the older
-    ``gateway4``, which cloud-init has deprecated. Both Rocky 9 and Rocky 10 ship
-    a cloud-init that understands it -- but nothing has booted yet, so this is one
-    of the things the acceptance run exists to confirm.
+    The default route is written as ``0.0.0.0/0``, **not** netplan's ``default``.
+    That distinction cost the first acceptance run: cloud-init 24.4 accepts the
+    document, reads it, logs "Applying network configuration from ds", and then
+    throws ``ValueError: Address default is not a valid ip address`` out of its
+    own v2-to-v1 route normaliser. `default` is a netplan idiom that cloud-init's
+    parser does not implement, and the failure is the worst shape available: the
+    guest boots, falls back to DHCP, and comes up healthy on an address nobody
+    asked for. ``gateway4`` would also work and is deprecated; a CIDR is neither.
     """
     ethernets = {}
     for i, nic in enumerate(vm["nics"]):
@@ -77,7 +81,7 @@ def _network_config(vm: dict) -> dict:
             "dhcp4": False,
             "dhcp6": False,
             "addresses": [nic["ip_cidr"]],
-            "routes": [{"to": "default", "via": nic["gateway"]}],
+            "routes": [{"to": "0.0.0.0/0", "via": nic["gateway"]}],
         }
         if nic.get("nameservers"):
             entry["nameservers"] = {"addresses": list(nic["nameservers"])}

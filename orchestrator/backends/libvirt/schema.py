@@ -24,7 +24,7 @@ from __future__ import annotations
 import ipaddress
 import uuid
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import jsonschema
 
@@ -135,21 +135,35 @@ def primary_index(vm: dict) -> int:
     return 0
 
 
-def connection_uri(target: dict) -> str:
-    """Assemble the libvirt URI, appending the SSH options vcows controls.
+def connection_uri(target: dict, transport: str = "ssh") -> str:
+    """The URI for the client that is about to use it. **The two differ.**
 
-    The operator's ``uri`` is refused at validate time if it carried a query string
-    (R-D), so this is the only thing that can put one there. That is what keeps
-    ``no_verify=1`` -- and a smuggled ``keyfile``/``known_hosts`` -- out of the
-    connection.
+    Measured against the rig, in the container, because none of this is
+    documented anywhere the two implementations agree:
+
+    * ``preflight`` uses libvirt's own C client, which does **not** recognise
+      ``sshcmd`` at all -- ``remote_open: transport in URL not recognised``. It
+      needs ``qemu+ssh``, where it reaches a modern split-daemon host through
+      ``virt-ssh-helper``.
+    * The provider is go-libvirt, whose ``qemu+ssh`` dials a hardcoded
+      ``/var/run/libvirt/libvirt-sock`` over an SSH socket forward. That socket
+      does not exist on a split-daemon host, and even given ``socket=`` the
+      forward is refused, because SELinux does not let ``sshd`` open a libvirt
+      socket. Its ``qemu+sshcmd`` runs ``ssh`` itself and asks the remote end for
+      ``virt-ssh-helper``, falling back to ``nc -U`` when that is absent -- the
+      modern path with a monolithic fallback, already upstream.
+
+    **No query string, deliberately.** Neither client honours the credential
+    parameters the way the config implies: libvirt's ``qemu+ssh`` ignores
+    ``known_hosts`` (it is libssh/libssh2 only), the provider's ``qemu+ssh``
+    spells it ``knownhosts``, and ``qemu+sshcmd`` fails outright on either. Both
+    run ``ssh``, so the credentials reach them through ``~/.ssh/config``, which
+    the container's entrypoint writes from ``ssh_keyfile`` and ``known_hosts``.
+    R-D's refusal of an operator-supplied query string still matters: it is what
+    keeps ``no_verify=1`` off the connection.
     """
     parts = urlsplit(target["uri"])
-    query = {}
-    if keyfile := target.get("ssh_keyfile"):
-        query["keyfile"] = keyfile
-    if known_hosts := target.get("known_hosts"):
-        query["known_hosts"] = known_hosts
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    return urlunsplit(parts._replace(scheme=f"qemu+{transport}", query=""))
 
 
 def validate(cfg: dict) -> list[Problem]:
