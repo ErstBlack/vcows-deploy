@@ -151,7 +151,8 @@ def volume_facts(xml: str) -> dict[str, Any]:
     ``physical`` is ``None`` when the element is absent. It is optional in
     libvirt's RNG and meaningless for non-file pools, and the rig's
     ``_cloud-images`` directory entry has none -- so its absence is a fact to carry,
-    not a parse failure.
+    not a parse failure. ``backing`` is ``None`` for everything that is not an
+    overlay, which is how ``base_volume`` counts what a replacement would break.
     """
     root = ET.fromstring(xml)
     fmt = root.find("target/format")
@@ -162,6 +163,7 @@ def volume_facts(xml: str) -> dict[str, Any]:
         "path": (path.text if path is not None else None),
         "format": (fmt.get("type") if fmt is not None else None),
         "physical": _int_or_none(physical),
+        "backing": root.findtext("backingStore/path"),
     }
 
 
@@ -299,13 +301,24 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
             )
         ]
     if physical != local:
+        # Named, not counted in passing: this volume is shared across every
+        # deployment on the host, and the operator reading this is being asked
+        # to act on it. The procedure offered is the non-destructive one --
+        # `base_volume` returns `create: True` for a name it does not find, so
+        # a new name uploads alongside and nothing running is touched.
+        overlays = sum(
+            1 for v in volumes.values() if v.get("backing") == resolved["path"]
+        )
         return resolved, [
             Problem(
                 Severity.ERROR,
                 f"volume {name!r} is {physical} bytes on the host but {local} bytes "
                 f"locally. That is either a truncated upload or a different image "
                 f"under the same name; either way every overlay would back onto it. "
-                f"Delete it on the hypervisor and re-run.",
+                f"Set image.base_volume_name to a name this pool does not hold and "
+                f"re-run: the new image uploads alongside the old one. "
+                f"{overlays} volume(s) in this pool back onto {name!r} and would "
+                f"stop working without it.",
                 where="image.base_volume_name",
             )
         ]
@@ -331,9 +344,13 @@ def orphan_volumes(
                 problems.append(
                     Problem(
                         Severity.ERROR,
-                        f"volume {volume!r} exists but no domain references it. "
-                        f"A previous create was interrupted; delete it on the "
-                        f"hypervisor and re-run.",
+                        f"volume {volume!r} exists but no domain on this host "
+                        f"references it. A create interrupted before its domain "
+                        f"was defined leaves exactly this, and so may a volume "
+                        f"belonging to another deployment sharing this pool: "
+                        f"names are the undecorated logical name (D16), so vcows "
+                        f"cannot tell the two apart. Establish which it is before "
+                        f"removing it.",
                         where=vm["name"],
                     )
                 )
@@ -411,7 +428,7 @@ def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Prob
                         )
                     )
 
-            mac = mac_of(vm, index).lower()
+            mac = mac_of(vm, index, cfg["deployment"]).lower()
             if owner := by_mac.get(mac):
                 problems.append(
                     Problem(

@@ -132,6 +132,20 @@ def test_a_config_warning_reaches_more_than_validate(
     assert "endpoint scheme is unusual" in capsys.readouterr().err
 
 
+def test_a_destroy_scopes_the_advisory_problems(backend, tmp_path, monkeypatch, capsys):
+    """Preflight computes its refusals for a deploy and both verbs print them.
+    D30's names a golden image shared across deployments; unlabelled, it reads
+    as an instruction to an operator already in a destructive frame of mind."""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "lab-a.yaml"
+    path.write_text(CONFIG.replace("good://example", "odd://example"))
+
+    assert cli.main(["destroy", str(path), "--yes"]) == 0
+    err = capsys.readouterr().err
+    assert "endpoint scheme is unusual" in err
+    assert "none of them changes this teardown" in err
+
+
 # -- preflight --------------------------------------------------------------
 
 

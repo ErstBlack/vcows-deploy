@@ -20,10 +20,11 @@ from . import VERSION
 #: Namespace for deterministic VM identities.
 #:
 #: **This value is permanent and must never change.** ``id = uuid5(VCOWS_NS,
-#: name)`` exists so an id regenerates identically with no state file -- a VM
-#: created by 0.1.0.0 and destroyed by 0.3.0.0 must derive the same id from the
-#: same logical name. Deriving this from the version, or regenerating it, would
-#: leave every release unable to identify its predecessors' VMs.
+#: f"{deployment}/{name}")`` exists so an id regenerates identically with no
+#: state file -- a VM created by 0.1.0.0 and destroyed by 0.3.0.0 must derive the
+#: same id from the same deployment and logical name. Deriving this from the
+#: version, or regenerating it, would leave every release unable to identify its
+#: predecessors' VMs.
 #:
 #: It is not arbitrary: it is ``uuid5(uuid.NAMESPACE_DNS, "vcows-deploy")``, so
 #: anyone can re-derive it and confirm. ``tests/test_marker.py`` pins it.
@@ -68,14 +69,14 @@ class Marker:
     """
 
     id: str
-    """Stable machine identity, ``uuid5(VCOWS_NS, name)``."""
+    """Stable machine identity, ``uuid5(VCOWS_NS, f"{deployment}/{name}")``."""
 
     v: str = VERSION
     """vcows version that created it. Also the format discriminator."""
 
     @classmethod
     def for_vm(cls, name: str, deployment: str) -> Marker:
-        return cls(name=name, deployment=deployment, id=derive_id(name))
+        return cls(name=name, deployment=deployment, id=derive_id(name, deployment))
 
     def to_json(self) -> str:
         """Compact and key-ordered, so it is stable across runs and diffable."""
@@ -134,6 +135,11 @@ class Marker:
         return TEXT_FIELD_PREFIX + self.to_json()
 
 
-def derive_id(name: str) -> str:
-    """Deterministic identity, so it regenerates identically with no state file."""
-    return str(uuid.uuid5(VCOWS_NS, name))
+def derive_id(name: str, deployment: str) -> str:
+    """Deterministic identity, so it regenerates identically with no state file.
+
+    The deployment is in the input because this is also the seed ISO's
+    ``instance-id``: without it, two deployments each containing ``app01``
+    hand their guests the same identity from byte-identical media.
+    """
+    return str(uuid.uuid5(VCOWS_NS, f"{deployment}/{name}"))

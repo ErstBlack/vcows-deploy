@@ -80,7 +80,7 @@ One canonical JSON object, so there is a single serializer and parser regardless
 | `v` | vcows version that created it, four-digit semver. Also the format discriminator. |
 | `deployment` | Which deployment stamped this VM. Empty when parsed from a marker written before the field existed, never `None`, so callers need no null check. Destroy is scoped by it. |
 | `name` | Logical name from the config, not the hypervisor name. Survives a rename. |
-| `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, logical_name)` — so it regenerates identically with no state file. A random UUID would only be useful when state exists, which defeats the purpose. |
+| `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, "{deployment}/{name}")` — so it regenerates identically with no state file. A random UUID would only be useful when state exists, which defeats the purpose. The deployment is in the input because this is also the seed ISO's `instance-id`; see *Accepted gaps*. |
 
 `deployment` was written down as deliberately absent while destroy was host-wide. It is **present from 0.1.0.0** (D4): stamping it costs nothing, and adding it later would have meant a marker migration on every VM already deployed. Destroy is now scoped by it — see the rules below.
 
@@ -139,6 +139,12 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 **Preflight-then-create is TOCTOU.** Two operators running against the same hypervisor concurrently will race. libvirt's own name uniqueness catches it, so the loser gets a hard error mid-apply rather than corruption — acceptable for v0.1, but named here so it is not a surprise.
 
 **The base image is never cleaned up.** It is created as an OpenTofu resource and so lives in Tofu's state, but destroy runs through Python by marker and volumes are unmarked, so neither path removes it. This is intended — it is shared across deployments on that host and re-pushing multi-GB images over the SSH tunnel is the cost being avoided. Sweeping stale base images is a `prune` concern.
+
+**Cross-deployment identity is in the derivations.** `derive_id` is `uuid5(VCOWS_NS, f"{deployment}/{name}")` and `derive_mac` is the same with `#nic{index}` appended, so two deployments each containing `app01` no longer derive one MAC and one cloud-init `instance-id`. Without it, on two hosts bridged to one L2 both guests boot, both apply their static address, and both report `cloud-init status: done` — `address_conflicts` only ever looks at one host, so nothing else catches it. Settled before first ship because `derive_mac`'s permanence is real: changing it renames the interface every running VM's guest configuration is keyed to.
+
+**That narrows the collision rather than closing it.** Two hosts running the *same* deployment name still derive the same MACs, and nothing in vcows can see across hosts. The per-NIC `mac:` override is the only escape, and it is the reason the fold was acceptable at all: a site whose switch policy or DHCP reservations already own an address has somewhere to go. Do not read the fold as "MACs are unique now".
+
+**Volume names stay undecorated, and the message carries the cost.** Prefixing the deployment onto `app01.qcow2` would make the collision above structurally impossible in a shared pool, and it was rejected: D16's predictable names are what an operator at a site has, holding the config and `virsh vol-list` and nothing else. The cost is that a volume in a shared pool cannot be attributed, so the orphan refusal says the volume *may* belong to another deployment rather than asserting an interrupted create — which is the truth vcows can actually establish. Volume names are not a one-way door either way: `destroy` reads disk paths out of the domain XML rather than re-deriving them.
 
 **Verify in the spike:** libvirt re-serializes metadata with pretty-printing. Confirm the JSON text content survives a define → dumpxml round trip without re-indentation. It should not matter, since the provider pins the prior value and you never converge, but it is cheap to check now and annoying to discover later.
 

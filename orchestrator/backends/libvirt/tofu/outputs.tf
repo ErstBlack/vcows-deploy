@@ -8,10 +8,10 @@ output "vms" {
     for key, dom in libvirt_domain.vm : key => {
       name = dom.name
 
-      // libvirt's own domain UUID, which is not the marker's id. The marker's is
-      // uuid5(VCOWS_NS, logical name) and regenerates with no state file; this
-      // one is assigned by libvirt at define time. Destroy uses whichever the
-      // discovery path produced.
+      // libvirt's own domain UUID, which is not the marker's id. The marker's
+      // is uuid5(VCOWS_NS, "<deployment>/<logical name>") and regenerates with
+      // no state file; this one is assigned by libvirt at define time. Destroy
+      // uses whichever the discovery path produced.
       uuid = dom.uuid
 
       address = var.vms[key].address

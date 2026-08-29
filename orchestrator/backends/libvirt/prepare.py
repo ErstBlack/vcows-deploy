@@ -44,7 +44,7 @@ def seed_files(vm: dict, cfg: dict) -> dict[str, bytes]:
     meta = {
         # The marker's own derived id. Stable with no state file, so cloud-init's
         # per-instance modules do not re-run on a reboot.
-        "instance-id": derive_id(name),
+        "instance-id": derive_id(name, cfg["deployment"]),
         "local-hostname": name,
     }
     user_data = vm.get("user_data")
@@ -54,11 +54,13 @@ def seed_files(vm: dict, cfg: dict) -> dict[str, bytes]:
     return {
         "meta-data": yaml.safe_dump(meta, sort_keys=False).encode(),
         "user-data": user_data.encode(),
-        "network-config": yaml.safe_dump(_network_config(vm), sort_keys=False).encode(),
+        "network-config": yaml.safe_dump(
+            _network_config(vm, cfg["deployment"]), sort_keys=False
+        ).encode(),
     }
 
 
-def _network_config(vm: dict) -> dict:
+def _network_config(vm: dict, deployment: str) -> dict:
     """NoCloud network-config v2, matching each interface by MAC.
 
     Matching by MAC rather than by name is why the MAC has to be derived at render
@@ -77,7 +79,7 @@ def _network_config(vm: dict) -> dict:
     ethernets = {}
     for i, nic in enumerate(vm["nics"]):
         entry: dict = {
-            "match": {"macaddress": mac_of(vm, i)},
+            "match": {"macaddress": mac_of(vm, i, deployment)},
             "dhcp4": False,
             "dhcp6": False,
             "addresses": [nic["ip_cidr"]],

@@ -98,14 +98,14 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
         # The tool never asks libvirt for an address; this is what the config
         # said and what cloud-init was told to configure.
         "address": primary["ip_cidr"].split("/")[0],
-        "nics": [_nic(vm, i) for i in range(len(vm["nics"]))],
+        "nics": [_nic(vm, i, cfg["deployment"]) for i in range(len(vm["nics"]))],
     }
 
 
-def _nic(vm: dict, index: int) -> dict[str, Any]:
+def _nic(vm: dict, index: int, deployment: str) -> dict[str, Any]:
     nic = vm["nics"][index]
     return {
-        "mac": mac_of(vm, index),
+        "mac": mac_of(vm, index, deployment),
         "model": nic.get("model", "virtio"),
         "network": nic.get("network"),
         "bridge": nic.get("bridge"),

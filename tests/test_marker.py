@@ -31,9 +31,18 @@ def test_namespace_is_pinned_and_re_derivable():
 
 def test_id_is_deterministic_across_processes():
     """The whole reason destroy works with the state file deleted."""
-    assert derive_id("app01") == "9af67253-ef5f-521c-8e7c-859c3c3fad7a"
-    assert derive_id("app01") == derive_id("app01")
-    assert derive_id("app01") != derive_id("app02")
+    assert derive_id("app01", "lab-a") == "2647c9f3-9d71-531a-b874-98a578d6c7aa"
+    assert derive_id("app01", "lab-a") == derive_id("app01", "lab-a")
+    assert derive_id("app01", "lab-a") != derive_id("app02", "lab-a")
+
+
+def test_id_carries_the_deployment():
+    """Two deployments each containing `app01` must not derive one identity.
+
+    The id is the seed ISO's `instance-id`, so without this the two
+    deployments' seeds are byte-identical.
+    """
+    assert derive_id("app01", "lab-a") != derive_id("app01", "lab-b")
 
 
 def test_round_trip():
@@ -50,7 +59,7 @@ def test_parser_ignores_unknown_keys():
             "v": "0.9.9.9",
             "deployment": "lab-b",
             "name": "app01",
-            "id": derive_id("app01"),
+            "id": derive_id("app01", "lab-b"),
             "future_field": {"nested": [1, 2, 3]},
         }
     )
@@ -63,7 +72,9 @@ def test_parser_ignores_unknown_keys():
 def test_marker_without_deployment_parses_to_empty_string():
     """Markers written before `deployment` existed must still parse, and must
     never hand callers a None to forget to check."""
-    raw = json.dumps({"v": "0.1.0.0", "name": "app01", "id": derive_id("app01")})
+    raw = json.dumps(
+        {"v": "0.1.0.0", "name": "app01", "id": derive_id("app01", "lab-a")}
+    )
     assert Marker.from_json(raw).deployment == ""
 
 

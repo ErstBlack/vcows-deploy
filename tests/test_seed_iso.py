@@ -90,14 +90,32 @@ def test_meta_data_carries_the_marker_id(iso, cfg):
     from orchestrator.marker import derive_id
 
     meta = yaml.safe_load(read_via_pycdlib(iso, "meta-data"))
-    assert meta == {"instance-id": derive_id("app01"), "local-hostname": "app01"}
+    assert meta == {
+        "instance-id": derive_id("app01", cfg["deployment"]),
+        "local-hostname": "app01",
+    }
+
+
+def test_two_deployments_do_not_share_one_seed(cfg, tmp_path):
+    """Two configs differing only in `deployment` must not produce identical
+    media. Both the instance-id and the MAC carry the deployment, so a guest
+    cannot be handed another deployment's identity."""
+    a = prepare.seed_files(cfg["vms"][0], cfg)
+    cfg["deployment"] = "lab-b"
+    b = prepare.seed_files(cfg["vms"][0], cfg)
+    assert a["meta-data"] != b["meta-data"]
+    assert a["network-config"] != b["network-config"]
+    assert (
+        prepare.build_seed_iso(a, tmp_path / "a.iso").read_bytes()
+        != prepare.build_seed_iso(b, tmp_path / "b.iso").read_bytes()
+    )
 
 
 def test_network_config_matches_by_mac(iso, cfg):
     net = yaml.safe_load(read_via_pycdlib(iso, "network-config"))
     assert net["version"] == 2
     nic = net["ethernets"]["nic0"]
-    assert nic["match"]["macaddress"] == derive_mac("app01", 0)
+    assert nic["match"]["macaddress"] == derive_mac("app01", 0, cfg["deployment"])
     assert nic["dhcp4"] is False
     assert nic["addresses"] == ["192.168.122.60/24"]
     # A CIDR, not netplan's `default`: cloud-init 24.4 throws

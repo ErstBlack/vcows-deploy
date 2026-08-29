@@ -366,10 +366,20 @@ def _destroy(
         others = [e for e in marked if e not in targets]
 
         # Advisory here, fatal on deploy: a base image whose size disagrees with
-        # the local copy, or an orphaned volume, must not block a teardown.
-        for problem in config_problems + discovered.problems:
+        # the local copy, or an orphaned volume, must not block a teardown. Said
+        # out loud rather than left as a comment, because these name a shared
+        # golden image and a volume of unknown ownership to an operator who is
+        # already tearing things down.
+        advisory = config_problems + discovered.problems
+        if advisory:
+            print(
+                "  these were computed for a deploy; none of them changes "
+                "this teardown",
+                file=sys.stderr,
+            )
+        for problem in advisory:
             print(f"  {problem}", file=sys.stderr)
-        run.extra["problems"] = [str(p) for p in config_problems + discovered.problems]
+        run.extra["problems"] = [str(p) for p in advisory]
         for e in others:
             assert e.marker is not None  # `others` comes from `marked`
             print(

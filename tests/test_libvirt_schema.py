@@ -247,15 +247,36 @@ def test_a_non_qcow2_image_is_an_error(cfg, tmp_path):
     assert "bad magic" in messages(schema.validate(cfg))
 
 
+def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):
+    """One flat pool and undecorated names (D16), so a golden image called
+    `app01.qcow2` collides with app01's own overlay. libvirt would refuse it
+    mid-apply; this refuses it offline, naming the clash."""
+    cfg["image"]["base_volume_name"] = "app01.qcow2"
+    assert "app01.qcow2" in messages(errors(schema.validate(cfg)))
+
+    cfg["image"]["base_volume_name"] = "app02-seed.iso"
+    assert "app02-seed.iso" in messages(errors(schema.validate(cfg)))
+
+
 # -- D25: the MAC derivation is permanent -----------------------------------
 
 
 def test_derived_mac_is_pinned():
     """Changing this renames the interface every running VM's guest config is
     keyed to. Pinned for the same reason VCOWS_NS is."""
-    assert schema.derive_mac("app01", 0) == "52:54:00:ee:77:63"
-    assert schema.derive_mac("app01", 1) == "52:54:00:b1:b9:b9"
-    assert schema.derive_mac("app02", 0) == "52:54:00:a5:b8:7c"
+    assert schema.derive_mac("app01", 0, "lab-a") == "52:54:00:be:a8:60"
+    assert schema.derive_mac("app01", 1, "lab-a") == "52:54:00:d3:8b:f5"
+    assert schema.derive_mac("app02", 0, "lab-a") == "52:54:00:22:01:10"
+
+
+def test_derived_mac_carries_the_deployment():
+    """Two deployments each containing `app01` on one L2: without this both
+    guests boot, both apply their static address, and both report success on
+    one MAC. `address_conflicts` only ever looks at one host, so nothing else
+    catches it."""
+    assert schema.derive_mac("app01", 0, "lab-a") != schema.derive_mac(
+        "app01", 0, "lab-b"
+    )
 
 
 def test_derived_mac_matches_its_documented_formula():
@@ -263,15 +284,22 @@ def test_derived_mac_matches_its_documented_formula():
     happens to produce'."""
     import uuid
 
-    raw = uuid.uuid5(VCOWS_NS, "app01#nic0").bytes
-    assert schema.derive_mac("app01", 0) == (
+    raw = uuid.uuid5(VCOWS_NS, "lab-a/app01#nic0").bytes
+    assert schema.derive_mac("app01", 0, "lab-a") == (
         f"52:54:00:{raw[0]:02x}:{raw[1]:02x}:{raw[2]:02x}"
     )
 
 
 def test_an_explicit_mac_wins(cfg):
-    assert schema.mac_of(cfg["vms"][1], 0) == "52:54:00:aa:bb:cc"
-    assert schema.mac_of(cfg["vms"][0], 0) == schema.derive_mac("app01", 0)
+    """The override is the only escape from a derived MAC, so it has to hold
+    regardless of deployment -- a site whose switch policy or DHCP
+    reservations already own an address has nothing else to reach for."""
+    deployment = cfg["deployment"]
+    assert schema.mac_of(cfg["vms"][1], 0, deployment) == "52:54:00:aa:bb:cc"
+    assert schema.mac_of(cfg["vms"][1], 0, "lab-b") == "52:54:00:aa:bb:cc"
+    assert schema.mac_of(cfg["vms"][0], 0, deployment) == schema.derive_mac(
+        "app01", 0, deployment
+    )
 
 
 def test_a_malformed_mac_is_rejected(cfg):

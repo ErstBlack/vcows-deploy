@@ -130,6 +130,14 @@ def test_base_image_volume_reports_physical():
     assert facts["path"].endswith("Rocky-9-GenericCloud-Base.latest.x86_64.qcow2")
 
 
+def test_an_overlay_reports_what_it_backs_onto():
+    """The size-mismatch refusal counts these, so a message about replacing the
+    golden image can say how many VMs would break with it."""
+    facts = preflight.volume_facts(fixture("volume-overlay.xml"))
+    assert facts["backing"].endswith("Rocky-9-GenericCloud-Base.latest.x86_64.qcow2")
+    assert preflight.volume_facts(fixture("volume-base-image.xml"))["backing"] is None
+
+
 def test_directory_entry_in_a_pool_parses_with_no_physical():
     """The rig's `_cloud-images`. Not a candidate, and not an error either."""
     facts = preflight.volume_facts(fixture("volume-dir-entry.xml"))
@@ -195,6 +203,31 @@ def test_unreadable_local_image_warns(cfg):
     assert [p.severity for p in problems] == [Severity.WARNING]
 
 
+def test_size_mismatch_names_the_non_destructive_procedure(cfg, tmp_path):
+    """2.4. The old message ended "delete it on the hypervisor and re-run",
+    addressed to an operator whose golden image is backing every overlay on the
+    host -- and it prints during a destroy as well as a deploy."""
+    cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
+    volumes = {
+        "golden.qcow2": {"path": "/pool/golden.qcow2", "physical": 32},
+        "app01.qcow2": {"backing": "/pool/golden.qcow2"},
+        "app02.qcow2": {"backing": "/pool/golden.qcow2"},
+        "other.qcow2": {"backing": "/pool/somebody-else.qcow2"},
+    }
+    _, problems = preflight.base_volume(cfg, volumes)
+    message = problems[0].message
+    assert "delete" not in message.lower()
+    assert "base_volume_name" in message
+    assert "2 volume(s)" in message
+
+
+def test_size_mismatch_stays_honest_with_nothing_backing_onto_it(cfg, tmp_path):
+    cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
+    volumes = {"golden.qcow2": {"path": "/pool/golden.qcow2", "physical": 32}}
+    _, problems = preflight.base_volume(cfg, volumes)
+    assert "0 volume(s)" in problems[0].message
+
+
 # -- orphan volumes --------------------------------------------------------
 
 
@@ -206,6 +239,17 @@ def test_volume_with_no_owning_domain_refuses(cfg):
     assert len(problems) == 2
     assert all(p.severity is Severity.ERROR for p in problems)
     assert "app01.qcow2" in problems[0].message
+
+
+def test_orphan_message_admits_it_may_be_another_deployments(cfg):
+    """2.11. Volume names are undecorated logical names in one flat pool (D16),
+    so on a shared pool this refusal can be raised against `lab-b`'s deploy,
+    blamed on `lab-b`'s VM, and tell its operator to delete `lab-a`'s data."""
+    problems = preflight.orphan_volumes(cfg, {"app01.qcow2": {}}, claimed=set())
+    message = problems[0].message
+    assert "delete" not in message.lower()
+    assert "another deployment" in message
+    assert "may" in message
 
 
 def test_volume_claimed_by_a_domain_is_not_an_orphan(cfg):
@@ -359,7 +403,7 @@ def test_preflight_refuses_an_orphaned_overlay(cfg, tmp_path):
     conn = rig_connection(cfg, volumes={"app01.qcow2": orphan})
     discovered = preflight.preflight(cfg, conn)
     assert [p.severity for p in discovered.problems] == [Severity.ERROR]
-    assert "no domain references it" in discovered.problems[0].message
+    assert "no domain on this host references it" in discovered.problems[0].message
 
 
 def test_our_own_macs_are_not_reported_as_somebody_elses(cfg, tmp_path):

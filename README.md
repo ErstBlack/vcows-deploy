@@ -120,6 +120,21 @@ through with no interpretation.
 filename stem — so renaming the file orphans that deployment's VMs. `destroy`
 reports what it is skipping and why, which is where you would see it.
 
+**MACs are derived, and the derivation includes `deployment`.** Each NIC gets
+`uuid5` of the deployment, the VM name and the NIC index, because cloud-init
+matches an interface by MAC and the address has to be known before the VM
+exists. Set `mac:` on a NIC to override it — that is the only escape, and it is
+what to use when a site's DHCP reservations or switch policy already own an
+address. Two hosts running the *same* deployment name still derive the same
+MACs: the derivation narrows that collision, it does not close it.
+
+**Replacing the golden image is not a deletion.** `base_volume_name` is shared
+by every deployment on that host and every VM's disk is an overlay on it, so
+removing it breaks running VMs. Point `base_volume_name` at a name the pool does
+not hold and re-run: vcows uploads the new image alongside, and VMs created from
+then on back onto it. Sweeping the old one is a host-level chore for when nothing
+references it any more.
+
 > **The config is a secret artifact.** Credentials are cleartext at v0.1,
 > deliberately and temporarily. Do not commit it, and do not ship it as an
 > example.

@@ -116,7 +116,7 @@ TARGET_SCHEMA: dict[str, Any] = {
 }
 
 
-def derive_mac(name: str, index: int) -> str:
+def derive_mac(name: str, index: int, deployment: str) -> str:
     """A deterministic MAC for one VM's Nth NIC.
 
     cloud-init's ``network-config`` matches an interface by MAC to apply the
@@ -125,16 +125,24 @@ def derive_mac(name: str, index: int) -> str:
     regenerates identically with no state file -- the same property, for the same
     reason, as ``derive_id``.
 
+    The deployment is in the input because two deployments each containing
+    ``app01`` would otherwise derive one MAC. On two hosts bridged to one L2
+    both guests boot, both apply their static address, and both report
+    ``cloud-init status: done``; ``address_conflicts`` only ever looks at one
+    host, so nothing else catches it. **This narrows the collision rather than
+    closing it:** two hosts running the same deployment name still derive the
+    same MAC, and a per-NIC ``mac:`` is the escape.
+
     **This derivation is permanent.** Changing it renames the interface every
     running VM's guest configuration is keyed to. ``tests/test_libvirt_schema.py``
     pins it.
     """
-    raw = uuid.uuid5(VCOWS_NS, f"{name}#nic{index}").bytes
+    raw = uuid.uuid5(VCOWS_NS, f"{deployment}/{name}#nic{index}").bytes
     return ":".join(f"{b:02x}" for b in (*MAC_OUI, raw[0], raw[1], raw[2]))
 
 
-def mac_of(vm: dict, index: int) -> str:
-    return vm["nics"][index].get("mac") or derive_mac(vm["name"], index)
+def mac_of(vm: dict, index: int, deployment: str) -> str:
+    return vm["nics"][index].get("mac") or derive_mac(vm["name"], index, deployment)
 
 
 def primary_index(vm: dict) -> int:
@@ -194,10 +202,41 @@ def validate(cfg: dict) -> list[Problem]:
             # The checks below index into fields the schema just rejected.
             continue
         problems += _check_firmware(vm, where)
-        problems += _check_nics(vm, where, seen_ips, seen_macs)
+        problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
     problems += _check_disk_capacity(cfg)
+    problems += _check_volume_names(cfg)
     return problems
+
+
+def _check_volume_names(cfg: dict) -> list[Problem]:
+    """The golden image and a per-VM volume must not want the same name.
+
+    One flat pool, undecorated names (D16), so a golden image called
+    ``app01.qcow2`` collides with app01's own overlay. libvirt refuses the
+    duplicate itself, but mid-apply, after the run has created other objects.
+
+    ``render`` imports this module, so this import is function-local -- the
+    same reason ``prepare.seed_files`` and ``preflight.walk`` import inside
+    their functions.
+    """
+    from .render import overlay_name, seed_name
+
+    base = cfg["image"]["base_volume_name"]
+    return [
+        Problem(
+            Severity.ERROR,
+            f"{base!r} is also the name vcows derives for {vm['name']}'s "
+            f"{kind}, and both would be created in one pool.",
+            where="image.base_volume_name",
+        )
+        for vm in cfg["vms"]
+        for kind, derived in (
+            ("overlay", overlay_name(vm["name"])),
+            ("seed ISO", seed_name(vm["name"])),
+        )
+        if derived == base
+    ]
 
 
 def _check_target(target: dict) -> list[Problem]:
@@ -310,7 +349,11 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
 
 
 def _check_nics(
-    vm: dict, where: str, seen_ips: dict[str, str], seen_macs: dict[str, str]
+    vm: dict,
+    where: str,
+    seen_ips: dict[str, str],
+    seen_macs: dict[str, str],
+    deployment: str,
 ) -> list[Problem]:
     problems: list[Problem] = []
     primaries = [i for i, n in enumerate(vm["nics"]) if n.get("primary")]
@@ -362,7 +405,7 @@ def _check_nics(
         for j, ns in enumerate(nic.get("nameservers", [])):
             _parse_address(ns, f"{at}.nameservers[{j}]", problems)
 
-        mac = mac_of(vm, i).lower()
+        mac = mac_of(vm, i, deployment).lower()
         owner = seen_macs.setdefault(mac, at)
         if owner != at:
             problems.append(
