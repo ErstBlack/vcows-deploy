@@ -42,10 +42,20 @@ dependencies = [
 vcows = "orchestrator.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.16", "ty>=0.0.75"]
+dev = [
+    "mutmut>=3.7.0",
+    "pytest>=8",
+    "ruff>=0.16",
+    "ty>=0.0.75",
+]
 
 [tool.setuptools.packages.find]
 include = ["orchestrator*"]
+
+[tool.mutmut]
+# The package is `orchestrator/`, which matches none of mutmut's auto-guess
+# names (lib/, src/, or the repo directory name), so it has to be stated.
+source_paths = ["orchestrator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
