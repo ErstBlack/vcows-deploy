@@ -42,14 +42,6 @@ def test_flag_values_match_the_installed_binding():
     assert d.UNDEFINE_TPM == libvirt.VIR_DOMAIN_UNDEFINE_TPM
 
 
-def test_error_codes_match_the_installed_binding():
-    libvirt = pytest.importorskip("libvirt")
-    assert d.ERR_INVALID_ARG == libvirt.VIR_ERR_INVALID_ARG
-    assert d.ERR_OPERATION_INVALID == libvirt.VIR_ERR_OPERATION_INVALID
-    assert d.ERR_NO_STORAGE_VOL == libvirt.VIR_ERR_NO_STORAGE_VOL
-    assert d.ERR_NO_DOMAIN == libvirt.VIR_ERR_NO_DOMAIN
-
-
 # -- the mask --------------------------------------------------------------
 
 
@@ -428,3 +420,118 @@ def test_the_error_names_everything_left_behind_not_only_what_failed():
     message = str(caught.value)
     assert "internal error" in message
     assert "/pool/app01.qcow2" in message, "the volume that would not resolve"
+
+
+# -- calls that were not guarded -------------------------------------------
+
+
+def test_a_domain_that_cannot_be_asked_whether_it_is_running_is_reported():
+    """`isActive` sat outside the try. A raise there escapes `destroy` entirely, so
+    every target after this one in the loop is never touched and the operator gets a
+    traceback where an Outcome naming what was left behind should be."""
+    bad = domain("app01", active=True)
+    bad.active_error = lv_error(1, "internal error")
+    ok = domain("app02", active=False, disks=["/pool/app02.qcow2"])
+    conn = FakeConnection(domains=[bad, ok], pools=[FakePool("images", {})])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(bad), target(ok)])
+
+    outcome = caught.value.outcome
+    assert "app02" in outcome.destroyed, "the second target is still torn down"
+    assert [p.where for p in outcome.problems if p.fatal] == ["app01"]
+    assert bad.log == [], "and the first was not destroyed on an unknown state"
+
+
+def test_a_domain_that_cannot_be_asked_is_not_assumed_to_be_off():
+    """The second `isActive`, the one inside the error path. It exists to tell a
+    domain somebody else stopped from a real failure, so an unanswerable question
+    has to read as the failure -- the other way round reports success for a domain
+    that may still be running."""
+    dom = domain(active=True)
+    dom.active_error = lv_error(1, "internal error")
+    assert d._is_off(dom) is False
+
+
+def test_a_host_that_will_not_state_its_version_stops_the_teardown():
+    """The mask is gated on the daemon's version, so there is no mask without it,
+    and undefining with the wrong flags is what the whole gate exists to avoid."""
+    dom = domain(active=True)
+    conn = FakeConnection(domains=[dom])
+    conn.version_error = lv_error(38, "Cannot recv data: Connection reset by peer")
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    assert dom.log == [], "nothing was torn down"
+    assert any(p.fatal for p in caught.value.outcome.problems)
+
+
+def test_a_host_that_will_not_list_its_pools_is_fatal_rather_than_a_traceback():
+    """Without the pool list nothing is refreshed, and an unrefreshed pool makes
+    every path resolve as NO_STORAGE_VOL -- "already gone" -- for files that are
+    still there. Fatal at the end, as an inactive pool is, so the domains are torn
+    down and the operator is told exactly what could not be accounted for."""
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(
+        domains=[dom], pools=[FakePool("images", {"app01.qcow2": ""})]
+    )
+    conn.pools_error = lv_error(1, "internal error")
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    outcome = caught.value.outcome
+    assert any(p.fatal for p in outcome.problems)
+    assert "/pool/app01.qcow2" in outcome.skipped
+
+
+def test_one_pool_that_cannot_be_interrogated_does_not_stop_the_others():
+    """`isActive` and `name` are calls, not attributes, and either can fail. The
+    remaining pools still have to be refreshed: a target's disks are wherever they
+    are, which is the reason every pool is walked in the first place."""
+    bad = FakePool("mystery", {}, path="/mystery")
+    bad.active_error = lv_error(1, "internal error")
+    good = FakePool("images", {"app01.qcow2": ""})
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(domains=[dom], pools=[bad, good])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    assert good.refreshed == 1
+    assert good.deleted == ["app01.qcow2"], "the disk it could account for is gone"
+    assert any(p.fatal for p in caught.value.outcome.problems)
+
+
+def test_an_inactive_pool_that_will_not_describe_itself_is_not_read_as_empty():
+    """`_pool_holds` answers "does this pool hold a disk of ours". An empty list
+    has to mean no and only no: read as "could not tell" it is exactly how an
+    inactive pool holding both of a target's volumes passes for somebody else's
+    idle pool, which is the failure the inactive-pool check exists to catch."""
+    pool = FakePool("images", {"app01.qcow2": ""}, active=False)
+    pool.xml_error = lv_error(1, "internal error")
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    assert any("images" in p.message for p in caught.value.outcome.problems if p.fatal)
+
+
+def test_a_domain_whose_disks_could_not_be_read_narrows_the_guard_out_loud():
+    """`claimed` is the only thing between this teardown and a disk since handed to
+    another domain -- `vol.delete` offers no protection of its own. A domain nobody
+    could read contributes nothing to that set, so the guard quietly narrows."""
+    other = FakeDomain("other", "u9", "<domain/>")
+    other.xml_error = lv_error(1, "internal error")
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[dom, other], pools=[pool])
+
+    outcome = d.destroy({}, conn, [target(dom)])
+
+    assert [p.severity for p in outcome.problems] == [Severity.WARNING]
+    assert "other" in outcome.problems[0].message
+    assert pool.deleted == ["app01.qcow2"], "reported, not refused"

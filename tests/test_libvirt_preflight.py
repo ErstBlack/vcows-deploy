@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import libvirt
 import pytest
 
 from orchestrator.backends.base import Severity
 from orchestrator.backends.libvirt import preflight
 from orchestrator.marker import MARKER_XMLNS
-from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool
+from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FIXTURES = Path(__file__).parent / "fixtures" / "libvirt"
 
@@ -234,7 +235,10 @@ def test_size_mismatch_stays_honest_with_nothing_backing_onto_it(cfg, tmp_path):
 def test_volume_with_no_owning_domain_refuses(cfg):
     """findings.md §2. The operator deletes one file; vcows builds no recovery
     machinery for it, which is where the last version started sprawling."""
-    volumes = {"app01.qcow2": {}, "app02-seed.iso": {}}
+    volumes = {
+        "app01.qcow2": {"path": "/pool/app01.qcow2"},
+        "app02-seed.iso": {"path": "/pool/app02-seed.iso"},
+    }
     problems = preflight.orphan_volumes(cfg, volumes, claimed=set())
     assert len(problems) == 2
     assert all(p.severity is Severity.ERROR for p in problems)
@@ -245,7 +249,8 @@ def test_orphan_message_admits_it_may_be_another_deployments(cfg):
     """2.11. Volume names are undecorated logical names in one flat pool (D16),
     so on a shared pool this refusal can be raised against `lab-b`'s deploy,
     blamed on `lab-b`'s VM, and tell its operator to delete `lab-a`'s data."""
-    problems = preflight.orphan_volumes(cfg, {"app01.qcow2": {}}, claimed=set())
+    volumes = {"app01.qcow2": {"path": "/pool/app01.qcow2"}}
+    problems = preflight.orphan_volumes(cfg, volumes, claimed=set())
     message = problems[0].message
     assert "delete" not in message.lower()
     assert "another deployment" in message
@@ -253,8 +258,19 @@ def test_orphan_message_admits_it_may_be_another_deployments(cfg):
 
 
 def test_volume_claimed_by_a_domain_is_not_an_orphan(cfg):
-    volumes = {"app01.qcow2": {}}
-    assert preflight.orphan_volumes(cfg, volumes, claimed={"app01.qcow2"}) == []
+    volumes = {"app01.qcow2": {"path": "/pool/app01.qcow2"}}
+    claimed = {"/pool/app01.qcow2"}
+    assert preflight.orphan_volumes(cfg, volumes, claimed=claimed) == []
+
+
+def test_a_volume_that_reports_no_path_cannot_be_vouched_for(cfg):
+    """Nothing can be matched against a volume with no path, so it stays refused.
+    The message says that is the reason rather than asserting it is an orphan."""
+    volumes = {"app01.qcow2": {"path": None}}
+    claimed = {"/pool/app01.qcow2"}
+    problems = preflight.orphan_volumes(cfg, volumes, claimed=claimed)
+    assert [p.severity for p in problems] == [Severity.ERROR]
+    assert "reports no path" in problems[0].message
 
 
 # -- the pool --------------------------------------------------------------
@@ -279,6 +295,36 @@ def test_inactive_pool_refuses_by_name_rather_than_as_a_missing_volume():
     assert "not active" in problems[0].message
 
 
+def test_a_pool_lookup_that_is_not_absence_is_not_read_as_absence():
+    """The refusal above tells an operator to create a pool. A reset connection, a
+    policy refusal and an internal error all reach this line, and none of them says
+    anything about whether the pool exists. Raising is reported by `_guard` as a
+    failed run; the alternative is a confident wrong instruction."""
+    conn = FakeConnection(pools=[FakePool("images", {})])
+    conn.pool_lookup_error = lv_error(1, "internal error")
+    with pytest.raises(libvirt.libvirtError):
+        preflight.open_pool(conn, "images")
+
+
+def test_a_pool_that_cannot_be_refreshed_refuses_the_deploy():
+    """D35's refresh is required for correctness. Without it a golden image copied
+    in out of band is invisible, preflight says "not present", the module sets
+    `create = true`, and the apply dies on "storage volume exists already".
+
+    Fatal on deploy and advisory on destroy, which needs no branch here: `cmd_deploy`
+    treats `Discovered.problems` as fatal and `cmd_destroy` prints them and carries
+    on. Destroy's own refresh, in `destroy._refresh_pools`, keeps its WARNING.
+    """
+    pool = FakePool("images", {"golden.qcow2": ""})
+    pool.refresh_error = lv_error(1, "failed to read directory")
+    opened, problems = preflight.open_pool(FakeConnection(pools=[pool]), "images")
+    # Still returned: one pass reports every problem it can, and the walk is where
+    # the rest of them come from.
+    assert opened is pool
+    assert [p.severity for p in problems] == [Severity.ERROR]
+    assert "golden image" in problems[0].message
+
+
 def test_opening_a_pool_refreshes_it():
     pool = FakePool("images", {"golden.qcow2": ""})
     opened, problems = preflight.open_pool(FakeConnection(pools=[pool]), "images")
@@ -300,12 +346,38 @@ def test_the_walk_survives_a_directory_entry():
         },
     )
     pool.refresh(0)
-    volumes = preflight.walk(pool)
+    volumes, problems = preflight.walk(pool)
     assert set(volumes) == {
         "_cloud-images",
         "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
     }
     assert volumes["_cloud-images"]["physical"] is None
+    assert problems == []
+
+
+def test_a_volume_that_will_not_parse_is_reported_rather_than_dropped():
+    """The walk answers three questions -- the orphan refusal, whether the golden
+    image is here, and D30's size comparison -- so a volume it silently drops is a
+    volume none of the three saw. It still must not abandon the walk."""
+    pool = FakePool(
+        "images",
+        {"golden.qcow2": fixture("volume-base-image.xml"), "broken.qcow2": "<vol"},
+    )
+    pool.refresh(0)
+    volumes, problems = preflight.walk(pool)
+    assert "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2" in volumes
+    assert [p.severity for p in problems] == [Severity.WARNING]
+    assert "broken.qcow2" in problems[0].message
+
+
+def test_a_volume_that_vanished_between_listing_and_reading_is_reported():
+    """Listing then describing is two calls, and a volume can go between them."""
+    pool = FakePool("images", {"golden.qcow2": ""})
+    pool.refresh(0)
+    pool.volume_xml_error = lv_error(50, "no storage vol with matching path")
+    volumes, problems = preflight.walk(pool)
+    assert volumes == {}
+    assert [p.severity for p in problems] == [Severity.WARNING]
 
 
 # -- addressing ------------------------------------------------------------
@@ -324,6 +396,38 @@ def test_a_network_that_does_not_exist_refuses(cfg):
     problems = preflight.address_conflicts(FakeConnection(), cfg, {})
     assert all(p.severity is Severity.ERROR for p in problems)
     assert any("does not exist on this host" in p.message for p in problems)
+
+
+def test_a_network_lookup_that_is_not_absence_is_not_read_as_absence(cfg):
+    """Same shape as the pool lookup: "does not exist on this host" is one code,
+    not every code."""
+    conn = conn_with_network()
+    conn.network_lookup_error = lv_error(1, "internal error")
+    with pytest.raises(libvirt.libvirtError):
+        preflight.address_conflicts(conn, cfg, {})
+
+
+def test_leases_that_could_not_be_read_are_not_read_as_no_leases(cfg):
+    """The bare `pass` this replaces made every DHCPLeases failure mean "no DHCP
+    here", and an empty claim set is what `address_conflicts` then declares each
+    address free against. The reservations in the network XML still read fine, so
+    the check is not abandoned -- it is reported as partial."""
+    conn = conn_with_network()
+    conn.lease_error = lv_error(1, "internal error")
+    cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.101/24"
+    problems = preflight.address_conflicts(conn, cfg, {})
+    assert [p.severity for p in problems] == [Severity.WARNING, Severity.ERROR]
+    assert "leases" in problems[0].message
+    assert "a DHCP reservation" in problems[1].message
+
+
+@pytest.mark.parametrize("code", [3, 55])  # NO_SUPPORT, OPERATION_INVALID
+def test_a_network_with_no_dhcp_warns_about_nothing(cfg, code):
+    """The normal case for an isolated or routed network. Printing it would train
+    an operator to ignore the line that matters."""
+    conn = conn_with_network()
+    conn.lease_error = lv_error(code, "this function is not supported")
+    assert preflight.address_conflicts(conn, cfg, {}) == []
 
 
 def test_a_free_address_passes(cfg):
@@ -354,6 +458,42 @@ def test_a_mac_already_on_another_domain_refuses(cfg):
     problems = preflight.address_conflicts(conn_with_network(), cfg, by_mac)
     assert len(problems) == 1
     assert "already configured on domain 'rocky-runner'" in problems[0].message
+
+
+# -- the domain walk -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "break_it",
+    [
+        lambda dom: setattr(dom, "xml_error", lv_error(1, "internal error")),
+        lambda dom: setattr(dom, "_xml", "<domain"),
+    ],
+    ids=["libvirt refuses", "the document will not parse"],
+)
+def test_one_unreadable_domain_does_not_abort_the_walk(break_it):
+    """Uncaught, one broken domain on a shared host aborts preflight and no deploy
+    on that host can run again. Caught silently, its MACs and disks are simply
+    absent -- and this walk is where a MAC collision and a name clash are found, so
+    absent reads as free. Reported and skipped is the only honest one."""
+    doms = [
+        FakeDomain("first", "u1", fixture("domain-marked.xml")),
+        FakeDomain("broken", "u2", fixture("domain-marked.xml")),
+        FakeDomain("last", "u3", fixture("domain-unmarked-running.xml")),
+    ]
+    break_it(doms[1])
+    found, by_mac, problems = preflight._domains(FakeConnection(domains=doms))
+
+    assert [e.name for e in found] == ["first", "last"]
+    assert [p.severity for p in problems] == [Severity.WARNING]
+    assert "broken" in problems[0].message
+    assert by_mac
+
+
+def test_an_all_readable_host_warns_about_nothing():
+    doms = [FakeDomain("first", "u1", fixture("domain-marked.xml"))]
+    _, _, problems = preflight._domains(FakeConnection(domains=doms))
+    assert problems == []
 
 
 # -- the whole walk --------------------------------------------------------
@@ -399,7 +539,10 @@ def test_preflight_carries_the_disks_it_found(cfg, tmp_path):
 
 def test_preflight_refuses_an_orphaned_overlay(cfg, tmp_path):
     cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
-    orphan = "<volume><name>app01.qcow2</name></volume>"
+    orphan = (
+        "<volume><name>app01.qcow2</name>"
+        "<target><path>/pool/app01.qcow2</path></target></volume>"
+    )
     conn = rig_connection(cfg, volumes={"app01.qcow2": orphan})
     discovered = preflight.preflight(cfg, conn)
     assert [p.severity for p in discovered.problems] == [Severity.ERROR]
@@ -414,3 +557,39 @@ def test_our_own_macs_are_not_reported_as_somebody_elses(cfg, tmp_path):
     cfg["vms"][0]["nics"][0]["mac"] = "52:54:00:c0:ff:ee"
     discovered = preflight.preflight(cfg, rig_connection(cfg))
     assert discovered.problems == []
+
+
+def test_a_domain_the_walk_could_not_read_reaches_the_operator(cfg, tmp_path):
+    """`Discovered.problems` is printed by every connected verb, so the warning
+    needs no plumbing of its own -- but it does need to be put there."""
+    cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
+    conn = rig_connection(cfg)
+    conn.domains[0].xml_error = lv_error(1, "internal error")
+    discovered = preflight.preflight(cfg, conn)
+    assert [p.severity for p in discovered.problems] == [Severity.WARNING]
+    assert "vcows-probe02" in discovered.problems[0].message
+
+
+def test_a_disk_of_the_same_name_elsewhere_does_not_clear_the_refusal(cfg, tmp_path):
+    """`claimed` is what the host's domains name, and a domain's disks are wherever
+    they are -- while the volume being judged is in one specific pool. Compared by
+    basename, any domain anywhere naming `app01.qcow2` vouches for this pool's
+    orphan and the refusal never fires."""
+    cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
+    orphan = (
+        "<volume><name>app01.qcow2</name>"
+        "<target><path>/pool/app01.qcow2</path></target></volume>"
+    )
+    conn = rig_connection(cfg, volumes={"app01.qcow2": orphan})
+    conn.domains.append(
+        FakeDomain(
+            "elsewhere",
+            "u4",
+            "<domain><name>elsewhere</name><devices>"
+            "<disk type='file' device='disk'>"
+            "<source file='/elsewhere/app01.qcow2'/></disk></devices></domain>",
+        )
+    )
+    discovered = preflight.preflight(cfg, conn)
+    assert [p.severity for p in discovered.problems] == [Severity.ERROR]
+    assert "no domain on this host references it" in discovered.problems[0].message

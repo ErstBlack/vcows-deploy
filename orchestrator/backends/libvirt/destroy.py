@@ -34,6 +34,12 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from ..base import Existing, Outcome, Problem, Severity
+from .errors import (
+    ERR_INVALID_ARG,
+    ERR_NO_DOMAIN,
+    ERR_NO_STORAGE_VOL,
+    ERR_OPERATION_INVALID,
+)
 from .preflight import disks_of, marker_of
 from .render import overlay_name, seed_name
 
@@ -52,18 +58,6 @@ FLOOR = UNDEFINE_MANAGED_SAVE | UNDEFINE_SNAPSHOTS_METADATA | UNDEFINE_NVRAM
 
 #: ``version`` here is libvirt's packed form: major * 1e6 + minor * 1e3 + release.
 _GATED = ((5006000, UNDEFINE_CHECKPOINTS_METADATA), (8009000, UNDEFINE_TPM))
-
-#: libvirt error codes. Matched numerically, never by message: the NVRAM refusal
-#: has been reworded three times, and the rig and the RHEL targets agree on the
-#: wording only until the next Fedora update.
-ERR_OPERATION_INVALID = 55
-ERR_NO_STORAGE_VOL = 50
-ERR_INVALID_ARG = 8
-#: The *only* code that means "already gone". Every other failure of
-#: ``lookupByUUIDString`` -- a reset connection, a policy refusal, an internal
-#: error -- says nothing about whether that domain still exists, so it must not
-#: be read as one that does not.
-ERR_NO_DOMAIN = 42
 
 
 def undefine_mask(version: int) -> int:
@@ -102,23 +96,44 @@ class DestroyError(Exception):
 
 
 def _stop(dom: Any, name: str, out: Outcome) -> bool:
-    """Force the domain off. True if it is now safe to undefine."""
+    """Force the domain off. True if it is now safe to undefine.
+
+    ``isActive`` is a round trip like any other and belongs inside the ``try``. A
+    raise from it left this function entirely, and with it ``destroy``'s loop: every
+    target after this one went untouched and the operator got a traceback in place
+    of the Outcome naming what was left behind.
+    """
     import libvirt
 
-    if not dom.isActive():
-        return True
     try:
+        if not dom.isActive():
+            return True
         dom.destroyFlags(0)
     except libvirt.libvirtError as exc:
         # Another operator shut it down between the check and the call. Anything
         # else -- OPERATION_FAILED, INTERNAL_ERROR -- is a real failure.
-        if exc.get_error_code() == ERR_OPERATION_INVALID and not dom.isActive():
+        if exc.get_error_code() == ERR_OPERATION_INVALID and _is_off(dom):
             return True
         out.problems.append(
             Problem(Severity.ERROR, f"could not stop: {exc.get_error_message()}", name)
         )
         return False
     return True
+
+
+def _is_off(dom: Any) -> bool:
+    """Confirmed inactive. A host that cannot answer is **not** confirmed.
+
+    This is the second half of the race check above, and it decides whether a
+    refusal to stop is reported at all. Reading an unanswerable question as "off"
+    reports a finished teardown for a domain that may still be running.
+    """
+    import libvirt
+
+    try:
+        return not dom.isActive()
+    except libvirt.libvirtError:
+        return False
 
 
 def _undefine(dom: Any, name: str, mask: int, out: Outcome) -> bool:
@@ -209,22 +224,27 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
     out.destroyed.append(path)
 
 
-def _pool_holds(pool: Any, wanted: set[str]) -> list[str]:
+def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
     """Which of ``wanted`` live in this pool's target directory.
 
     Read off ``<target><path>``, which an *inactive* pool still answers -- the
     volume list, which would be the direct question, is exactly what it will not
     give. Directory comparison rather than prefix matching: ``/pool2/x.qcow2``
     does not live in ``/pool``.
+
+    ``None`` is "could not tell", which is not the same answer as the empty list
+    and must not collapse into it: an inactive pool holding both of a target's
+    volumes would then pass for somebody else's idle pool, and every disk in it
+    resolves as already gone.
     """
     import libvirt
 
     try:
         path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")
     except (libvirt.libvirtError, ET.ParseError):
-        return []
+        return None
     if not path:
-        return []
+        return None
     return sorted(p for p in wanted if str(PurePosixPath(p).parent) == path)
 
 
@@ -245,7 +265,9 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
     while the file sits there and the domain that named it loses its marker. If it
     holds nothing of ours it is somebody else's idle pool and no concern of this
     teardown; if it does, that is fatal, and fatal at the *end*, so the domains are
-    still torn down and the operator is told exactly what was left.
+    still torn down and the operator is told exactly what was left. A pool that
+    will not say which directory it holds counts with the second: unestablished,
+    not empty.
 
     The paths tested are preflight's, since this runs before ``_reverify``. Right
     for a question about pools, which do not move; the per-disk decision is
@@ -254,14 +276,60 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
     import libvirt
 
     wanted = {path for t in targets for path in t.disks}
-    for pool in conn.listAllStoragePools(0):
-        if not pool.isActive():
+    try:
+        pools = conn.listAllStoragePools(0)
+    except libvirt.libvirtError as exc:
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                f"could not list this host's storage pools "
+                f"({exc.get_error_message()}), so none of them was refreshed and a "
+                f"disk that is still on this host may resolve as already gone. "
+                f"Nothing below can be accounted for.",
+                "storage",
+            )
+        )
+        return
+
+    for pool in pools:
+        # `name` and `isActive` are calls, not attributes. A pool that cannot
+        # answer either is one whose contents are unknown, which is fatal for the
+        # same reason an inactive one holding our disks is -- but only for itself:
+        # a target's disks are wherever they are, which is why every pool is
+        # walked, and the remaining pools still have to be refreshed.
+        name = "<unnamed>"
+        try:
+            name = pool.name()
+            active = pool.isActive()
+        except libvirt.libvirtError as exc:
+            out.problems.append(
+                Problem(
+                    Severity.ERROR,
+                    f"storage pool {name!r} could not be interrogated "
+                    f"({exc.get_error_message()}), so whether it holds a disk of "
+                    f"ours is unknown and it was not refreshed.",
+                    "storage",
+                )
+            )
+            continue
+
+        if not active:
             held = _pool_holds(pool, wanted)
-            if held:
+            if held is None:
                 out.problems.append(
                     Problem(
                         Severity.ERROR,
-                        f"storage pool {pool.name()!r} is not active, so "
+                        f"storage pool {name!r} is not active and would not say "
+                        f"which directory it holds, so whether a disk of ours is "
+                        f"in it cannot be established. Start the pool and re-run.",
+                        "storage",
+                    )
+                )
+            elif held:
+                out.problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"storage pool {name!r} is not active, so "
                         f"{', '.join(held)} cannot be resolved or deleted and will "
                         f"be left on this host. Start the pool and re-run.",
                         "storage",
@@ -274,14 +342,16 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
             out.problems.append(
                 Problem(
                     Severity.WARNING,
-                    f"could not refresh pool {pool.name()!r} "
+                    f"could not refresh pool {name!r} "
                     f"({exc.get_error_message()}); disks in it may not resolve.",
                     "storage",
                 )
             )
 
 
-def _claimed_elsewhere(conn: Any, targets: list[Existing]) -> set[str] | None:
+def _claimed_elsewhere(
+    conn: Any, out: Outcome, targets: list[Existing]
+) -> set[str] | None:
     """Every disk path some *other* domain on this host currently names.
 
     ``vol.delete`` offers no protection at all -- libvirt will delete a running
@@ -303,13 +373,27 @@ def _claimed_elsewhere(conn: Any, targets: list[Existing]) -> set[str] | None:
     except libvirt.libvirtError:
         return None
     for dom in domains:
+        name = "<unnamed>"
         try:
+            name = dom.name()
             if dom.UUIDString() in ours:
                 continue
             root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
-        except (libvirt.libvirtError, ET.ParseError):
-            # A domain that vanished mid-scan claims nothing. One that will not
-            # parse is `walk`'s problem, not this loop's.
+        except (libvirt.libvirtError, ET.ParseError) as exc:
+            # A domain that vanished mid-scan claims nothing, and that is the
+            # common case -- but one that could not be read may claim a disk this
+            # teardown is about to delete, and this set is the only guard there is.
+            # Reported rather than fatal: a broken foreign domain is not this
+            # deployment's to fix, and refusing every teardown on the host over it
+            # is worse than saying which guard was narrowed.
+            out.problems.append(
+                Problem(
+                    Severity.WARNING,
+                    f"domain {name!r} could not be read ({exc}), so any disk it "
+                    f"claims was not checked against the ones being deleted.",
+                    "storage",
+                )
+            )
             continue
         claimed.update(disks_of(root))
     return claimed
@@ -397,10 +481,22 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
     import libvirt
 
     out = Outcome()
-    mask = undefine_mask(session.getLibVersion())
+    try:
+        mask = undefine_mask(session.getLibVersion())
+    except libvirt.libvirtError as exc:
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                f"could not ask this host its libvirt version "
+                f"({exc.get_error_message()}), so the undefine flags cannot be "
+                f"chosen; nothing was torn down",
+                "storage",
+            )
+        )
+        raise DestroyError(out) from exc
     _refresh_pools(session, out, targets)
 
-    claimed = _claimed_elsewhere(session, targets)
+    claimed = _claimed_elsewhere(session, out, targets)
     if claimed is None:
         out.problems.append(
             Problem(

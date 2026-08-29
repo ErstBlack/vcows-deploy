@@ -18,6 +18,13 @@ Three things about this file are load-bearing and easy to get wrong:
   golden image. Collecting a backing path would hand destroy the volume every other
   deployment on that host depends on, and ``vol.delete()`` would not stop it.
 
+Nothing this file cannot read is skipped in silence. Every check here decides on
+what it found, so an absent domain reads as no MAC collision, an absent volume as
+no orphan, and an unreadable lease list as a free address. A skip is therefore
+always a ``Problem`` naming the object and what the skip cost, and every
+``libvirtError`` is matched against a code from ``errors`` rather than assumed to
+be the benign one.
+
 ``ElementTree`` rather than ``defusedxml`` is D13: identical API, and stdlib is what
 runs when someone copies one of these functions onto a hypervisor to debug it. The
 input is libvirt's own re-serialisation of XML it already accepted, ElementTree does
@@ -35,6 +42,12 @@ from xml.etree import ElementTree as ET
 
 from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
 from ..base import Discovered, Existing, Problem, Severity
+from .errors import (
+    ERR_NO_NETWORK,
+    ERR_NO_STORAGE_POOL,
+    ERR_NO_SUPPORT,
+    ERR_OPERATION_INVALID,
+)
 from .render import overlay_name, seed_name
 from .schema import connection_uri, mac_of
 
@@ -120,26 +133,47 @@ def macs_of(root: ET.Element) -> tuple[str, ...]:
     )
 
 
-def _domains(conn: Any) -> tuple[list[Existing], dict[str, str]]:
-    """Every domain on the host, and a MAC -> domain-name index."""
+def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
+    """Every domain on the host, a MAC -> domain-name index, and what it missed.
+
+    A domain that will not read is skipped rather than fatal: one broken foreign
+    domain would otherwise stop every deploy on a shared host, and it is not this
+    deployment's to fix. Skipped *and reported*, because this walk is where a MAC
+    collision and an unmarked name clash are found -- a domain nobody could read
+    contributes neither, and absent reads as free.
+    """
     import libvirt
 
     found: list[Existing] = []
     by_mac: dict[str, str] = {}
+    problems: list[Problem] = []
     for dom in conn.listAllDomains(0):
-        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
-        name = dom.name()
+        name = "<unnamed>"
+        try:
+            name = dom.name()
+            uuid = dom.UUIDString()
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+        except (libvirt.libvirtError, ET.ParseError) as exc:
+            problems.append(
+                Problem(
+                    Severity.WARNING,
+                    f"domain {name!r} could not be read ({exc}), so its MACs and "
+                    f"its disks were not checked against this config.",
+                    where="target.libvirt",
+                )
+            )
+            continue
         found.append(
             Existing(
                 name=name,
-                id=dom.UUIDString(),
+                id=uuid,
                 marker=marker_of(root),
                 disks=disks_of(root),
             )
         )
         for mac in macs_of(root):
             by_mac.setdefault(mac, name)
-    return found, by_mac
+    return found, by_mac, problems
 
 
 # -- storage ---------------------------------------------------------------
@@ -190,7 +224,13 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
 
     try:
         pool = conn.storagePoolLookupByName(name)
-    except libvirt.libvirtError:
+    except libvirt.libvirtError as exc:
+        if exc.get_error_code() != ERR_NO_STORAGE_POOL:
+            # A reset connection, a policy refusal, an internal error: none of them
+            # says whether this pool exists, and the refusal below instructs an
+            # operator to go and create one. Raising is reported by `_guard` as a
+            # failed run; a confident wrong instruction is not reported at all.
+            raise
         return None, [
             Problem(
                 Severity.ERROR,
@@ -212,9 +252,15 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
     try:
         pool.refresh(0)
     except libvirt.libvirtError as exc:
+        # Fatal for a deploy and advisory for a destroy, with no branch here:
+        # `cmd_deploy` refuses on any fatal `Discovered.problems` and `cmd_destroy`
+        # prints them and carries on. Destroy's own refresh, in
+        # `destroy._refresh_pools`, is a WARNING for the same reason -- a teardown
+        # that cannot refresh still reports every path it could not account for.
+        # The pool is returned regardless: one pass reports every problem it can.
         return pool, [
             Problem(
-                Severity.WARNING,
+                Severity.ERROR,
                 f"could not refresh pool {name!r} ({exc.get_error_message()}). "
                 f"Volumes written out of band may be invisible, which can make a "
                 f"present golden image look absent.",
@@ -224,25 +270,38 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
     return pool, []
 
 
-def walk(pool: Any) -> dict[str, dict[str, Any]]:
-    """Every volume in the pool, keyed by name.
+def walk(pool: Any) -> tuple[dict[str, dict[str, Any]], list[Problem]]:
+    """Every volume in the pool, keyed by name, and what could not be read.
 
     One walk answers three separate questions -- the orphan-volume refusal, whether
     the golden image is here and where, and D30's size comparison -- which is why
-    ``prepare`` needs no session.
+    ``prepare`` needs no session. A volume dropped here is therefore a volume none
+    of the three saw, which is why the skip is reported rather than silent.
     """
     import libvirt
 
     facts = {}
+    problems: list[Problem] = []
     for vol in pool.listAllVolumes(0):
+        name = "<unnamed>"
         try:
+            name = vol.name()
             entry = volume_facts(vol.XMLDesc(0))
-        except (libvirt.libvirtError, ET.ParseError):
+        except (libvirt.libvirtError, ET.ParseError) as exc:
             # A volume that vanished between listing and describing, or whose XML
             # we cannot read, is not a reason to abandon the walk.
+            problems.append(
+                Problem(
+                    Severity.WARNING,
+                    f"volume {name!r} could not be read ({exc}), so it was not "
+                    f"considered as the golden image and is not counted as an "
+                    f"orphan.",
+                    where="target.libvirt.pool",
+                )
+            )
             continue
         facts[entry["name"]] = entry
-    return facts
+    return facts, problems
 
 
 def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem]]:
@@ -340,7 +399,25 @@ def orphan_volumes(
     problems = []
     for vm in cfg["vms"]:
         for volume in (overlay_name(vm["name"]), seed_name(vm["name"])):
-            if volume in volumes and volume not in claimed:
+            found = volumes.get(volume)
+            if found is None:
+                continue
+            # Whole paths. `claimed` is what the host's domains name, and a domain
+            # can name a disk in any pool -- so by basename an unrelated
+            # `/elsewhere/app01.qcow2` vouches for this pool's orphan.
+            path = found.get("path")
+            if path is None:
+                problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"volume {volume!r} exists but reports no path, so no "
+                        f"domain on this host can be matched against it and vcows "
+                        f"cannot tell whether anything still uses it. Establish "
+                        f"what it is before removing it.",
+                        where=vm["name"],
+                    )
+                )
+            elif path not in claimed:
                 problems.append(
                     Problem(
                         Severity.ERROR,
@@ -375,7 +452,10 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
 
     try:
         net = conn.networkLookupByName(name)
-    except libvirt.libvirtError:
+    except libvirt.libvirtError as exc:
+        if exc.get_error_code() != ERR_NO_NETWORK:
+            # As with the pool: absence is one code, not every code.
+            raise
         return {}, [
             Problem(
                 Severity.ERROR,
@@ -385,6 +465,7 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
         ]
 
     claims: dict[str, str] = {}
+    problems: list[Problem] = []
     root = ET.fromstring(net.XMLDesc(0))
     for host in root.findall("ip/dhcp/host"):
         if ip := host.get("ip"):
@@ -393,11 +474,22 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
         for lease in net.DHCPLeases():
             if ip := lease.get("ipaddr"):
                 claims.setdefault(ip, f"an active DHCP lease on network {name!r}")
-    except libvirt.libvirtError:
-        # No DHCP configured, or the network is not running. Reservations still
-        # read fine from the XML above.
-        pass
-    return claims, []
+    except libvirt.libvirtError as exc:
+        # NO_SUPPORT and OPERATION_INVALID are "this network has no DHCP" -- an
+        # ordinary configuration, and a line an operator would learn to ignore.
+        # Anything else means the leases exist and could not be read, and an empty
+        # claim set is exactly what `address_conflicts` calls free.
+        if exc.get_error_code() not in (ERR_NO_SUPPORT, ERR_OPERATION_INVALID):
+            problems.append(
+                Problem(
+                    Severity.WARNING,
+                    f"the DHCP leases on network {name!r} could not be read "
+                    f"({exc.get_error_message()}), so an address a live lease "
+                    f"holds may be reported as free. Reservations were read.",
+                    where=f"nics[].network={name}",
+                )
+            )
+    return claims, problems
 
 
 def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Problem]:
@@ -446,19 +538,21 @@ def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Prob
 def preflight(cfg: dict, session: Any) -> Discovered:
     """One pass over the target. Everything downstream runs on what this returns."""
     wanted = {vm["name"] for vm in cfg["vms"]}
-    vms, by_mac = _domains(session)
+    vms, by_mac, problems = _domains(session)
 
     # A domain that is ours, for a name in this config, is a SKIP -- its MACs are
     # ours by construction and must not be reported as somebody else's.
     ours = {e.name for e in vms if e.marker is not None and e.marker.name in wanted}
     by_mac = {mac: owner for mac, owner in by_mac.items() if owner not in ours}
 
-    pool, problems = open_pool(session, cfg["target"]["libvirt"]["pool"])
+    pool, pool_problems = open_pool(session, cfg["target"]["libvirt"]["pool"])
+    problems += pool_problems
     artifacts: dict[str, Any] = {}
 
     if pool is not None:
-        volumes = walk(pool)
-        claimed = {os.path.basename(path) for e in vms for path in e.disks}
+        volumes, walk_problems = walk(pool)
+        problems += walk_problems
+        claimed = {path for e in vms for path in e.disks}
         base, base_problems = base_volume(cfg, volumes)
         artifacts["base_volume"] = base
         problems += base_problems

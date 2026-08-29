@@ -145,7 +145,8 @@ def sparse(path, size: int):
 def rig_volumes(session):
     pool, problems = preflight.open_pool(session, "images")
     assert pool is not None, problems
-    return preflight.walk(pool)
+    volumes, _ = preflight.walk(pool)
+    return volumes
 
 
 def test_the_walk_survives_the_directory_entry_in_the_real_pool(rig_volumes):
@@ -184,7 +185,7 @@ def test_a_truncated_local_image_refuses(rig_cfg, rig_volumes, tmp_path):
 
 
 def conflicts(cfg, session):
-    _, by_mac = preflight._domains(session)
+    _, by_mac, _ = preflight._domains(session)
     return preflight.address_conflicts(session, cfg, by_mac)
 
 
