@@ -73,6 +73,32 @@ class Existing:
 
 
 @dataclass(frozen=True)
+class Discovered:
+    """Everything one ``preflight`` walk found. The only thing that crosses from
+    the connected half of the pipeline into the pure half.
+
+    It exists because ``render`` is pure while each apply runs against a fresh,
+    empty state -- so the module only ever creates, and something has to say
+    which of the things it would create are already there. For libvirt that is
+    the shared golden image, and preflight is *already* walking the pool to
+    satisfy findings.md §2's orphan-volume refusal, so the answer is a lookup on
+    data it is holding rather than a second round trip.
+
+    Core reads ``vms`` and forwards the record without ever reading
+    ``artifacts``, which is what keeps core from learning what a storage volume
+    is. And because ``prepare`` takes *this* rather than a session, a backend
+    cannot reach the hypervisor from ``prepare`` at all -- a guarantee rather
+    than a rule someone has to remember.
+    """
+
+    vms: list[Existing]
+    """What ``decide()`` consumes."""
+
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    """Opaque to core. Whatever else the backend had to look at while connected."""
+
+
+@dataclass(frozen=True)
 class Prepared:
     """Whatever ``prepare`` produced for ``render`` to consume."""
 
@@ -224,12 +250,18 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def preflight(self, cfg: dict, session: Any) -> list[Existing]:
-        """What exists on the target. Mechanism is per-backend; policy is core."""
+    def preflight(self, cfg: dict, session: Any) -> Discovered:
+        """What exists on the target. Mechanism is per-backend; policy is core.
+
+        **The only place a backend reads the target during a deploy.** This is
+        the one method holding a live session, so everything the pure half of
+        the pipeline needs to know about the world has to be learned here and
+        carried out in ``Discovered``.
+        """
 
     @abstractmethod
     def prepare(
-        self, cfg: dict, workdir: Path, session: Any
+        self, cfg: dict, workdir: Path, discovered: Discovered
     ) -> AbstractContextManager[Prepared]:
         """Build whatever the apply needs, and hold it open for the apply's life.
 
@@ -237,14 +269,15 @@ class Backend(ABC):
         serve the image over HTTP for the hypervisor to pull -- a listening
         socket held open for the duration and torn down after. For libvirt it
         yields immediately after building the seed ISOs. It costs nothing today;
-        retrofitting it later would mean restructuring.
+        retrofitting it later would mean restructuring. Note that such a socket
+        is one the backend opened itself, not the hypervisor session, which is
+        closed by the time this runs.
 
-        **Takes the session** because each apply runs against a fresh, empty
-        OpenTofu state, so the module only ever creates -- and something has to
-        tell it which of the things it would create are already there. ``render``
-        is pure and ``preflight`` returns domains, so this is the one hook that
-        can look. Whatever it finds goes into ``Prepared.artifacts``, which keeps
-        core from ever learning what a storage volume is.
+        **Takes what ``preflight`` found, not a connection.** It needs the
+        target's state -- which of the things the module would create already
+        exist -- but not the ability to go and look, which ``preflight`` has
+        already done. Passing data rather than a session also makes "prepare
+        runs after preflight" a type dependency instead of a convention.
         """
 
     @abstractmethod

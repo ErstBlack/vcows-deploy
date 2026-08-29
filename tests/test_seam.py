@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import inspect
 import sys
 import textwrap
 
 import pytest
 
-from orchestrator.backends.base import Action, Existing, decide
+from orchestrator.backends.base import Action, Backend, Discovered, Existing, decide
 from orchestrator.config import load, vm_names
 from orchestrator.marker import Marker
 from tests.fake_backend import FakeBackend
@@ -80,61 +81,92 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
 
     config = load(cfg, registry)
 
-    # -- deploy ------------------------------------------------------------
+    # -- deploy: everything that touches the target happens here ------------
     with backend.connect(config) as session:
-        existing = backend.preflight(config, session)
-        decisions, problems = decide(vm_names(config), existing, config["deployment"])
+        discovered = backend.preflight(config, session)
+        decisions, problems = decide(
+            vm_names(config), discovered.vms, config["deployment"]
+        )
         assert [d.action for d in decisions] == [Action.CREATE, Action.CREATE]
         assert problems == []
 
-        workdir = tmp_path / "work"
-        workdir.mkdir()
-        with backend.prepare(config, workdir, session) as prepared:
-            tfvars = backend.render(config, prepared)
-        assert prepared.artifacts["existing_names"] == []
-
-        assert set(tfvars["vms"]) == {"app01", "app02"}
-        for name, vm in tfvars["vms"].items():
-            assert (
-                Marker.from_json(
-                    vm["marker_xml"].split(">", 1)[1].rsplit("<", 1)[0]
-                ).name
-                == name
-            )
-
-        # Stand in for `tofu apply` + `tofu output -json`.
-        session.world.extend(
-            Existing(
-                name=n,
-                id=Marker.for_vm(n, "lab-a").id,
-                marker=Marker.for_vm(n, "lab-a"),
-            )
-            for n in tfvars["vms"]
-        )
-        inventory = backend.parse_outputs(
-            {"vms": {"value": {n: {"name": n} for n in tfvars["vms"]}}}
-        )
-        assert set(inventory.vms) == {"app01", "app02"}
-
     assert session.closed, "connect() must close its session on the way out"
+
+    # -- and the apply runs with the connection already closed --------------
+    # prepare gets what preflight found, not the ability to go and look again.
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with backend.prepare(config, workdir, discovered) as prepared:
+        tfvars = backend.render(config, prepared)
+    assert prepared.artifacts["existing_names"] == []
+
+    assert set(tfvars["vms"]) == {"app01", "app02"}
+    for name, vm in tfvars["vms"].items():
+        assert (
+            Marker.from_json(vm["marker_xml"].split(">", 1)[1].rsplit("<", 1)[0]).name
+            == name
+        )
+
+    # Stand in for `tofu apply` + `tofu output -json`.
+    backend.world.extend(
+        Existing(
+            name=n,
+            id=Marker.for_vm(n, "lab-a").id,
+            marker=Marker.for_vm(n, "lab-a"),
+        )
+        for n in tfvars["vms"]
+    )
+    inventory = backend.parse_outputs(
+        {"vms": {"value": {n: {"name": n} for n in tfvars["vms"]}}}
+    )
+    assert set(inventory.vms) == {"app01", "app02"}
 
     # -- second deploy is a no-op ------------------------------------------
     with backend.connect(config) as session:
-        session.world = list(backend.sessions[0].world)
         decisions, _ = decide(
-            vm_names(config), backend.preflight(config, session), config["deployment"]
+            vm_names(config),
+            backend.preflight(config, session).vms,
+            config["deployment"],
         )
         assert [d.action for d in decisions] == [Action.SKIP, Action.SKIP]
 
     # -- destroy, with no config-derived state ------------------------------
     with backend.connect(config) as session:
-        session.world = list(backend.sessions[0].world)
         targets = [
-            e for e in backend.preflight(config, session) if e.marker is not None
+            e for e in backend.preflight(config, session).vms if e.marker is not None
         ]
         backend.destroy(config, session, targets)
         assert sorted(session.destroyed) == ["app01", "app02"]
         assert session.world == []
+
+
+def test_prepare_is_handed_data_not_a_connection():
+    """The guarantee, asserted rather than documented.
+
+    An earlier version passed the live session here so the backend could ask
+    whether the golden image was already on the host. It turned out preflight
+    already walks the pool for §2's orphan-volume refusal, so that was a second
+    lookup of a fact it was already holding -- and it let `prepare` reach the
+    hypervisor for anything else too. A signature check is the only thing that
+    notices if a session creeps back in, because the call site looks identical.
+    """
+    params = inspect.signature(Backend.prepare).parameters
+    assert list(params) == ["self", "cfg", "workdir", "discovered"]
+
+
+def test_prepare_and_render_work_from_data_alone(no_libvirt, cfg, tmp_path):
+    """No session is constructed anywhere in this test, and the apply half still
+    completes."""
+    backend = FakeBackend()
+    config = load(cfg, {"fake": backend})
+
+    with backend.prepare(
+        config, tmp_path, Discovered(vms=[], artifacts={"existing_names": []})
+    ) as prepared:
+        tfvars = backend.render(config, prepared)
+
+    assert set(tfvars["vms"]) == {"app01", "app02"}
+    assert backend.sessions == [], "prepare must not have opened a connection"
 
 
 def test_core_modules_do_not_import_libvirt(no_libvirt):

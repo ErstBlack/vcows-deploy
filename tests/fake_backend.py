@@ -18,6 +18,7 @@ from typing import Any
 
 from orchestrator.backends.base import (
     Backend,
+    Discovered,
     Existing,
     Inventory,
     Prepared,
@@ -79,22 +80,27 @@ class FakeBackend(Backend):
         finally:
             session.closed = True
 
-    def preflight(self, cfg: dict, session: Any) -> list[Existing]:
-        return list(session.world)
+    def preflight(self, cfg: dict, session: Any) -> Discovered:
+        return Discovered(
+            vms=list(session.world),
+            # Stands in for whatever else a backend has to look at while it is
+            # connected -- for libvirt, whether the golden image is already in
+            # the pool. Core never reads this.
+            artifacts={"existing_names": sorted(e.name for e in session.world)},
+        )
 
     # -- apply -----------------------------------------------------------
 
     @contextmanager
-    def prepare(self, cfg: dict, workdir: Path, session: Any):
+    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered):
         self.prepared_dirs.append(workdir)
         (workdir / "fake-artifact").write_text("seed\n")
         yield Prepared(
             workdir=workdir,
             artifacts={
                 "seed": str(workdir / "fake-artifact"),
-                # Stands in for "what does the target already have" -- the whole
-                # reason prepare takes a session.
-                "existing_names": sorted(e.name for e in session.world),
+                # Carried through from preflight, not looked up again.
+                "existing_names": discovered.artifacts["existing_names"],
             },
         )
 

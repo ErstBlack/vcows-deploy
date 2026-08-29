@@ -63,6 +63,16 @@ resource "libvirt_volume" "seed" {
   pool   = var.pool
   target = { format = { type = "raw" } }
   create = { content = { url = each.value.seed_iso } }
+
+  // Nothing here reads a base attribute, so without this edge these seeds are an
+  // independent branch of the graph. That matters because the provider's Create
+  // calls StorageVolCreateXML with no lookup and no adoption path: naming an
+  // existing volume fails hard. OpenTofu then skips the failed vertex's
+  // descendants -- every overlay and domain -- while independent branches keep
+  // running and are written to state. The seeds would survive as volumes destroy
+  // can never reach, because volumes carry no marker. This one line makes a
+  // partial apply a no-op apply.
+  depends_on = [libvirt_volume.base]
 }
 
 resource "libvirt_domain" "vm" {

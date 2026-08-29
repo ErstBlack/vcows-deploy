@@ -169,9 +169,9 @@ class Backend(ABC):
     @abstractmethod
     def connect(self, cfg) -> ContextManager[Any]: ...  # opens and closes the session
     @abstractmethod
-    def preflight(self, cfg, session) -> list[Existing]: ...
+    def preflight(self, cfg, session) -> Discovered: ...
     @abstractmethod
-    def prepare(self, cfg, workdir, session) -> ContextManager[Prepared]: ...
+    def prepare(self, cfg, workdir, discovered) -> ContextManager[Prepared]: ...
     @abstractmethod
     def render(self, cfg, prepared) -> dict: ...  # pure -> tfvars
     @abstractmethod
@@ -209,11 +209,22 @@ Core parses the marker, applies the rules from §2, and decides skip/create/refu
 
 **`prepare` — a context manager, and this is the non-obvious choice.** For libvirt it yields immediately after building the seed ISO. It is a context manager because Proxmox may need the orchestrator to **serve the qcow2 over HTTP on the local network** so PVE can pull it via the download-url API — a listening socket held open for the duration of the apply and torn down after. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring. `with backend.prepare(...) as prepared:` costs nothing today and absorbs vSphere's qcow2→VMDK→OVA conversion too, which needs the `workdir` plus a cache path.
 
-**`prepare` also takes the `session`, and the reason is forced rather than chosen.** Each apply runs against a fresh, empty state — state is disposable, so the module only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be declared as a resource, and the overlay needs its path on the host. The pinned provider has **no pool and no volume data source** — `dmacvicar/libvirt` 0.9.8 exposes only `libvirt_domain_interface_addresses`, `libvirt_node_device_info`, `libvirt_node_devices` and `libvirt_node_info` — so "is it already here, and where" cannot be answered from HCL, and it cannot be answered from the config either. Something in the backend has to ask. `render` is pure and `preflight` returns VMs, so `prepare` is the only hook left, and it is already the impure one. The answer goes into `Prepared.artifacts`, so **core still never learns what a storage volume is.** Every alternative relocates that call rather than removing it; the ones that hide it — caching the fact on the backend instance — are worse, because `REGISTRY` holds a singleton and that is process-global mutable state that silently yields "not present" if `prepare` ever runs without `preflight`.
+**`prepare` takes what `preflight` found, and `preflight` is the only method that reads the target.** Each apply runs against a fresh, empty state — state is disposable, so the module only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be declared as a resource, and the overlay needs its path on the host. That question cannot be answered from HCL: the pinned provider registers four data sources — `libvirt_domain_interface_addresses`, `libvirt_node_device_info`, `libvirt_node_devices`, `libvirt_node_info` — and no provider functions and no ephemeral resources, so nothing can read a pool. It cannot be answered from the config either, because the pool is someone else's and its target path is a property of the pool. And it cannot be answered by `tofu import` as an existence probe: 0.9.8's importer is a passthrough on the volume **key**, which for a file pool is the path we are trying to discover.
 
-**The scope of that permission is deliberately narrow.** `prepare` may read the target *only* to answer "does this artifact already exist here, and where". Everything about VMs stays in `preflight`. Without that line the parameter becomes the cheapest place to put any future hypervisor read, and `preflight`'s monopoly on discovery erodes one convenient call at a time — which is the shape sprawl takes.
+So a live connection has to ask — but `preflight` is **already** asking. The orphan-volume refusal below requires it to enumerate the pool and resolve every volume's path, so the base image's presence, path and size are a lookup on data it is holding. Handing the session to `prepare` would buy a second round trip, not a first, and would let `prepare` reach the hypervisor for anything else besides. Instead `preflight` returns everything one walk found:
 
-**The session is closed before the apply, not held across it.** The provider opens its own connection from `var.uri`, so holding ours adds a second idle SSH session that buys the transfer nothing. libvirt-python registers no event loop here, so there is no keepalive and no RPC timeout: a socket that hangs rather than resetting can block the closing RPC and leave the CLI wedged *after* a successful apply. `prepare` needs the session only before it yields, so an `ExitStack` closes the connection while `prepared` stays live for the apply's duration. A backend that genuinely needs something held open — Proxmox's HTTP server — holds a socket it opened itself, not the hypervisor session.
+```python
+@dataclass(frozen=True)
+class Discovered:
+    vms: list[Existing]
+    artifacts: dict[str, Any] = field(default_factory=dict)  # opaque to core
+```
+
+Core reads `vms`, applies §2's rules, and forwards the record to `prepare` without ever reading `artifacts` — so **core still never learns what a storage volume is**, and `prepare` cannot reach the target at all, which is a guarantee rather than a rule someone has to remember. It also makes "prepare runs after preflight" a type dependency instead of a convention. Do not replace this by caching the fact on the backend instance: `REGISTRY` holds a singleton, so that is process-global mutable state that silently reports "not present" if `prepare` ever runs without `preflight`.
+
+**The session therefore closes before the apply.** The provider opens its own connection from `var.uri`, so holding ours across a multi-GB upload would add a second idle SSH session that buys the transfer nothing. libvirt-python registers no event loop here, so there is no keepalive and no RPC timeout: a socket that hangs rather than resetting can block the closing RPC and wedge the CLI *after* a successful apply. A backend that genuinely needs something held open for the apply's duration — Proxmox's HTTP server — holds a socket it opened itself.
+
+**The base image is verified, not merely found.** A partial upload leaves a file whose qcow2 header is intact, so `capacity` reports the full virtual size and the next run trusts it — every overlay then backs onto a truncated image and the VMs fail at random points in boot, on a host where the tool reported success. Compare the volume's `<physical>` against the local golden image's size; they match byte for byte, and `<physical>` arrives in the same `XMLDesc` the orphan-volume check already needs. A mismatch refuses, which covers a *different* image under that name as well as a truncated one. `<physical>` is optional in libvirt's schema and meaningless for non-file pools, so its absence warns rather than refuses.
 
 **`render` stays pure** — config plus the record `prepare` produced, out to a dict. This was the original document's seam and it is right; it was wrong only as the *sole* seam, since it cannot express the I/O that `preflight` and `prepare` now own.
 
