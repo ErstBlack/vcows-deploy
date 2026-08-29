@@ -119,8 +119,11 @@ def main() -> int:
         "tofu": tofu_version(),
         "provider": provider(),
         "packages": installed,
-        # Deduplicated, because 300-odd binaries come from far fewer sources and
-        # it is the sources that have to be mirrored.
+        # Deduplicated, because binaries outnumber their sources and it is the
+        # sources that have to be mirrored -- roughly 160 down to roughly 116 as
+        # built. Approximate on purpose: the exact pair moves with every base
+        # image and every `dnf` change, and this file is the thing that reports
+        # it, so a number written here is the one that goes stale.
         "source_rpms": sorted({p["source_rpm"] for p in installed if p["source_rpm"]}),
     }
     json.dump(manifest, sys.stdout, indent=2, sort_keys=True)

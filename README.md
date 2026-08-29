@@ -85,7 +85,8 @@ the state is thrown away between runs and two of them cannot share one.
 | `destroy <config>` | Tears down **this deployment's** marked VMs. Asks first unless `--yes`. |
 | `version` | Version, OpenTofu version, and the build manifest. |
 
-Exit codes are 0 and 1.
+Exit codes are 0 and 1 — plus **2** from argparse, for an unknown verb or a
+missing argument, which is refused before any command runs.
 
 ## The config
 
@@ -139,6 +140,18 @@ what the inventory reports as `configured_address`, and its gateway is the only
 one that becomes a default route — a second NIC keeps its address and its
 gateway is checked against its own subnet, but does not add a second route for
 the guest to choose between.
+
+**Inside the guest the interfaces are called `nic0`, `nic1`, …** — not `eth0` or
+`ens3`. vcows writes a cloud-init `network-config` v2 document keyed on those
+names and matched by MAC, and cloud-init renames each interface to the key it
+matched. It follows the order of `nics:` in the config. Anything in the golden
+image keyed to a predictable kernel name — a firewall zone, an `ifcfg` file, a
+monitoring check — sees the renamed device.
+
+**IPv4 only, in practice.** The schema accepts an IPv6 `ip_cidr` and validates it
+correctly, but the generated `network-config` sets `dhcp6: false` and writes the
+default route as `0.0.0.0/0`, so a v6 primary NIC gets its address and no route.
+Give NICs v4 addresses at v0.1.
 
 **`vcpus`, `memory_mib` and `disk_gb` have ceilings** — 512, 4 TiB and 64 TiB —
 so a fat-fingered zero is refused before the run creates anything. They are a

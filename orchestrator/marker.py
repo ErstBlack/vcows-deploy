@@ -55,19 +55,34 @@ class Marker:
     """Logical name from the config, not the hypervisor name. Survives a rename."""
 
     deployment: str
-    """Which deployment stamped this VM.
+    """Which deployment stamped this VM. Read on both destructive paths.
 
-    Recorded from 0.1.0.0 so the data exists before any VM is marked. v0.1
-    destroy scope stays host-wide, so nothing reads this for a destroy decision
-    yet -- but a later release can filter on it with no marker migration and no
-    "what does absent mean" ambiguity.
+    ``decide()`` refuses a deploy when a name we want is held by a marker from a
+    different deployment, and ``cmd_destroy`` tears down only the targets whose
+    marker matches, reporting each skip and whose it was. So this is not
+    decorative: it is what bounds the blast radius of both verbs, and D36 named
+    the config's ``deployment`` key the blast radius for that reason.
+
+    Recorded from 0.1.0.0 (D4) so the data existed before any VM was marked --
+    which is what let destroy become scoped with no marker migration and no "what
+    does absent mean" ambiguity. Empty when parsed from a marker written before
+    the field existed, never ``None``.
     """
 
     id: str
     """Stable machine identity, ``uuid5(VCOWS_NS, f"{deployment}/{name}")``."""
 
     v: str = VERSION
-    """vcows version that created it. Also the format discriminator."""
+    """vcows version that created it. Provenance, not a discriminator.
+
+    Nothing branches on it. ``MARKER_XMLNS`` is what says "this is a vcows
+    marker" -- ``preflight`` finds the element by ``{urn:vcows:1}vcows`` and a
+    document without that namespace is simply not ours -- and the parser
+    tolerates unknown keys rather than gating on a version. Reading ``v`` as a
+    discriminator would mean a 0.2 marker had to be recognised by a 0.1 binary
+    that has never heard of 0.2, which is the compatibility trap the namespace
+    and ``from_json`` between them avoid.
+    """
 
     @classmethod
     def for_vm(cls, name: str, deployment: str) -> Marker:

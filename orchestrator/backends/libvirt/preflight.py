@@ -98,13 +98,21 @@ def marker_of(root: ET.Element) -> Marker | None:
 
 
 def disks_of(root: ET.Element) -> tuple[str, ...]:
-    """Every source path this domain owns, for teardown.
+    """Every **file-backed** source path this domain owns, for teardown.
 
     Both ``disk`` and ``cdrom`` (D17) -- without the cdrom, every per-VM seed ISO
     is orphaned on teardown. Never a ``<backingStore>``, and never a device with no
     ``<source>``: an empty cdrom tray is normal (every domain on the rig has one)
     and must yield nothing rather than a ``None`` that destroy later tries to
     delete.
+
+    **``source/@file`` only.** A network, block or volume-pool disk has a
+    ``<source>`` with a different attribute and yields nothing here, so it is
+    never reported and never deleted. Correct for what vcows creates -- every
+    disk it makes is a file in a dir/fs pool -- and the safe direction for
+    anything else, since destroy deletes only what this returns. But it means
+    ``preflight``'s disk report is silent about a disk somebody attached by
+    hand, so a VM torn down by vcows can leave one behind with no line saying so.
     """
     paths = []
     for disk in root.findall("devices/disk"):
@@ -395,6 +403,14 @@ def orphan_volumes(
     deterministically from the logical name is what makes this detectable at all,
     and the fix is deliberately manual: the operator deletes one file. Building
     recovery machinery here is how the last version started sprawling.
+
+    **Bounded to this config's VMs.** It asks about the two names each configured
+    VM is entitled to and nothing else, so an orphan left by a VM since removed
+    from the config is invisible to it -- and removing a VM from the config is
+    the one thing this tool tells operators does not delete anything. Widening it
+    to every volume in the pool would mean deciding about volumes on a shared
+    pool that were never vcows's, which is what ``orphan_volumes`` exists to
+    avoid asserting.
     """
     problems = []
     for vm in cfg["vms"]:

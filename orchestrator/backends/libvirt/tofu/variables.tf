@@ -7,7 +7,7 @@
 
 variable "uri" {
   type        = string
-  description = "libvirt connection URI. qemu+ssh:// form, with the SSH options vcows assembled from ssh_keyfile and known_hosts. The operator never supplies a query string, and never a password: both are refused before render."
+  description = "libvirt connection URI. qemu+ssh:// form, carrying no SSH options at all: the provider runs ssh, so ssh_keyfile and known_hosts reach it through ~/.ssh/config, which the container entrypoint writes. The operator never supplies a query string, and never a password: both are refused before render."
 }
 
 variable "pool" {

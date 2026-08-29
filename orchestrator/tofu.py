@@ -209,10 +209,12 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
 def init(workdir: Path) -> Result:
     """Provider installation from whatever ``TF_CLI_CONFIG_FILE`` points at.
 
-    R6 wants the image never to do this at runtime, and Stage 5 decides whether the
-    run directory is seeded from a pre-initialised tree instead. This stays either
-    way: something has to produce ``.terraform/`` in a directory that is new on
-    every deploy (D40).
+    R6 asked for the image never to do this at runtime; D48 decided otherwise and
+    Stage 5 shipped that decision. The image resolves from ``/opt/tofu-mirror``
+    with no ``direct`` block, and ``TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache``
+    is warmed at build time, so this runs offline and produces symlinks rather
+    than a 26 MB unpack. It has to run: D40 makes every deploy a new directory,
+    and something has to put ``.terraform/`` in it.
     """
     return _run("init", workdir)
 

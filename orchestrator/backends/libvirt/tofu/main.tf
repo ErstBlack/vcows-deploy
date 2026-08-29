@@ -211,6 +211,16 @@ resource "libvirt_domain" "vm" {
     // site is unreachable and un-inspectable, and the recovery is hand-editing
     // domain XML on the hypervisor. Omitting `source` leaves the char device
     // type unset, which libvirt fills in as `pty`.
+    //
+    // The acceptance run did not bear D26 out. `virsh console` needs a
+    // controlling TTY, and a pty keeps no scrollback, so it produced nothing on
+    // the guest that actually needed diagnosing -- what found defect 5 was SSH
+    // into the guest, which only worked because the guest was reachable at all.
+    // A pty console is therefore worth roughly nothing for the failure it was
+    // added for. It stays because removing it costs a redeploy of every VM and
+    // buys nothing either; `<log file=.../>` on the serial device would give the
+    // boot transcript for free, and is open (D26, acceptance.md "Still open")
+    // because nobody has decided who owns the host path it writes to.
     serials  = [{ target = { port = 0 } }]
     consoles = [{ target = { type = "serial", port = 0 } }]
 

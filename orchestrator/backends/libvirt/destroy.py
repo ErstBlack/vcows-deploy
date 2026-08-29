@@ -52,8 +52,10 @@ UNDEFINE_NVRAM = 4  # since 1.2.9
 UNDEFINE_CHECKPOINTS_METADATA = 16  # since 5.6.0
 UNDEFINE_TPM = 32  # since 8.9.0
 
-#: Never dropped. All three predate libvirt 1.2.9, so no supported target rejects
-#: them -- and dropping ``NVRAM`` makes an EFI domain refuse to undefine at all.
+#: Never dropped. ``NVRAM`` arrived *in* 1.2.9 and the other two before it, so
+#: 1.2.9 is the floor this mask needs -- comfortably below any supported target,
+#: since RHEL 8 shipped 4.5. And dropping ``NVRAM`` does not degrade: an EFI
+#: domain refuses to undefine at all without it.
 FLOOR = UNDEFINE_MANAGED_SAVE | UNDEFINE_SNAPSHOTS_METADATA | UNDEFINE_NVRAM
 
 #: ``version`` here is libvirt's packed form: major * 1e6 + minor * 1e3 + release.

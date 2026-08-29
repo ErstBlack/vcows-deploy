@@ -68,7 +68,7 @@ ARG PROVIDER_VERSION=0.9.8
 ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
 
 # Taken from the manifest's own licence fields rather than asserted, and
-# deliberately not exhaustive -- the true conjunction across 161 packages runs to
+# deliberately not exhaustive -- the true conjunction across roughly 160 packages runs to
 # thousands of characters and is unreadable as a label. This names what actually
 # constrains a redistributor; `/opt/vcows/manifest.json` is the authoritative
 # per-package record. GPL-2.0-only is in here on purpose: glibc, util-linux-core,

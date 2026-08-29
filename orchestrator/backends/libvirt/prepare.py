@@ -82,6 +82,19 @@ def _network_config(vm: dict, deployment: str) -> dict:
     ``gateway`` stays required on every NIC even so -- it is what the address is
     checked against, and making a required field optional later is the
     backward-compatible direction.
+
+    **The v6 half is not configured.** ``dhcp6`` is off and the default route is
+    hardcoded to ``0.0.0.0/0``, so this emits a v4 document and nothing else. The
+    schema is wider than that: ``_parse_interface`` takes both families and the
+    network/broadcast check reasons about ``/127`` and ``/128``, so a v6
+    ``ip_cidr`` validates cleanly, reaches here, and produces a guest with an
+    address and no route. That is a gap, not a rejection -- closing it means
+    deciding what a dual-stack primary means for ``configured_address`` and for
+    ``address_conflicts``, which is more than a second route literal.
+
+    **The guest's interfaces are renamed.** The keys are ``nic0``, ``nic1``, and
+    cloud-init renames each matched interface to its key, so nothing in the
+    golden image can rely on ``eth0`` or a predictable kernel name.
     """
     default_route = primary_index(vm)
     ethernets = {}

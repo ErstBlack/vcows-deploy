@@ -3,7 +3,10 @@
 Core carries ``backend`` (an enum built from the registry) and
 ``target: {<name>: <sub-schema from that backend>}``, wired together with a
 generated ``if/then`` per registered backend. Adding a backend adds a schema file
-inside its own package and touches nothing here.
+inside its own package and touches nothing here -- **except ``IMAGE_SCHEMA``**,
+which is not composed from the registry and whose field names (``source_qcow2``,
+``base_volume_name``) are qcow2 and libvirt terms. It is the one block a second
+backend has to open this file for. See ``backends/base.py``.
 
 **``vms`` stays loose on purpose.** Core requires only what it needs to drive the
 pipeline -- a name. The per-VM shape (vcpus, disks, and especially NICs, whose

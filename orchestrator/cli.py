@@ -13,7 +13,11 @@ created 0700 and documented as an artifact to handle like the config it came fro
 while the ISOs sit unencrypted beside it, at the cost of a passphrase that, if
 lost, makes unreadable a file D23 already calls disposable.
 
-**Exit codes are 0 and 1.** Anything richer is a contract with no consumer at v0.1.
+**Exit codes are 0 and 1** -- from vcows. Anything richer is a contract with no
+consumer at v0.1. argparse is the exception and it is not ours: an unknown verb,
+a missing config path or a bad flag never reaches a command function, and
+``parser.error`` exits **2** before it could. So a wrapper script testing for 1
+sees a usage mistake as success.
 """
 
 from __future__ import annotations
@@ -380,10 +384,18 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
 def _stage_module(source: Path, workdir: Path) -> None:
     """Copy the static module into the run directory.
 
-    The lock file travels with it when the module ships one. Today the libvirt
-    module does not -- the committed lock lives at ``docs/provider-0.9.8.lock.hcl``
-    and the constraint is pinned exactly -- and Stage 5 replaces this copy with a
-    pre-initialised tree anyway (R6).
+    The lock file travels with it when the module ships one, and in the image it
+    does: the Containerfile copies ``docs/provider-0.9.8.lock.hcl`` in as the
+    module's ``.terraform.lock.hcl``. A checkout has no lock beside the ``.tf``
+    files, so the dev-box path stages three files and the image path stages four.
+
+    **This copy is not superseded.** R6 asked whether the run directory could be
+    seeded from a pre-initialised tree instead; D48 decided against it, and what
+    shipped is the mirror plus a plugin cache warmed at build time
+    (``TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache``), so ``init`` symlinks into
+    that cache rather than unpacking a 26 MB provider into every run directory.
+    Every deploy still stages and still initialises. Reading this as transitional
+    and removing it breaks every deploy.
 
     **Module content this does not copy is refused, not skipped.** It copies two
     patterns, so a ``.tftpl``, a ``modules/`` subdirectory or a ``main.tf.json``

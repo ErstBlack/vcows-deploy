@@ -77,7 +77,7 @@ One canonical JSON object, so there is a single serializer and parser regardless
 
 | Field | Purpose |
 |---|---|
-| `v` | vcows version that created it, four-digit semver. Also the format discriminator. |
+| `v` | vcows version that created it, four-digit semver. Provenance only — nothing branches on it. `MARKER_XMLNS` is the discriminator. |
 | `deployment` | Which deployment stamped this VM. Empty when parsed from a marker written before the field existed, never `None`, so callers need no null check. Destroy is scoped by it. |
 | `name` | Logical name from the config, not the hypervisor name. Survives a rename. |
 | `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, "{deployment}/{name}")` — so it regenerates identically with no state file. A random UUID would only be useful when state exists, which defeats the purpose. The deployment is in the input because this is also the seed ISO's `instance-id`; see *Accepted gaps*. |
@@ -136,6 +136,10 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 
 **Orphan volume on a mid-create crash.** Volumes cannot carry markers, so if a create dies between the volume and the domain that references it, the qcow2 has no marker and no owning domain. The next run tries to create it, hits a name collision, and fails. Do not build recovery machinery: name volumes deterministically from the logical name, and have preflight report "volume exists with no owning domain" and refuse, so the operator deletes one file rather than debugging a raw libvirt error.
 
+**The orphan check is bounded to the config's VMs.** `orphan_volumes` iterates `cfg["vms"]` and asks about the two names each configured VM is entitled to, so an orphan left behind by a VM since removed from the config is invisible to it. That is the same config edit the README says does not delete the VM — the volume survives too, and nothing reports it. Widening the check to every volume in the pool was rejected for the reason the refusal message itself gives: on a shared pool vcows cannot attribute a volume it did not create, so it would be refusing deploys over somebody else's files. The bound is real and the fix is a `prune` verb that does not exist.
+
+**Whether `UNDEFINE_NVRAM` actually removes the varstore is unverified.** The flag is passed on every undefine and never dropped, and libvirt documents it as deleting the NVRAM file — but no run here has undefined an EFI domain with a pinned loader and then checked whether `/var/lib/libvirt/qemu/nvram/<name>_VARS.fd` is gone. Nor is it known what a flag-shed retry down to `FLOOR` leaves behind on RHEL 9 EUS. If the varstore survives, a redeploy under the same name inherits the previous VM's UEFI variables, including its boot entries. It needs a hypervisor, not a reading, and it sits on the review's Blocked list for that reason.
+
 **Preflight-then-create is TOCTOU.** Two operators running against the same hypervisor concurrently will race. libvirt's own name uniqueness catches it, so the loser gets a hard error mid-apply rather than corruption — acceptable for v0.1, but named here so it is not a surprise.
 
 **The base image is never cleaned up.** It is created as an OpenTofu resource and so lives in Tofu's state, but destroy runs through Python by marker and volumes are unmarked, so neither path removes it. This is intended — it is shared across deployments on that host and re-pushing multi-GB images over the SSH tunnel is the cost being avoided. Sweeping stale base images is a `prune` concern.
@@ -161,6 +165,8 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 ## 3. Expansion seams
 
 Adding backend two should require no edit to any core file. Second backend is undecided, so these are sized to the union of what vSphere and Proxmox would need. Nothing speculative is implemented — every seam is a signature or a directory boundary.
+
+**One block does not hold, and it is the same one in both places.** `config.IMAGE_SCHEMA` is written in qcow2 and libvirt terms — `source_qcow2` and `base_volume_name` are the field *names* — and it is wired into the core schema directly rather than composed from the registry the way `target` is. A backend wanting an OVA path or a template id edits `config.py`. The format reader behind it, `orchestrator/qcow2.py`, is a core module imported by exactly one backend. That is two core sites, not a layer, and neither is worth moving before there is a second backend to move it for. It is recorded rather than fixed so the seam claim above is read as "one known exception" rather than "verified complete".
 
 ### A backend is a package
 

@@ -3,6 +3,16 @@
 Adding a second backend should require no edit to any core file. Every method on
 ``Backend`` is a signature, not an implementation.
 
+**One core block is the exception, and it is known.** ``config.IMAGE_SCHEMA`` is
+written in qcow2-and-libvirt terms -- ``source_qcow2`` and ``base_volume_name``
+are the field *names*, not just their meanings -- and unlike ``target`` it is
+wired into the core schema directly rather than composed from the registry. A
+vSphere or Proxmox backend wanting an OVA or a template id opens ``config.py``.
+The reader behind it, ``orchestrator/qcow2.py``, is core too and is imported by
+exactly one backend. Neither is speculative to fix and both are cheap to move
+when there is a second backend to move them for; they are named here so the "no
+core edit" claim is not read as complete.
+
 **No default implementations, deliberately.** The thing to avoid is *noop
 defaults*, not ABCs: a backend that forgets ``destroy`` and inherits a no-op
 deletes nothing and exits successfully; one that forgets ``preflight`` skips the

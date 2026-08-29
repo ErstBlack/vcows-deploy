@@ -314,14 +314,20 @@ def _check_target(target: dict) -> list[Problem]:
         )
     if parts.query:
         # The single most important check here. `no_verify=1` disables SSH host
-        # key checking, and `keyfile=`/`known_hosts=` would silently override
-        # what vcows appends from ssh_keyfile/known_hosts.
+        # key checking, and neither `keyfile=` nor `known_hosts=` is a parameter
+        # vcows would otherwise be setting: `connection_uri` replaces the scheme
+        # and clears the query, and the credentials reach ssh through
+        # `~/.ssh/config` instead. So an operator query string is not overriding
+        # vcows -- it is the only thing on the connection nothing else checks.
         problems.append(
             Problem(
                 Severity.ERROR,
-                f"URI must carry no query string, got {parts.query!r}. vcows "
-                f"builds it from ssh_keyfile and known_hosts; setting it here "
-                f"can disable host key verification.",
+                f"URI must carry no query string, got {parts.query!r}. Neither "
+                f"client reads credentials from it -- both run ssh, so "
+                f"ssh_keyfile and known_hosts travel via ~/.ssh/config, which "
+                f"the container entrypoint writes. Setting it here can only "
+                f"weaken the connection: no_verify=1 disables host key "
+                f"verification.",
                 where=where,
             )
         )

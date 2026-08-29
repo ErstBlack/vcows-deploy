@@ -1,12 +1,14 @@
 """Version coherence.
 
 The four-digit Major.Minor.Patch.Hotfix format is non-negotiable, and several
-artefacts carry it. They are asserted to agree here so they cannot drift apart
-silently -- a marker claiming one version while the image tag claims another is
-the kind of thing nobody notices until an upgrade goes wrong.
+artefacts carry it. Each is asserted against ``orchestrator.VERSION``, because a
+marker claiming one version while the image tag claims another is the kind of
+thing nobody notices until an upgrade goes wrong.
 
-The consumers that do not exist yet (image tag, OCI label, build manifest) are
-picked up as their stages land.
+Not all of them are asserted *here*. ``orchestrator/__init__.py`` lists all seven
+consumers and where each is checked; this file covers the two that are read out
+of files on disk rather than produced by running code, and the OCI label and the
+build manifest are `test_image.py`'s, behind the image gate.
 """
 
 from __future__ import annotations
