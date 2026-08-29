@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vcows-deploy"
+version = "0.1.0.0"
+description = "Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh"
+requires-python = ">=3.12"
+
+# Declared for tooling and for the build manifest. **The image installs none of
+# this via pip.** Every runtime dependency exists as an RPM, so the container
+# installs them from a local repo mirror and carries no pip, no virtualenv and no
+# vendored wheels -- one air-gap mechanism instead of two:
+#
+#   jsonschema  -> python3-jsonschema  (appstream)
+#   PyYAML      -> python3-pyyaml      (appstream)
+#   pycdlib     -> python3-pycdlib     (epel; 1.16.0 verified against the A1 API)
+#   libvirt     -> python3-libvirt     (appstream)
+#
+# `libvirt-python` is absent from this list on purpose: PyPI publishes sdist
+# only, so pip would need gcc and network access. Because there is no virtualenv
+# in the image, the --system-site-packages trap that would otherwise hide the RPM
+# binding cannot arise there.
+#
+# A *dev* environment hits it twice, so create it exactly like this:
+#
+#     uv venv --python /usr/bin/python3 --system-site-packages
+#
+# Without --system-site-packages the RPM binding is invisible. And without the
+# explicit interpreter, uv installs its own managed CPython (3.13 at the time of
+# writing), whose site-packages contains no RPMs at all -- so the flag appears to
+# work while `import libvirt` still fails. `uv sync` cannot express either, which
+# is why this project uses `uv venv` + `uv pip install` rather than a lockfile.
+dependencies = [
+    "jsonschema>=4.19",
+    "PyYAML>=6.0",
+    "pycdlib>=1.16",
+]
+
+[project.scripts]
+vcows = "orchestrator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.16", "ty>=0.0.75"]
+
+[tool.setuptools.packages.find]
+include = ["orchestrator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# Spike scripts are archived evidence, quoted verbatim in docs/spikes.md.
+# Reformatting them would make the file and the doc disagree.
+extend-exclude = ["docs/spikes"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# SIM300 wants the constant on the right. In a pinning assertion the constant
+# under test is the subject, and `assert VCOWS_NS == <expected>` reads better
+# than the inversion.
+"tests/*" = ["SIM300"]
+
+[tool.ty.src]
+# Archived spike evidence, not package code (mirrors ruff's extend-exclude).
+exclude = ["docs/spikes"]
+
+[tool.ty.environment]
+python-version = "3.12"
+# The libvirt binding comes from the python3-libvirt RPM and is only visible
+# through a --system-site-packages venv (see the dependencies note above), so
+# point ty at the same interpreter rather than a uv-managed one.
+python = ".venv"
