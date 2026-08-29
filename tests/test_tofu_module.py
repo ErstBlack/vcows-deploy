@@ -18,58 +18,17 @@ hypervisor. These two run with no network at all.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from tests.conftest import MIRROR, REPO, TOFU, needs_tofu, tofu_env
+
 MODULE = REPO / "orchestrator" / "backends" / "libvirt" / "tofu"
-MIRROR = REPO / ".tools" / "tofu-mirror"
 LOCK = REPO / "docs" / "provider-0.9.8.lock.hcl"
 GOLDEN = REPO / "tests" / "golden" / "libvirt.tfvars.json"
-
-TOFU = shutil.which("tofu")
-
-needs_tofu = pytest.mark.skipif(
-    TOFU is None or not MIRROR.is_dir(),
-    reason=(
-        "needs `tofu` on PATH and a provider mirror at .tools/tofu-mirror; "
-        "see the Stage 2 prerequisites in the plan"
-    ),
-)
-
-
-def tofu_env(workdir: Path) -> dict:
-    """A CLI config pointing at the mirror only.
-
-    `/etc/tofurc` is not a path OpenTofu reads, and under a rootless container a
-    UID absent from /etc/passwd gets HOME=/, so even a correct ~/.tofurc is
-    missed. TF_CLI_CONFIG_FILE is the only reliable lever (findings.md R6).
-    """
-    rc = workdir / "tofurc"
-    rc.write_text(
-        f"provider_installation {{\n"
-        f"  filesystem_mirror {{\n"
-        f'    path    = "{MIRROR}"\n'
-        f'    include = ["registry.opentofu.org/dmacvicar/libvirt"]\n'
-        f"  }}\n"
-        f"  direct {{\n"
-        f'    exclude = ["registry.opentofu.org/dmacvicar/libvirt"]\n'
-        f"  }}\n"
-        f"}}\n"
-    )
-    return {
-        **os.environ,
-        "TF_CLI_CONFIG_FILE": str(rc),
-        "CHECKPOINT_DISABLE": "1",
-        # Residual egress should fail fast rather than hang at a site.
-        "no_proxy": "*",
-        # Diagnostics are matched as text, so keep the ANSI out of them.
-        "NO_COLOR": "1",
-    }
 
 
 def run(args, workdir, env, timeout=180):

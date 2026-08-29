@@ -72,16 +72,19 @@ The durable record of what was created. The state file is a convenience; this is
 One canonical JSON object, so there is a single serializer and parser regardless of backend:
 
 ```json
-{"v":"0.1.0.0","name":"app01","id":"3f2b8c1e-..."}
+{"v":"0.1.0.0","deployment":"lab-a","name":"app01","id":"3f2b8c1e-..."}
 ```
 
 | Field | Purpose |
 |---|---|
 | `v` | vcows version that created it, four-digit semver. Also the format discriminator. |
+| `deployment` | Which deployment stamped this VM. Empty when parsed from a marker written before the field existed, never `None`, so callers need no null check. Destroy is scoped by it. |
 | `name` | Logical name from the config, not the hypervisor name. Survives a rename. |
 | `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, logical_name)` — so it regenerates identically with no state file. A random UUID would only be useful when state exists, which defeats the purpose. |
 
-**Deliberately absent for now**, both revisitable: a `deployment` field (destroy scope is currently every vcows VM on the host — see below), and disk paths (read `devices/disk/source/@file` from the live domain XML before undefining, and delete all attached disks).
+`deployment` was written down as deliberately absent while destroy was host-wide. It is **present from 0.1.0.0** (D4): stamping it costs nothing, and adding it later would have meant a marker migration on every VM already deployed. Destroy is now scoped by it — see the rules below.
+
+**Deliberately absent, and staying that way:** disk paths. They are read from the live domain XML (`devices/disk/source/@file`, plus `cdrom` for the seed ISO) immediately before undefining, which is correct even for a VM whose disks changed after creation.
 
 **Write the parser to ignore unknown keys from day one**, or the extensibility is theoretical. This is the same forward-compatibility promise the original document praises OpenTofu's JSON formats for, applied to your own artifact.
 
@@ -90,14 +93,14 @@ One canonical JSON object, so there is a single serializer and parser regardless
 **Text fields** (vSphere annotation, Proxmox description) — own line, prefixed so it is findable and removable without clobbering human-written text sharing the field:
 
 ```
-vcows-managed: {"v":"0.1.0.0","name":"app01","id":"3f2b8c1e-..."}
+vcows-managed: {"v":"0.1.0.0","deployment":"lab-a","name":"app01","id":"3f2b8c1e-..."}
 ```
 
 **libvirt** — text content of a single namespaced element, satisfying libvirt's requirement that `<metadata>` have at least one *element* child, with a byte-identical payload:
 
 ```xml
 <metadata>
-  <vcows xmlns="https://example.invalid/vcows">{"v":"0.1.0.0","name":"app01","id":"3f2b8c1e-..."}</vcows>
+  <vcows xmlns="urn:vcows:1">{"v":"0.1.0.0","deployment":"lab-a","name":"app01","id":"3f2b8c1e-..."}</vcows>
 </metadata>
 ```
 
@@ -113,7 +116,9 @@ Prior art: kcli uses namespaced libvirt domain metadata for exactly this.
 
 **Identity is the marker.** Discovery enumerates by marker and that set is authoritative. A renamed VM is still ours and still destroyable. A VM whose marker was edited is user error and out of scope.
 
-**Destroy scope is currently every vcows-marked VM on the target.** Accepted for v0.1 on the assumption of one deployment per hypervisor. **This is expected to change** — a second deployment sharing a hypervisor makes this a data-loss event — so the marker format must accommodate a `deployment` field, and adding one is a version bump.
+**Destroy scope is this deployment's marked VMs, not every marked VM on the target.** An earlier revision of this section accepted host-wide scope for v0.1 on the assumption of one deployment per hypervisor, and named the change it was waiting for: a `deployment` field in the marker. D4 supplied that from 0.1.0.0, so by Stage 4 the scope was a filter on data already present rather than a format change. Host-wide would have made a second deployment sharing a hypervisor a data-loss event, and it is not symmetric with the create side, where `decide()` already refuses a VM belonging to another deployment.
+
+Marked VMs from other deployments are **reported as found and skipped, with their deployment names**. That report is where the cost of scoping shows up: `deployment` defaults to the config's filename stem, so renaming a config orphans its VMs, and an operator seeing "belongs to deployment 'lab-a', not 'lab-b'" can tell what happened. A `--all` flag is deferred until something needs it — adding it later is backward compatible, removing it would not be.
 
 **Name collisions are a create-time failure, not an ownership question.** libvirt rejects a duplicate name itself. Preflight should check names anyway so the operator gets a clear message instead of a raw libvirt error, but the check does not decide ownership.
 
@@ -228,7 +233,7 @@ So a live connection has to ask — but `preflight` is **already** asking. The o
 class Discovered:
     vms: list[Existing]
     artifacts: dict[str, Any] = field(default_factory=dict)  # opaque to core
-    problems: list[Problem] = field(default_factory=list)    # wrong with the target
+    problems: list[Problem] = field(default_factory=list)  # wrong with the target
 ```
 
 `problems` carries what is wrong with the *target* rather than with the config: a missing or inactive pool, an orphaned volume, an address libvirt has already leased or reserved, a base image whose size disagrees with the local one. None of those are ownership questions, so `decide()` cannot reach them, and every one of them must stop a deploy — so there has to be a channel, and a list rather than an exception for the same reason `config.load` reports every fault at once. An operator at an air-gapped site should not round-trip once per problem.
@@ -275,7 +280,7 @@ Two rules to settle while drafting: `nics` is a list but the inventory carries o
 
 **Version bump rules** — deferred. The four-digit format is fixed; which digit a marker-format or schema-breaking change bumps can wait until there is a second release.
 
-**F12 — Credentials in cleartext, deliberately temporary.** Consequence to keep visible: `config.yaml` becomes a secret artifact. It cannot be committed or shipped as an example, and its contents flow into the emitted tfvars and the state file. Enable OpenTofu's native state encryption regardless — it is one block and free.
+**F12 — Credentials in cleartext, deliberately temporary.** Consequence to keep visible: `config.yaml` becomes a secret artifact. It cannot be committed or shipped as an example, and its contents flow into the emitted tfvars and the state file. **State encryption is not enabled, and the earlier recommendation to enable it "regardless, it is one block and free" was wrong on both counts.** It is cheaper than that — `TF_ENCRYPTION` is an env var and needs no module change — and it protects the wrong artifact. The secret is `user_data`, and `user_data` lives in the seed ISO, which the run directory keeps deliberately so a VM that will not boot can be debugged from the media it was given. Encrypting the state beside it buys nothing, and a lost passphrase makes unreadable a file that is disposable by design (verified: an encrypted state without its passphrase cannot be read). What is done instead: the run directory is created `0700` and documented as carrying secrets, which is the same handling this paragraph already demands of `config.yaml`.
 
 **R1 — `qemu+ssh://` prerequisites.** Most of the original rootless/SELinux problem evaporates with no local socket. What remains: an SSH private key inside the container at 0600 under the UID map, a `known_hosts` policy (not `no_verify=1`), an `ssh` binary in the image, and — a hypervisor-side prerequisite worth documenting — `nc` or `virt-ssh-helper` present on the *hypervisor*. Note that `vol-upload` over `qemu+ssh://` streams the whole image through the tunnel with no resume; base-plus-overlay means that cost is paid once per host rather than per VM.
 
@@ -362,6 +367,8 @@ That document is archived as background. It is a good survey, but it was written
 | §2 | `dmacvicar/libvirt` — Apache-2.0, unqualified | True only for ≤ 0.8.3. 0.9.x ships no LICENSE file, and `main` has no common ancestor with `v0.8.3`. See R3. |
 | §13 | OpenTofu 1.11.6 / 1.12.0 | 1.12.6 current; 1.11.x support ended 2026-08-01. |
 | §8 | TRACEPARENT does not propagate; issue #3936 open | Closed 2026-04-15 and shipped in 1.13.0. §5.3's "human output or JSON, pick one" is also stale — `-json-into` shipped in 1.12.0 as a general CLI argument. |
+| §5.3 | `TofuRunner`: `Popen` with `-json`, read stdout line by line | Measured against 1.12.6 and retired. `-json-into=<file>` writes the same stream to a file *while* human-readable output still goes to stdout, on `plan`, `apply`, `init` and `output` — so tofu inherits stdout and the file is parsed after exit. That removes the NDJSON reader, the two-pipe deadlock and any threading, and it keeps the operator's view of a multi-GB upload. |
+| — | (not claimed anywhere, and easy to assume) | **`NO_COLOR` is not honoured by OpenTofu 1.12.6.** Colour is written even when stdout is a file — 11 escape sequences into a redirected plan. Only the `-no-color` flag suppresses it, so anything capturing or piping tofu's output must pass the flag rather than set the variable. |
 | §2, §9, §12 | `community.vmware` needs pyVmomi; pin pyVmomi | 6.x replaced pyVmomi with `vcf-sdk`. Irrelevant to this MVP, but the mitigation is obsolete in three places. |
 | §3, §12.1 | `:9` tag differs only in `FROM` and Python version | Rocky 9's platform Python is 3.9, `python3-libvirt` there is built against 3.9 only, and current ansible-core needs 3.12+. Moot — Haswell confirmed, Rocky 10 only. |
 | §4.1 | Bind mounts need `:Z` | `:Z` applies a *private exclusive* label; on a shared `/srv/images` it relabels the directory out from under libvirtd. Use `:z` for shared read-only mounts. Largely moot under `qemu+ssh://`. |

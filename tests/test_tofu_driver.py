@@ -1,0 +1,250 @@
+"""The driver, against a `tofu` that is not OpenTofu.
+
+A fake binary on PATH is the only way to pin the things that actually go wrong
+here: which flags are passed, what the child's environment is, and whether the
+JSON stream or the exit code is treated as the authority. None of that needs a
+real OpenTofu, and none of it should skip when one is absent -- `tests/
+test_tofu_cli_gate.py` is where the real binary earns its place.
+
+The fake records its argv and environment and writes whatever stream the test
+asks for, so a test can produce a diagnostic, a change summary, a truncated file
+or a non-zero exit without arranging for OpenTofu to be unhappy.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from orchestrator import tofu
+
+FAKE = """#!/usr/bin/env python3
+import json, os, sys
+
+argv = sys.argv[1:]
+with open(os.environ["FAKE_TOFU_LOG"], "a") as fh:
+    fh.write(json.dumps({
+        "argv": argv,
+        "env": {k: os.environ.get(k) for k in (
+            "CHECKPOINT_DISABLE", "TF_IN_AUTOMATION", "TF_CLI_CONFIG_FILE"
+        )},
+    }) + "\\n")
+
+for arg in argv:
+    if arg.startswith("-json-into="):
+        with open(arg.split("=", 1)[1], "w") as fh:
+            fh.write(os.environ.get("FAKE_TOFU_STREAM", ""))
+
+sys.stdout.write(os.environ.get("FAKE_TOFU_STDOUT", ""))
+sys.exit(int(os.environ.get("FAKE_TOFU_EXIT", "0")))
+"""
+
+DIAGNOSTIC = json.dumps(
+    {
+        "@level": "error",
+        "type": "diagnostic",
+        "diagnostic": {
+            "severity": "error",
+            "summary": "Volume Creation Failed",
+            "detail": "storage volume 'app01.qcow2' exists already",
+            "address": 'libvirt_volume.overlay["app01"]',
+        },
+    }
+)
+
+CHANGES = json.dumps(
+    {
+        "@level": "info",
+        "type": "change_summary",
+        "changes": {"add": 3, "change": 0, "remove": 0, "operation": "plan"},
+    }
+)
+
+
+@pytest.fixture
+def fake_tofu(tmp_path, monkeypatch):
+    """A `tofu` on PATH that does what the test tells it to."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    binary = bindir / "tofu"
+    binary.write_text(FAKE)
+    binary.chmod(0o755)
+
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_TOFU_LOG", str(log))
+    return log
+
+
+def calls(log: Path) -> list[dict]:
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+@pytest.fixture
+def workdir(tmp_path):
+    d = tmp_path / "work"
+    d.mkdir()
+    return d
+
+
+# -- what is on the command line -------------------------------------------
+
+
+def test_every_command_chdirs_and_refuses_to_prompt(fake_tofu, workdir):
+    """A prompt at an air-gapped site is a hang, not a question."""
+    tofu.init(workdir)
+    tofu.plan(workdir, workdir / "plan.bin")
+    tofu.apply(workdir, workdir / "plan.bin")
+
+    for call in calls(fake_tofu):
+        assert f"-chdir={workdir}" in call["argv"]
+        assert "-input=false" in call["argv"]
+
+
+def test_the_machine_stream_goes_to_a_file_beside_the_state(fake_tofu, workdir):
+    """`-json-into` rather than `-json`: the operator keeps stdout."""
+    tofu.plan(workdir, workdir / "plan.bin")
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert f"-json-into={workdir / 'plan.json'}" in argv
+
+
+def test_plan_writes_a_plan_file(fake_tofu, workdir):
+    tofu.plan(workdir, workdir / "plan.bin")
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert "-out" in argv and str(workdir / "plan.bin") in argv
+
+
+def test_apply_takes_the_saved_plan_and_never_auto_approves(fake_tofu, workdir):
+    """A saved plan needs no approval, and asking for one anyway would let a
+    future refactor drop the plan file without the flag noticing."""
+    tofu.apply(workdir, workdir / "plan.bin")
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert str(workdir / "plan.bin") in argv
+    assert "-auto-approve" not in argv
+
+
+def test_no_color_when_stdout_is_not_a_terminal(fake_tofu, workdir):
+    """1.12.6 ignores NO_COLOR and writes escapes even into a file, so this flag
+    is the only thing between a piped log and a screenful of ANSI."""
+    tofu.init(workdir)
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert "-no-color" in argv
+
+
+def test_colour_is_kept_when_stdout_is_a_terminal(fake_tofu, workdir, monkeypatch):
+    """The other half: an operator watching a multi-GB upload should see tofu
+    exactly as they would running it by hand."""
+
+    class Terminal:
+        def isatty(self):
+            return True
+
+        def write(self, _text):
+            return 0
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr("sys.stdout", Terminal())
+    tofu.init(workdir)
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert "-no-color" not in argv
+
+
+def test_the_child_environment_is_offline_and_non_interactive(fake_tofu, workdir):
+    tofu.init(workdir)
+    (env,) = [c["env"] for c in calls(fake_tofu)]
+    assert env["CHECKPOINT_DISABLE"] == "1"
+    assert env["TF_IN_AUTOMATION"] == "1"
+
+
+def test_the_cli_config_is_passed_through_untouched(fake_tofu, workdir, monkeypatch):
+    """TF_CLI_CONFIG_FILE is what points OpenTofu at the mirror (R6). The driver
+    must never invent one: the image sets it, and so do the tests."""
+    monkeypatch.setenv("TF_CLI_CONFIG_FILE", "/opt/tofu/tofurc")
+    tofu.init(workdir)
+    (env,) = [c["env"] for c in calls(fake_tofu)]
+    assert env["TF_CLI_CONFIG_FILE"] == "/opt/tofu/tofurc"
+
+
+# -- what comes back --------------------------------------------------------
+
+
+def test_diagnostics_are_read_from_the_stream(fake_tofu, workdir, monkeypatch):
+    """Never off stderr: the human rendering is boxed, wrapped and coloured, and
+    upstream is free to reword it in any release."""
+    monkeypatch.setenv("FAKE_TOFU_STREAM", DIAGNOSTIC + "\n")
+    monkeypatch.setenv("FAKE_TOFU_EXIT", "1")
+
+    with pytest.raises(tofu.TofuError) as caught:
+        tofu.apply(workdir, workdir / "plan.bin")
+
+    assert "Volume Creation Failed" in str(caught.value)
+    assert caught.value.result is not None
+    (error,) = caught.value.result.errors
+    assert error.address == 'libvirt_volume.overlay["app01"]'
+    assert "exists already" in error.detail
+
+
+def test_the_change_summary_is_parsed(fake_tofu, workdir, monkeypatch):
+    monkeypatch.setenv("FAKE_TOFU_STREAM", CHANGES + "\n")
+    assert tofu.plan(workdir, workdir / "plan.bin").changes["add"] == 3
+
+
+def test_a_truncated_stream_does_not_turn_success_into_failure(
+    fake_tofu, workdir, monkeypatch
+):
+    """tofu killed mid-write, or a full disk. The exit code is the authority on
+    whether the apply worked; the stream is how we describe it."""
+    monkeypatch.setenv("FAKE_TOFU_STREAM", CHANGES + '\n{"@level": "inf')
+    result = tofu.apply(workdir, workdir / "plan.bin")
+    assert result.returncode == 0
+    assert result.changes["add"] == 3
+
+
+def test_a_failure_with_no_diagnostics_still_raises(fake_tofu, workdir, monkeypatch):
+    monkeypatch.setenv("FAKE_TOFU_EXIT", "2")
+    with pytest.raises(tofu.TofuError, match="exit 2"):
+        tofu.apply(workdir, workdir / "plan.bin")
+
+
+def test_warnings_do_not_fail_a_run(fake_tofu, workdir, monkeypatch):
+    warning = json.dumps(
+        {
+            "@level": "warn",
+            "type": "diagnostic",
+            "diagnostic": {
+                "severity": "warning",
+                "summary": "Deprecated",
+                "detail": "",
+            },
+        }
+    )
+    monkeypatch.setenv("FAKE_TOFU_STREAM", warning + "\n")
+    result = tofu.apply(workdir, workdir / "plan.bin")
+    assert result.errors == ()
+    assert len(result.diagnostics) == 1
+
+
+def test_outputs_are_captured_rather_than_inherited(fake_tofu, workdir, monkeypatch):
+    """The one place we want the bytes rather than the view: it is the handoff."""
+    monkeypatch.setenv(
+        "FAKE_TOFU_STDOUT", json.dumps({"vms": {"value": {"app01": {"name": "app01"}}}})
+    )
+    assert tofu.outputs(workdir)["vms"]["value"]["app01"]["name"] == "app01"
+
+
+def test_version_reports_what_actually_ran(fake_tofu, workdir, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_TOFU_STDOUT", json.dumps({"terraform_version": "1.12.6", "platform": "x"})
+    )
+    assert tofu.version()["terraform_version"] == "1.12.6"
+
+
+def test_a_missing_binary_says_so(workdir, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(tofu.TofuError, match="not on PATH"):
+        tofu.init(workdir)
