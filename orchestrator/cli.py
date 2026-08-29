@@ -39,6 +39,19 @@ from .backends.base import (
 )
 from .config import ConfigError, load, validate, vm_names
 
+#: The R5 build manifest, baked into the image at build time: what OpenTofu, what
+#: provider, which RPMs and which git revision produced this container. Absent
+#: outside the image, where there is nothing to record -- a checkout is not a
+#: release, and inventing a manifest for one would make the two indistinguishable.
+MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
+
+
+def manifest() -> dict | None:
+    try:
+        return json.loads(MANIFEST.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
 
 def module_dir(backend: Backend) -> Path:
     """The backend's tofu module, by convention rather than by method.
@@ -322,6 +335,13 @@ def cmd_version(args: argparse.Namespace) -> int:
         print(f"tofu: unavailable ({exc})")
         return 0
     print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")
+    build = manifest()
+    if build is not None:
+        print(f"image   {build['git_sha']} built {build['built']}")
+        print(f"base    {build['base_image']['name']}@{build['base_image']['digest']}")
+        print(f"provider {build['provider']['source']} {build['provider']['version']}")
+        packages, sources = len(build["packages"]), len(build["source_rpms"])
+        print(f"packages {packages} from {sources} sources")
     return 0
 
 

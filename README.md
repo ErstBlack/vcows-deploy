@@ -1,0 +1,181 @@
+# vcows-deploy
+
+Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`.
+Shipped as a container image, built to run at a site with no network beyond the
+SSH tunnel to the hypervisor.
+
+## Read this first: the config is not declarative
+
+**Deleting a VM from `config.yaml` does not delete the VM.**
+
+The natural assumption is the opposite, and being wrong about it looks like data
+loss. vcows never converges. `deploy` creates the VMs that do not exist yet and
+reports the ones that do; it never modifies, and it never removes. Removing a VM
+from the config makes `preflight` say
+
+```
+warning [app03]: marked VM 'app03' exists but is not in this config; leaving it
+alone. Removing a VM from the config does not delete it -- that needs a
+deliberate destroy.
+```
+
+Tearing something down is `vcows destroy`, and nothing else.
+
+## What it does
+
+| | |
+|---|---|
+| **preflight** | Enumerates the target by ownership marker. What exists, what is ours, what conflicts. |
+| **deploy** | OpenTofu applies a static module: the golden image once per host, then a per-VM overlay, a cloud-init seed ISO, and a domain carrying its marker. |
+| **destroy** | Python and `libvirt` directly, by marker. Works with the state file deleted, and after a VM has been renamed. |
+
+Identity is the **marker**, never the name — a JSON payload in the domain's
+`<metadata>`. A renamed VM is still ours and still destroyable; a VM vcows did not
+create is never adopted or overwritten.
+
+## Requirements
+
+**On the hypervisor**
+
+* `qemu+ssh://` reachable for the configured user, and `nc` or `virt-ssh-helper`
+  present — the SSH transport needs one of them on the *target*.
+* A storage pool that already exists and is active. **vcows never creates a pool.**
+  Creating one is a host-level change to somebody else's hypervisor.
+* Golden images with `cloud-init` and `growpart`. Each VM's disk is an overlay
+  with a larger capacity, and the guest grows into it on first boot.
+
+**Where you run the container**
+
+Rootless podman. The image sets no `USER`: under rootless podman container root
+*is* the invoking user, which is what makes a bind-mounted run directory and a
+0600 SSH key work without a UID-mapping dance. Running it as a different UID is
+supported (`--user`) but then the bind mounts are yours to line up.
+
+## Using it
+
+```bash
+podman run --rm \
+  -v ./lab-a.yaml:/config.yaml:ro,Z \
+  -v ~/.ssh/id_ed25519:/run/secrets/id_ed25519:ro,Z \
+  -v ~/.ssh/known_hosts:/run/secrets/known_hosts:ro,Z \
+  -v /srv/images:/images:ro,Z \
+  -v ./runs:/runs:Z \
+  vcows-deploy:0.1.0.0 preflight /config.yaml
+```
+
+Then `deploy /config.yaml --run-dir /runs/lab-a`, and `destroy /config.yaml` when
+it is time. `validate` needs none of the mounts but the config.
+
+| Command | |
+|---|---|
+| `validate <config>` | Offline. No connection is opened. |
+| `preflight <config>` | Reports what exists and what would be done. Changes nothing. |
+| `deploy <config>` | Creates what does not exist. Refuses, touching nothing, if anything conflicts. |
+| `destroy <config>` | Tears down **this deployment's** marked VMs. Asks first unless `--yes`. |
+| `version` | Version, OpenTofu version, and the build manifest. |
+
+Exit codes are 0 and 1.
+
+## The config
+
+```yaml
+schema_version: 1
+deployment: lab-a              # defaults to the filename stem; goes in every marker
+backend: libvirt
+target:
+  libvirt:
+    uri: qemu+ssh://vcows@hypervisor.example/system   # no query string
+    pool: images                                       # must exist and be active
+    ssh_keyfile: /run/secrets/id_ed25519
+    known_hosts: /run/secrets/known_hosts
+image:
+  source_qcow2: /images/golden.qcow2
+  base_volume_name: golden.qcow2   # shared per host, uploaded once
+vms:
+  - name: app01
+    vcpus: 2
+    memory_mib: 4096
+    disk_gb: 40
+    firmware: efi                  # efi | bios, default efi
+    user_data: |                   # optional, passed to cloud-init verbatim
+      #cloud-config
+      packages: [tmux]
+    nics:
+      - network: default           # exactly one of network | bridge
+        ip_cidr: 192.168.122.60/24
+        gateway: 192.168.122.1
+        nameservers: [192.168.122.1]
+```
+
+vcows owns `meta-data` and `network-config`; `user_data` is yours and is passed
+through with no interpretation.
+
+**`deployment` names the blast radius.** It is stamped into every marker, and
+`destroy` only tears down VMs whose marker matches. It defaults to the config's
+filename stem — so renaming the file orphans that deployment's VMs. `destroy`
+reports what it is skipping and why, which is where you would see it.
+
+> **The config is a secret artifact.** Credentials are cleartext at v0.1,
+> deliberately and temporarily. Do not commit it, and do not ship it as an
+> example.
+
+## The run directory
+
+Every `deploy` and `destroy` writes one, at `runs/<deployment>/<timestamp>Z/`
+unless `--run-dir` says otherwise. It is created `0700` **and it carries
+secrets** — the seed ISOs are kept so a VM that will not boot can be debugged
+from the media it was actually given, and those ISOs contain `user_data`
+verbatim.
+
+```
+seed/*.iso        what each VM was given
+tofu/             the module, the tfvars, the saved plan, the JSON streams, the state
+inventory.json    name -> address, uuid, disks. Minimal, and unstable at v0.1
+manifest.json     which build produced this run
+run.json          what was asked, what was decided, what happened
+```
+
+The OpenTofu state is written here and **never read back**. Destroy works from the
+marker, so losing the state costs nothing.
+
+## Air gap
+
+The image carries the OpenTofu provider in `/opt/tofu-mirror` and points at it
+through `TF_CLI_CONFIG_FILE=/opt/tofu/tofurc`. There is no `direct` block in that
+config: a provider missing from the mirror fails immediately instead of resolving
+DNS and hanging. The gate for this is `tests/test_image.py`, which runs
+`--network=none` and requires `tofu init` and `tofu validate` to succeed against
+the real module with no network at all.
+
+## Licensing
+
+`/opt/vcows/manifest.json` lists every package in the image with its version,
+licence and source RPM, plus the OpenTofu and provider versions and the git
+revision that built it. The same file is copied into every run directory.
+
+The image contains GPL-2.0-**only** components, and GPLv2 §3 offers no
+network-server option for source — so **source ships as a separate medium
+accompanying the delivery**, mirrored from the `source_rpms` list in that
+manifest. The OpenTofu provider's licence and its provenance are vendored at
+`/opt/vcows/licenses/dmacvicar-libvirt/`; upstream ships no `LICENSE` file in
+0.9.x, and the note there explains why that is a gap rather than a revocation.
+
+## Development
+
+```bash
+uv venv --python /usr/bin/python3 --system-site-packages
+uv pip install -e '.[dev]'
+pytest
+```
+
+`--system-site-packages` is not optional: `python3-libvirt` comes from the RPM
+(PyPI ships an sdist only), and without the flag the binding is invisible inside
+the venv while `python3 -c 'import libvirt'` keeps working outside it.
+
+Three test gates are skipped unless you opt in, each with an explicit reason:
+
+| | |
+|---|---|
+| `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real hypervisor. |
+| `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. |
+| `.tools/tofu-mirror` present | Runs the OpenTofu module gates. |
