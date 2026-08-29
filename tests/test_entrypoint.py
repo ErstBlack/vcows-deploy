@@ -130,6 +130,26 @@ def test_a_mounted_ssh_config_wins_and_says_so(tmp_path, fake_home, capsys):
     assert "already exists" in capsys.readouterr().err
 
 
+def test_an_unwritable_home_says_what_it_costs(tmp_path, fake_home, capsys):
+    """The branch a foreign UID actually hits, and it had no test.
+
+    Under `--user 4242` podman synthesises a passwd entry whose home is `/`, and
+    `/` is not writable -- so the write fails, `vcows` runs anyway, and the next
+    thing on the operator's terminal is `Host key verification failed` out of
+    ssh, which points at nothing. Pinned on the consequence rather than the
+    wording, matching the sibling branch above.
+    """
+    fake_home.chmod(0o500)
+    try:
+        entrypoint.install([str(config_file(tmp_path))])
+        assert not (fake_home / ".ssh").exists()
+        err = capsys.readouterr().err
+        assert "could not write" in err
+        assert "were not installed" in err
+    finally:
+        fake_home.chmod(0o700)
+
+
 def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsys):
     """Refusing after writing would be no refusal at all: the next `ssh` reads the
     file, and `vcows validate`'s rejection comes too late to matter."""

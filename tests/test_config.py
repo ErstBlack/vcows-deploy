@@ -87,7 +87,15 @@ def test_an_explicit_deployment_is_still_blamed_on_the_key(tmp_path, registry):
 )
 def test_source_qcow2_must_be_absolute(tmp_path, registry, value):
     """It is opened here and handed to the backend as a volume source. A relative
-    path resolves against a working directory nothing here controls."""
+    path resolves against a working directory nothing here controls.
+
+    **The `http://` case is the one with teeth.** The string reaches the
+    provider's `create.content.url`, which really does resolve a URL, and
+    measured on the rig it resolves it *client-side*: an http server bound to the
+    client's own loopback -- unreachable from the hypervisor -- served the fetch.
+    So without this anchor a config could send the container to the network for
+    its base image, at a site whose whole premise is that there is no network.
+    """
     text = CONFIG.replace("/images/golden.qcow2", value)
     with pytest.raises(ConfigError):
         load(write(tmp_path, text), registry)

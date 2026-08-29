@@ -181,7 +181,18 @@ def install(argv: list[str]) -> None:
         destination.write_text(body)
         destination.chmod(0o600)
     except OSError as exc:
-        print(f"vcows: could not write {destination}: {exc}", file=sys.stderr)
+        # Name the consequence, as the "already exists" branch above does. The
+        # next thing the operator sees is `Host key verification failed` out of
+        # ssh, which points at nothing. Measured under `--user 4242`, where the
+        # synthesised passwd entry's home is `/` and unwritable: two messages,
+        # and without this line the second looks like the error.
+        print(
+            f"vcows: could not write {destination}: {exc}. This run's "
+            f"ssh_keyfile and known_hosts were not installed, so the connection "
+            f"will use whatever ssh finds on its own -- likely failing with a "
+            f"host key or permission error that does not mention this.",
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
