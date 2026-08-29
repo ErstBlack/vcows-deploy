@@ -94,6 +94,14 @@ class FakeDomain:
     def XMLDesc(self, _flags: int = 0) -> str:
         return self._xml
 
+    def redefine(self, xml: str) -> None:
+        """Another operator rewrote this domain while we were not looking.
+
+        The window destroy has to survive: preflight read one document, an
+        operator answered a prompt, and the domain is not the same afterwards.
+        """
+        self._xml = xml
+
     def isActive(self) -> bool:
         return self.active
 
@@ -128,6 +136,9 @@ class FakeConnection:
         self.leases = leases or {}
         self.version = version
         self.closed = False
+        #: Raised by `lookupByUUIDString` instead of the NO_DOMAIN default, for
+        #: the failures that are not "already gone". Mirrors `FakeDomain.stop_error`.
+        self.lookup_error: libvirt.libvirtError | None = None
 
     # -- domains ---------------------------------------------------------
 
@@ -135,6 +146,8 @@ class FakeConnection:
         return list(self.domains)
 
     def lookupByUUIDString(self, uuid: str) -> FakeDomain:
+        if self.lookup_error is not None:
+            raise self.lookup_error
         for dom in self.domains:
             if dom.UUIDString() == uuid:
                 return dom

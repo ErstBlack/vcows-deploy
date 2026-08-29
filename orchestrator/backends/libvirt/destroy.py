@@ -28,10 +28,14 @@ Three things are load-bearing:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import PurePosixPath
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from ..base import Existing, Problem, Severity
+from .preflight import disks_of, marker_of
+from .render import overlay_name, seed_name
 
 # Undefine flags, as ABI constants rather than attribute lookups, so the mask
 # builder is a pure function testable with no libvirt installed.
@@ -55,6 +59,11 @@ _GATED = ((5006000, UNDEFINE_CHECKPOINTS_METADATA), (8009000, UNDEFINE_TPM))
 ERR_OPERATION_INVALID = 55
 ERR_NO_STORAGE_VOL = 50
 ERR_INVALID_ARG = 8
+#: The *only* code that means "already gone". Every other failure of
+#: ``lookupByUUIDString`` -- a reset connection, a policy refusal, an internal
+#: error -- says nothing about whether that domain still exists, so it must not
+#: be read as one that does not.
+ERR_NO_DOMAIN = 42
 
 
 def undefine_mask(version: int) -> int:
@@ -230,6 +239,112 @@ def _refresh_pools(conn: Any, out: Outcome) -> None:
             )
 
 
+def _claimed_elsewhere(conn: Any, targets: list[Existing]) -> set[str] | None:
+    """Every disk path some *other* domain on this host currently names.
+
+    ``vol.delete`` offers no protection at all -- libvirt will delete a running
+    VM's disk without complaint -- so this is the check that stands in for the one
+    the storage driver does not do. It is also the only guard available for a
+    target whose domain has already gone: there is no XML left to re-read, so its
+    recorded paths are all we have, and a path recorded minutes ago may since have
+    been handed to somebody else.
+
+    ``None`` means the host could not be asked, which is fatal rather than
+    ignorable: proceeding without this is exactly the case it exists to prevent.
+    """
+    import libvirt
+
+    ours = {t.id for t in targets}
+    claimed: set[str] = set()
+    try:
+        domains = conn.listAllDomains(0)
+    except libvirt.libvirtError:
+        return None
+    for dom in domains:
+        try:
+            if dom.UUIDString() in ours:
+                continue
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+        except (libvirt.libvirtError, ET.ParseError):
+            # A domain that vanished mid-scan claims nothing. One that will not
+            # parse is `walk`'s problem, not this loop's.
+            continue
+        claimed.update(disks_of(root))
+    return claimed
+
+
+def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
+    """The target as the domain describes it **now**. ``None`` means leave it alone.
+
+    ``preflight`` read the marker and the disk list, and ``cmd_destroy`` then
+    waited on an operator at a terminal. That wait is unbounded and a host does
+    not stop changing during it, so nothing below acts on the older document.
+    """
+    import libvirt
+
+    try:
+        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+    except (libvirt.libvirtError, ET.ParseError) as exc:
+        out.problems.append(
+            Problem(Severity.ERROR, f"could not re-read: {exc}", target.name)
+        )
+        return None
+
+    marker = marker_of(root)
+    if marker != target.marker:
+        out.skipped.append(target.name)
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                "its ownership marker changed between preflight and now "
+                f"({target.marker} -> {marker}); refusing to tear down a domain "
+                f"somebody else has taken over",
+                target.name,
+            )
+        )
+        return None
+    return replace(target, disks=disks_of(root))
+
+
+def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> bool:
+    """Whether this teardown is allowed to delete this path.
+
+    ``disks_of`` collects every file-backed source a domain names, which is the
+    right width for discovery and too wide for deletion: a domain we own can
+    still have been given a disk we do not, and the ``<backingStore>`` exclusion
+    is the *only* other thing between this and the shared golden image.
+    """
+    if path in claimed:
+        out.skipped.append(path)
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                f"{path} is claimed by another domain on this host; leaving it",
+                target.name,
+            )
+        )
+        return False
+
+    owned = (
+        {overlay_name(target.marker.name), seed_name(target.marker.name)}
+        if target.marker is not None
+        else set()
+    )
+    if PurePosixPath(path).name not in owned:
+        out.skipped.append(path)
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                f"{path} is not one of the names this VM owns "
+                f"({', '.join(sorted(owned)) or 'none -- it carries no marker'}); "
+                f"leaving it",
+                target.name,
+            )
+        )
+        return False
+    return True
+
+
 def destroy(cfg: dict, session: Any, targets: list[Existing]) -> None:
     """Tear down exactly the set preflight discovered. Raises on any failure."""
     import libvirt
@@ -238,13 +353,44 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> None:
     mask = undefine_mask(session.getLibVersion())
     _refresh_pools(session, out)
 
+    claimed = _claimed_elsewhere(session, targets)
+    if claimed is None:
+        out.problems.append(
+            Problem(
+                Severity.ERROR,
+                "could not list this host's domains, so a recorded disk path "
+                "cannot be checked against what else claims it; nothing was "
+                "torn down",
+                "storage",
+            )
+        )
+        raise DestroyError(out)
+
     for target in targets:
         try:
             dom = session.lookupByUUIDString(target.id)
-        except libvirt.libvirtError:
-            # Already gone. Its disks may not be, so they are still resolved below.
+        except libvirt.libvirtError as exc:
+            if exc.get_error_code() != ERR_NO_DOMAIN:
+                # We have been told nothing about this domain, so we know nothing
+                # about what it owns. Deleting its recorded disks on the strength
+                # of a failed lookup is the one thing this branch must not do.
+                out.problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"could not look up: {exc.get_error_message()}",
+                        target.name,
+                    )
+                )
+                continue
+            # Already gone. Its disks may not be, so they are still resolved
+            # below -- from the preflight snapshot, which is why `_deletable`
+            # rather than the snapshot decides what may go.
             out.skipped.append(target.name)
         else:
+            fresh = _reverify(dom, target, out)
+            if fresh is None:
+                continue
+            target = fresh
             if not _stop(dom, target.name, out):
                 continue
             if not _undefine(dom, target.name, mask, out):
@@ -252,7 +398,8 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> None:
             out.destroyed.append(target.name)
 
         for path in target.disks:
-            _delete_volume(session, path, target.name, out)
+            if _deletable(path, target, claimed, out):
+                _delete_volume(session, path, target.name, out)
 
     if out.failed:
         raise DestroyError(out)

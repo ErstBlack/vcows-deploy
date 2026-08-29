@@ -10,10 +10,13 @@ whether a partial failure is reported or swallowed.
 
 from __future__ import annotations
 
+from xml.etree import ElementTree as ET
+
 import pytest
 
 from orchestrator.backends.base import Existing, Severity
 from orchestrator.backends.libvirt import destroy as d
+from orchestrator.backends.libvirt.preflight import disks_of, marker_of
 from orchestrator.marker import Marker
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
@@ -44,6 +47,7 @@ def test_error_codes_match_the_installed_binding():
     assert d.ERR_INVALID_ARG == libvirt.VIR_ERR_INVALID_ARG
     assert d.ERR_OPERATION_INVALID == libvirt.VIR_ERR_OPERATION_INVALID
     assert d.ERR_NO_STORAGE_VOL == libvirt.VIR_ERR_NO_STORAGE_VOL
+    assert d.ERR_NO_DOMAIN == libvirt.VIR_ERR_NO_DOMAIN
 
 
 # -- the mask --------------------------------------------------------------
@@ -74,16 +78,39 @@ def test_floor_always_survives_the_gate():
 # -- ordering --------------------------------------------------------------
 
 
-def domain(name="app01", active=True, xml="<domain/>"):
-    return FakeDomain(name, Marker.for_vm(name, "lab-a").id, xml, active=active)
+def domain_xml(marker, disks=()):
+    """A domain document with the two things destroy re-reads: marker and disks.
+
+    Real XML rather than `<domain/>` because destroy now parses this rather than
+    trusting the snapshot preflight took, and a fixture that returns nothing
+    would prove only that a target carrying nothing is skipped.
+    """
+    devices = "".join(
+        f'<disk type="file" device="disk"><source file="{p}"/></disk>' for p in disks
+    )
+    return (
+        f"<domain type='kvm'><metadata>{marker.to_xml()}</metadata>"
+        f"<devices>{devices}</devices></domain>"
+    )
 
 
-def target(dom, disks=()):
+def domain(name="app01", active=True, disks=(), deployment="lab-a"):
+    marker = Marker.for_vm(name, deployment)
+    return FakeDomain(name, marker.id, domain_xml(marker, disks), active=active)
+
+
+def target(dom, disks=None):
+    """What preflight would have produced, parsed the way preflight parses it.
+
+    `disks` overrides the parse, for the tests whose whole point is that the
+    snapshot and the live document disagree.
+    """
+    root = ET.fromstring(dom.XMLDesc(0))
     return Existing(
         name=dom.name(),
         id=dom.UUIDString(),
-        marker=Marker.for_vm(dom.name(), "lab-a"),
-        disks=tuple(disks),
+        marker=marker_of(root),
+        disks=disks_of(root) if disks is None else tuple(disks),
     )
 
 
@@ -140,6 +167,26 @@ def test_a_domain_already_gone_still_has_its_disks_collected():
     )
     d.destroy({}, conn, [ghost])
     assert pool.deleted == ["app01.qcow2"]
+
+
+def test_a_lookup_that_failed_for_any_other_reason_is_fatal_and_touches_no_disk():
+    """`no domain with matching uuid` is one error code out of dozens. A dropped
+    connection or a policy refusal says nothing about whether that domain still
+    exists, and deleting its recorded disks on that basis is the one action a
+    failed lookup must never authorise."""
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[], pools=[pool])
+    conn.lookup_error = lv_error(38, "Cannot recv data: Connection reset by peer")
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2",),
+    )
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [ghost])
+    assert "app01" in str(caught.value)
+    assert pool.deleted == []
 
 
 # -- the flag floor --------------------------------------------------------
@@ -200,9 +247,9 @@ def test_pools_are_refreshed_before_any_path_is_resolved():
     silently leaks every overlay."""
     pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
     assert pool.visible == set(), "starts cold, as libvirt's cache does"
-    dom = domain(active=False)
+    dom = domain(active=False, disks=["/pool/app01.qcow2", "/pool/app01-seed.iso"])
     conn = FakeConnection(domains=[dom], pools=[pool])
-    d.destroy({}, conn, [target(dom, ["/pool/app01.qcow2", "/pool/app01-seed.iso"])])
+    d.destroy({}, conn, [target(dom)])
     assert pool.refreshed == 1
     assert sorted(pool.deleted) == ["app01-seed.iso", "app01.qcow2"]
 
@@ -219,9 +266,79 @@ def test_a_path_that_will_not_resolve_is_skipped_not_unlinked():
     with os.unlink is what would turn a teardown into arbitrary file deletion on
     somebody else's hypervisor."""
     pool = FakePool("images", {})
-    dom = domain(active=False)
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
     conn = FakeConnection(domains=[dom], pools=[pool])
-    d.destroy({}, conn, [target(dom, ["/pool/vanished.qcow2"])])
+    d.destroy({}, conn, [target(dom)])
+    assert pool.deleted == []
+
+
+# -- the window between preflight and the operator's answer -----------------
+
+
+def test_the_disks_deleted_are_the_ones_the_domain_names_now():
+    """`cmd_destroy` waits on a human at a terminal between the two reads, and
+    the wait is unbounded. findings.md:87 claimed these paths were read
+    immediately before undefining; until now they were not read again at all."""
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    stale = target(dom, ["/pool/app01-seed.iso"])
+    pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    d.destroy({}, conn, [stale])
+
+    assert pool.deleted == ["app01.qcow2"], "the snapshot won, not the live document"
+
+
+def test_a_domain_whose_marker_changed_since_preflight_is_left_alone():
+    """Someone re-stamped it for another deployment while the prompt was open.
+    Tearing it down anyway would destroy a VM this run does not own."""
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    stale = target(dom)
+    dom.redefine(domain_xml(Marker.for_vm("app01", "lab-b"), ["/pool/app01.qcow2"]))
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [stale])
+
+    assert "marker changed" in str(caught.value)
+    assert dom.log == [], "neither stopped nor undefined"
+    assert pool.deleted == []
+
+
+def test_a_vanished_targets_disk_claimed_by_another_domain_is_left_alone():
+    """The vanished case has no live document to compare against, so its recorded
+    paths are all there is. `vol.delete` will happily unlink a running VM's disk,
+    which makes this the only thing standing between the two."""
+    squatter = domain("app99", active=True, disks=["/pool/app01.qcow2"])
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[squatter], pools=[pool])
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2",),
+    )
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [ghost])
+
+    assert "claimed by another domain" in str(caught.value)
+    assert pool.deleted == []
+
+
+def test_a_recorded_path_outside_this_vms_two_names_is_not_deleted():
+    """`disks_of` collects every file-backed source a domain names, which is the
+    right width for discovery and too wide for deletion. A domain we own that has
+    been given the shared golden image must not take it down with it."""
+    dom = domain(active=False, disks=["/pool/golden.qcow2"])
+    pool = FakePool("images", {"golden.qcow2": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    assert "not one of the names this VM owns" in str(caught.value)
     assert pool.deleted == []
 
 
@@ -247,7 +364,7 @@ def test_one_failure_does_not_stop_the_others_and_is_still_fatal():
 
 
 def test_a_clean_run_raises_nothing():
-    dom = domain(active=True)
+    dom = domain(active=True, disks=["/pool/app01.qcow2"])
     pool = FakePool("images", {"app01.qcow2": ""})
     conn = FakeConnection(domains=[dom], pools=[pool])
-    d.destroy({}, conn, [target(dom, ["/pool/app01.qcow2"])])
+    d.destroy({}, conn, [target(dom)])

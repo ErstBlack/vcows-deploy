@@ -29,12 +29,20 @@ from __future__ import annotations
 
 import os
 import pwd
+import re
 import sys
 from pathlib import Path
 
 import yaml
 
 VCOWS = "/usr/local/bin/vcows"
+
+#: An absolute path with no whitespace in it. Mirrors ``SSH_PATH_PATTERN`` in
+#: ``orchestrator/backends/libvirt/schema.py``, and is duplicated rather than
+#: imported on purpose: this runs *before* `vcows` is a process at all, so the
+#: schema's rejection of the same value would arrive after the file below had
+#: already been written and read.
+SSH_PATH = re.compile(r"^/[^\s]*\Z")
 
 
 def home() -> Path | None:
@@ -63,7 +71,30 @@ def config_path(argv: list[str]) -> Path | None:
     return None
 
 
+def _path(value: object, field: str) -> str | None:
+    """One credential path, or a refusal. ``None`` means the operator set none.
+
+    ``ssh`` reads its config one directive per line, so a value carrying a
+    newline does not become a path -- it becomes whatever follows it.
+    ``ProxyCommand`` is command execution on the next connection, and
+    ``StrictHostKeyChecking no`` reopens from here exactly the hole R-D refuses
+    in the URI.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not SSH_PATH.match(value):
+        raise ValueError(
+            f"{field} must be an absolute path with no whitespace in it. It is "
+            f"written into ~/.ssh/config verbatim, where a newline would append "
+            f"directives of its own. Run `vcows validate` to see the value."
+        )
+    return value
+
+
 def ssh_config(keyfile: str | None, known_hosts: str | None) -> str:
+    """Raises ``ValueError`` rather than interpolating anything questionable."""
+    keyfile = _path(keyfile, "ssh_keyfile")
+    known_hosts = _path(known_hosts, "known_hosts")
     lines = [
         "# Written by the vcows container entrypoint from target.libvirt.",
         "# Both libvirt and the OpenTofu provider run ssh, so this is the one",
@@ -98,6 +129,14 @@ def install(argv: list[str]) -> None:
     if not keyfile and not known_hosts:
         return
 
+    # Before `home()`, so a poisoned config is refused even for a UID with no
+    # passwd entry -- where there is nothing to write but still something to say.
+    try:
+        body = ssh_config(keyfile, known_hosts)
+    except ValueError as exc:
+        print(f"vcows: {exc}", file=sys.stderr)
+        return
+
     where = home()
     if where is None:
         print(
@@ -115,7 +154,7 @@ def install(argv: list[str]) -> None:
 
     try:
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        destination.write_text(ssh_config(keyfile, known_hosts))
+        destination.write_text(body)
         destination.chmod(0o600)
     except OSError as exc:
         print(f"vcows: could not write {destination}: {exc}", file=sys.stderr)

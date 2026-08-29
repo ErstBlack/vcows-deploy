@@ -84,7 +84,7 @@ One canonical JSON object, so there is a single serializer and parser regardless
 
 `deployment` was written down as deliberately absent while destroy was host-wide. It is **present from 0.1.0.0** (D4): stamping it costs nothing, and adding it later would have meant a marker migration on every VM already deployed. Destroy is now scoped by it — see the rules below.
 
-**Deliberately absent, and staying that way:** disk paths. They are read from the live domain XML (`devices/disk/source/@file`, plus `cdrom` for the seed ISO) immediately before undefining, which is correct even for a VM whose disks changed after creation.
+**Deliberately absent, and staying that way:** disk paths. They are read from the live domain XML (`devices/disk/source/@file`, plus `cdrom` for the seed ISO), which is correct even for a VM whose disks changed after creation. Preflight reads them to report; destroy re-reads the same domain immediately before undefining, so what is deleted is what the domain names *now* rather than what it named while the operator was still being asked. That window is unbounded — `cmd_destroy` waits on a human — and it is also where the marker is re-checked. A target whose domain has already gone leaves no document to re-read, so its recorded paths are instead checked against every path the host's other domains claim, and against the two names that VM is entitled to own.
 
 **Write the parser to ignore unknown keys from day one**, or the extensibility is theoretical. This is the same forward-compatibility promise the original document praises OpenTofu's JSON formats for, applied to your own artifact.
 

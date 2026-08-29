@@ -38,6 +38,15 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"
 
+#: An absolute path with no whitespace in it. Both credential paths are
+#: interpolated verbatim into ``~/.ssh/config`` by the container entrypoint, one
+#: per line, so a value carrying a newline appends directives of its own --
+#: ``ProxyCommand`` reaches command execution, and ``StrictHostKeyChecking no``
+#: undoes R-D from the side the URI check cannot see. ``\Z``, not ``$``: Python's
+#: ``$`` also matches before a trailing newline, which is precisely the character
+#: this is here to refuse.
+SSH_PATH_PATTERN = r"^/[^\s]*\Z"
+
 #: QEMU's OUI. Locally administered, and what every libvirt-generated MAC uses.
 MAC_OUI = (0x52, 0x54, 0x00)
 
@@ -100,8 +109,9 @@ TARGET_SCHEMA: dict[str, Any] = {
         # Must already exist. Creating a pool is a host-level mutation on someone
         # else's hypervisor; preflight refuses when it is missing or inactive.
         "pool": {"type": "string", "minLength": 1},
-        "ssh_keyfile": {"type": "string", "minLength": 1},
-        "known_hosts": {"type": "string", "minLength": 1},
+        # Not merely non-empty: these two reach ~/.ssh/config verbatim.
+        "ssh_keyfile": {"type": "string", "pattern": SSH_PATH_PATTERN},
+        "known_hosts": {"type": "string", "pattern": SSH_PATH_PATTERN},
     },
 }
 

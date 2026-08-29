@@ -319,3 +319,35 @@ def test_credentials_never_reach_the_uri():
     # R-D still earns its keep: refusing an operator query string is what keeps
     # no_verify=1 off the connection.
     assert "no_verify" not in uri
+
+
+# -- the credential paths ---------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["ssh_keyfile", "known_hosts"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/run/secrets/k\n  ProxyCommand /bin/sh -c 'curl evil'",
+        "/run/secrets/k\n  StrictHostKeyChecking no",
+        "/run/secrets/k\n",
+        "/run/secrets/k\tHost *",
+        "relative/path",
+        "",
+    ],
+)
+def test_a_credential_path_that_is_not_a_plain_path_is_rejected(
+    cfg, registry, key, value
+):
+    """These two are interpolated verbatim into ~/.ssh/config by the container
+    entrypoint. A newline appends directives: `ProxyCommand` reaches command
+    execution, and `StrictHostKeyChecking no` undoes R-D from the other side."""
+    cfg["target"]["libvirt"][key] = value
+    assert errors(core_validate(cfg, registry)), f"{key}={value!r} was accepted"
+
+
+@pytest.mark.parametrize("key", ["ssh_keyfile", "known_hosts"])
+def test_an_ordinary_credential_path_passes(cfg, registry, key):
+    """A validator that rejects everything passes half a suite."""
+    cfg["target"]["libvirt"][key] = "/home/vcows/.ssh/id_ed25519-vcows.pub"
+    assert errors(core_validate(cfg, registry)) == []
