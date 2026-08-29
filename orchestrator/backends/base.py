@@ -129,6 +129,41 @@ class Inventory:
     vms: dict[str, dict[str, Any]]
 
 
+@dataclass
+class Outcome:
+    """What a teardown actually did, per object. The point of the exercise.
+
+    Five domains with three objects each is twenty things that can fail
+    independently, so both lists hold *objects* -- domain names and volume paths
+    together -- rather than VMs. Silent partial success is the specific defect
+    findings.md §1 rejects ``tofu destroy`` for, and a backend that returns this
+    without its consumer reading it reproduces that defect exactly.
+
+    The one mutable record here, and deliberately: it is accumulated across a
+    teardown that is expected to fail in places. Its consumer treats it as
+    finished.
+    """
+
+    destroyed: list[str] = field(default_factory=list)
+    """Objects that are gone because this run removed them."""
+
+    skipped: list[str] = field(default_factory=list)
+    """Objects this run did not remove. Not an error, and not nothing either.
+
+    A domain already gone is a crash-window resume; a volume that would not
+    resolve is a leak. Neither carries a fatal ``Problem`` -- a skip never stops a
+    teardown, so the rest of the targets are still attempted -- and both make the
+    exit code non-zero, because something vcows was asked to remove is still
+    there.
+    """
+
+    problems: list[Problem] = field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        return any(p.fatal for p in self.problems)
+
+
 class Action(enum.Enum):
     CREATE = "create"
     SKIP = "skip"
@@ -306,5 +341,11 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> None:
-        """Tear down the set preflight discovered."""
+    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
+        """Tear down the set preflight discovered, and say what happened.
+
+        Returning the record rather than ``None`` is what stops a partial teardown
+        from reading as a success. A backend is free to raise as well -- and the
+        libvirt one does, for anything fatal -- but everything it could not do
+        must be in here whether it raises or not.
+        """

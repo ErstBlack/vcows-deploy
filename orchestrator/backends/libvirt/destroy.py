@@ -28,12 +28,12 @@ Three things are load-bearing:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from ..base import Existing, Problem, Severity
+from ..base import Existing, Outcome, Problem, Severity
 from .preflight import disks_of, marker_of
 from .render import overlay_name, seed_name
 
@@ -84,25 +84,21 @@ def undefine_mask(version: int) -> int:
     return mask
 
 
-@dataclass
-class Outcome:
-    """What actually happened, per object. The point of the exercise."""
-
-    destroyed: list[str] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-    problems: list[Problem] = field(default_factory=list)
-
-    @property
-    def failed(self) -> bool:
-        return any(p.fatal for p in self.problems)
-
-
 class DestroyError(Exception):
-    """At least one object could not be torn down."""
+    """At least one object could not be torn down.
+
+    Carries the whole ``Outcome``, and says the whole of it: this is the one path
+    where core never sees the record, because ``cmd_destroy`` gets an exception
+    instead of a return value. A message naming only the fatal problems would drop
+    every leaked volume beside them.
+    """
 
     def __init__(self, outcome: Outcome):
         self.outcome = outcome
-        super().__init__("\n".join(str(p) for p in outcome.problems if p.fatal))
+        lines = [str(p) for p in outcome.problems if p.fatal]
+        lines += [f"  skipped: {name}" for name in outcome.skipped]
+        lines += [f"  {p}" for p in outcome.problems if not p.fatal]
+        super().__init__("\n".join(lines))
 
 
 def _stop(dom: Any, name: str, out: Outcome) -> bool:
@@ -178,9 +174,10 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
     ``vol.delete`` takes no flags at all -- the dir/fs backend declares
     ``virCheckFlags(0, -1)``. And it offers no protection whatsoever: ``in_use`` is
     only ever set by the storage driver's own transient operations, so libvirt will
-    delete a running VM's disk without complaint. The ``<backingStore>`` exclusion in
-    ``preflight.disks_of`` is the only thing between this call and the shared golden
-    image.
+    delete a running VM's disk without complaint. Three things stand between this
+    call and the shared golden image, and every one of them is upstream of here:
+    the ``<backingStore>`` exclusion in ``preflight.disks_of``, and ``_deletable``'s
+    two guards.
 
     A path that will not resolve is reported and skipped. **Never an ``os.unlink``
     fallback** -- resolving through the pool is what bounds this to storage libvirt
@@ -193,9 +190,12 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
         conn.storageVolLookupByPath(path).delete(0)
     except libvirt.libvirtError as exc:
         if exc.get_error_code() == ERR_NO_STORAGE_VOL:
-            # After a refresh this genuinely means gone, which is success for a
-            # teardown. Without one it would mean "invisible", which is why the
-            # refresh in `_refresh_pools` is not optional.
+            # After a refresh this means gone, and a file already gone is one
+            # this teardown does not have to remove -- but it is not one it
+            # removed either, so it is recorded rather than counted as success.
+            # Without the refresh it would mean "invisible", which is why the one
+            # in `_refresh_pools` is not optional and why an inactive pool holding
+            # any of these paths is fatal there.
             out.skipped.append(path)
             return
         out.problems.append(
@@ -209,7 +209,26 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
     out.destroyed.append(path)
 
 
-def _refresh_pools(conn: Any, out: Outcome) -> None:
+def _pool_holds(pool: Any, wanted: set[str]) -> list[str]:
+    """Which of ``wanted`` live in this pool's target directory.
+
+    Read off ``<target><path>``, which an *inactive* pool still answers -- the
+    volume list, which would be the direct question, is exactly what it will not
+    give. Directory comparison rather than prefix matching: ``/pool2/x.qcow2``
+    does not live in ``/pool``.
+    """
+    import libvirt
+
+    try:
+        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")
+    except (libvirt.libvirtError, ET.ParseError):
+        return []
+    if not path:
+        return []
+    return sorted(p for p in wanted if str(PurePosixPath(p).parent) == path)
+
+
+def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
     """Rescan every active pool before resolving any path (D35).
 
     ``storageVolLookupByPath`` reads libvirt's in-memory pool cache. On the rig,
@@ -220,11 +239,34 @@ def _refresh_pools(conn: Any, out: Outcome) -> None:
 
     Every pool, not just the configured one: a domain's disks are wherever they are,
     and destroy tears down what preflight found rather than what the config says.
+
+    An inactive pool cannot be refreshed and cannot be asked for its volumes, so
+    every disk it holds will resolve as ``NO_STORAGE_VOL`` -- "already gone" --
+    while the file sits there and the domain that named it loses its marker. If it
+    holds nothing of ours it is somebody else's idle pool and no concern of this
+    teardown; if it does, that is fatal, and fatal at the *end*, so the domains are
+    still torn down and the operator is told exactly what was left.
+
+    The paths tested are preflight's, since this runs before ``_reverify``. Right
+    for a question about pools, which do not move; the per-disk decision is
+    ``_deletable``'s and uses the fresh list.
     """
     import libvirt
 
+    wanted = {path for t in targets for path in t.disks}
     for pool in conn.listAllStoragePools(0):
         if not pool.isActive():
+            held = _pool_holds(pool, wanted)
+            if held:
+                out.problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"storage pool {pool.name()!r} is not active, so "
+                        f"{', '.join(held)} cannot be resolved or deleted and will "
+                        f"be left on this host. Start the pool and re-run.",
+                        "storage",
+                    )
+                )
             continue
         try:
             pool.refresh(0)
@@ -345,13 +387,18 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
     return True
 
 
-def destroy(cfg: dict, session: Any, targets: list[Existing]) -> None:
-    """Tear down exactly the set preflight discovered. Raises on any failure."""
+def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
+    """Tear down exactly the set preflight discovered. Raises on any failure.
+
+    Returns the record for the runs that did not fail but did not finish either:
+    a domain already gone, a volume that would not resolve. Those are not errors
+    and they are not nothing, and the caller is the only thing that can say so.
+    """
     import libvirt
 
     out = Outcome()
     mask = undefine_mask(session.getLibVersion())
-    _refresh_pools(session, out)
+    _refresh_pools(session, out, targets)
 
     claimed = _claimed_elsewhere(session, targets)
     if claimed is None:
@@ -403,3 +450,4 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> None:
 
     if out.failed:
         raise DestroyError(out)
+    return out

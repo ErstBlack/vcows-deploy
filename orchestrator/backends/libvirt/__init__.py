@@ -22,7 +22,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from ..base import Backend, Discovered, Existing, Inventory, Prepared, Problem
+from ..base import (
+    Backend,
+    Discovered,
+    Existing,
+    Inventory,
+    Outcome,
+    Prepared,
+    Problem,
+)
 from . import destroy as _destroy
 from . import preflight as _preflight
 from . import prepare as _prepare
@@ -49,8 +57,8 @@ class LibvirtBackend(Backend):
     def preflight(self, cfg: dict, session: Any) -> Discovered:
         return _preflight.preflight(cfg, session)
 
-    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> None:
-        _destroy.destroy(cfg, session, targets)
+    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
+        return _destroy.destroy(cfg, session, targets)
 
     # -- apply -----------------------------------------------------------
 
@@ -86,6 +94,14 @@ class LibvirtBackend(Backend):
 
         This exists so the module's ``output`` block is not the public API. Rename
         an output and only this method changes, rather than every consumer of
-        inventory.json.
+        inventory.json -- so a missing one is a broken module and is raised as
+        such. Read as an empty inventory it would instead be reported as
+        ``created 0 VM(s)`` under ``outcome: ok``, beside an ``inventory.json``
+        that says otherwise.
         """
-        return Inventory(vms=raw.get("vms", {}).get("value", {}))
+        if "vms" not in raw:
+            raise ValueError(
+                "the tofu module declared no `vms` output. Its outputs were: "
+                f"{', '.join(sorted(raw)) or '<none>'}"
+            )
+        return Inventory(vms=raw["vms"].get("value", {}))

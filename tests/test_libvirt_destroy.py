@@ -261,6 +261,42 @@ def test_an_inactive_pool_is_not_refreshed():
     assert pool.refreshed == 0
 
 
+def test_an_inactive_pool_holding_a_targets_disk_is_fatal():
+    """The 2.3 reproduction. An inactive pool cannot be refreshed, so every disk
+    in it resolves as NO_STORAGE_VOL -- "already gone" -- while both files sit on
+    disk with the domain's marker undefined. Silence here is how a teardown
+    reports success and leaks every volume it was asked to remove."""
+    pool = FakePool("images", {"app01.qcow2": ""}, active=False)
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    outcome = caught.value.outcome
+    assert any(
+        "images" in p.message and "app01.qcow2" in p.message
+        for p in outcome.problems
+        if p.fatal
+    ), "the pool and the disk it holds are both named"
+    assert "undefine" in " ".join(dom.log), "the domain is still torn down"
+    assert "/pool/app01.qcow2" in outcome.skipped
+    assert pool.deleted == []
+
+
+def test_an_inactive_pool_holding_nothing_of_ours_is_left_alone():
+    """Every pool is refreshed because a domain's disks are wherever they are.
+    That does not make every idle pool on the host this teardown's problem."""
+    pool = FakePool("elsewhere", {}, active=False, path="/other")
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(
+        domains=[dom], pools=[pool, FakePool("images", {"app01.qcow2": ""})]
+    )
+
+    outcome = d.destroy({}, conn, [target(dom)])
+    assert outcome.problems == []
+
+
 def test_a_path_that_will_not_resolve_is_skipped_not_unlinked():
     """After a refresh, NO_STORAGE_VOL genuinely means gone. Reaching past the pool
     with os.unlink is what would turn a teardown into arbitrary file deletion on
@@ -363,8 +399,32 @@ def test_one_failure_does_not_stop_the_others_and_is_still_fatal():
     assert [p.severity for p in outcome.problems] == [Severity.ERROR]
 
 
-def test_a_clean_run_raises_nothing():
+def test_a_clean_run_raises_nothing_and_says_what_it_removed():
     dom = domain(active=True, disks=["/pool/app01.qcow2"])
     pool = FakePool("images", {"app01.qcow2": ""})
     conn = FakeConnection(domains=[dom], pools=[pool])
-    d.destroy({}, conn, [target(dom)])
+
+    outcome = d.destroy({}, conn, [target(dom)])
+
+    # Objects, not VMs: the domain and its disk are two things that could have
+    # failed separately, and the caller is the only thing that can report either.
+    assert outcome.destroyed == ["app01", "/pool/app01.qcow2"]
+    assert outcome.skipped == []
+    assert outcome.problems == []
+
+
+def test_the_error_names_everything_left_behind_not_only_what_failed():
+    """`cmd_destroy` never sees the Outcome on this path -- it gets an exception
+    instead -- so a message carrying only the fatal problems drops every leaked
+    volume beside them."""
+    ok = domain("app01", active=False, disks=["/pool/app01.qcow2"])
+    bad = domain("app02", active=True)
+    bad.stop_error = lv_error(1, "internal error")
+    conn = FakeConnection(domains=[ok, bad], pools=[FakePool("images", {})])
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(ok), target(bad)])
+
+    message = str(caught.value)
+    assert "internal error" in message
+    assert "/pool/app01.qcow2" in message, "the volume that would not resolve"

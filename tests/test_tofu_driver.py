@@ -248,3 +248,20 @@ def test_a_missing_binary_says_so(workdir, monkeypatch):
     monkeypatch.setenv("PATH", "")
     with pytest.raises(tofu.TofuError, match="not on PATH"):
         tofu.init(workdir)
+
+
+def test_warnings_are_the_half_that_did_not_stop_the_run():
+    """Nothing read them before: `errors` is consulted on the failure path and the
+    rest of the stream was dropped, so the run directory recorded a clean apply
+    that OpenTofu had warned about."""
+    result = tofu.Result(
+        0,
+        (
+            tofu.Diagnostic(
+                "warning", "deprecated attribute", address="libvirt_domain"
+            ),
+            tofu.Diagnostic("error", "nope"),
+        ),
+    )
+    assert [d.summary for d in result.warnings] == ["deprecated attribute"]
+    assert [d.summary for d in result.errors] == ["nope"]

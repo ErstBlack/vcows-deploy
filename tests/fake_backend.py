@@ -21,6 +21,7 @@ from orchestrator.backends.base import (
     Discovered,
     Existing,
     Inventory,
+    Outcome,
     Prepared,
     Problem,
     Severity,
@@ -46,6 +47,8 @@ class FakeBackend(Backend):
         self.world: list[Existing] = list(world or [])
         self.sessions: list[FakeSession] = []
         self.prepared_dirs: list[Path] = []
+        #: What `destroy` reports back. None means "everything that was asked".
+        self.outcome: Outcome | None = None
 
     # -- offline ---------------------------------------------------------
 
@@ -59,13 +62,14 @@ class FakeBackend(Backend):
 
     def validate(self, cfg: dict) -> list[Problem]:
         target = cfg["target"][self.name]
+        where = f"target.{self.name}.endpoint"
         if target["endpoint"].startswith("bad://"):
+            return [Problem(Severity.ERROR, "endpoint scheme is not supported", where)]
+        # A backend check that refuses nothing. Every verb computes these on the
+        # way in and only `validate` used to get them back.
+        if target["endpoint"].startswith("odd://"):
             return [
-                Problem(
-                    Severity.ERROR,
-                    "endpoint scheme is not supported",
-                    where=f"target.{self.name}.endpoint",
-                )
+                Problem(Severity.WARNING, "endpoint scheme is unusual", where),
             ]
         return []
 
@@ -117,9 +121,17 @@ class FakeBackend(Backend):
         }
 
     def parse_outputs(self, raw: dict) -> Inventory:
-        return Inventory(vms=raw.get("vms", {}).get("value", {}))
+        if "vms" not in raw:
+            raise ValueError("the tofu module declared no `vms` output")
+        return Inventory(vms=raw["vms"].get("value", {}))
 
-    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> None:
+    def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         for t in targets:
             session.destroyed.append(t.name)
             session.world = [e for e in session.world if e.name != t.name]
+        # A backend with no hypervisor semantics tears everything down. Tests that
+        # need a partial teardown -- the case the CLI has to report -- set
+        # `self.outcome` and get it back verbatim.
+        if self.outcome is not None:
+            return self.outcome
+        return Outcome(destroyed=[t.name for t in targets])

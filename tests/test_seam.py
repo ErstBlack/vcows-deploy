@@ -84,7 +84,7 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
     backend = FakeBackend()
     registry = {"fake": backend}
 
-    config = load(cfg, registry)
+    config, _ = load(cfg, registry)
 
     # -- deploy: everything that touches the target happens here ------------
     with backend.connect(config) as session:
@@ -163,7 +163,7 @@ def test_prepare_and_render_work_from_data_alone(no_libvirt, cfg, tmp_path):
     """No session is constructed anywhere in this test, and the apply half still
     completes."""
     backend = FakeBackend()
-    config = load(cfg, {"fake": backend})
+    config, _ = load(cfg, {"fake": backend})
 
     with backend.prepare(
         config, tmp_path, Discovered(vms=[], artifacts={"existing_names": []})

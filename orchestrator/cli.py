@@ -19,10 +19,13 @@ lost, makes unreadable a file D23 already calls disposable.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,13 +40,23 @@ from .backends.base import (
     Problem,
     decide,
 )
-from .config import ConfigError, load, validate, vm_names
+from .config import ConfigError, load, vm_names
 
 #: The R5 build manifest, baked into the image at build time: what OpenTofu, what
 #: provider, which RPMs and which git revision produced this container. Absent
 #: outside the image, where there is nothing to record -- a checkout is not a
 #: release, and inventing a manifest for one would make the two indistinguishable.
 MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
+
+
+class UsageError(Exception):
+    """The command cannot run as invoked, and the reason is a sentence.
+
+    Not a ``ConfigError`` -- nothing is wrong with the config -- and deliberately
+    not a raw ``OSError`` reaching ``main``'s catch-all, which would print
+    ``error: FileExistsError: /runs/lab-a`` and leave the operator to work out
+    which of the two paths they passed it means.
+    """
 
 
 def manifest() -> dict | None:
@@ -70,11 +83,35 @@ def _timestamp() -> str:
 
 
 def _run_dir(cfg: dict, override: str | None) -> Path:
+    """A directory of this run's own. Empty is fine; occupied is not.
+
+    Every deploy applies against fresh state (D23/D40), so a second run in a
+    directory that already holds one is refused rather than merged. Refusing it
+    *here* is the point: this runs before anything connects, where the alternative
+    was a bare ``FileExistsError`` out of ``seed.mkdir()`` after the preflight had
+    already spent a session and printed clean -- or, for destroy, no error at all
+    and a ``run.json`` overwritten beside the earlier run's ``inventory.json``.
+
+    An empty directory that already exists still works. That is the bind-mounted
+    mountpoint an operator hands the container, and it is the documented shape.
+    """
     path = (
         Path(override) if override else Path("runs") / cfg["deployment"] / _timestamp()
     )
     path.mkdir(parents=True, exist_ok=True)
     path = path.resolve()
+    if any(path.iterdir()):
+        raise UsageError(
+            f"{path} is not empty. Every run writes its own directory -- the "
+            f"OpenTofu state is thrown away between them, so two runs cannot "
+            f"share one. "
+            + (
+                "Pass a --run-dir that does not exist yet, or one that is empty, "
+                "or omit it and let vcows write runs/<deployment>/<timestamp>."
+                if override
+                else "Remove it, or move it aside."
+            )
+        )
     # mkdir's mode argument is masked by umask; this is not.
     os.chmod(path, 0o700)
     return path
@@ -91,37 +128,66 @@ def _report(decisions: list[Decision], problems: list[Problem]) -> None:
         print(f"  {p}", file=sys.stderr)
 
 
-def _record(
-    run: Path,
-    command: str,
-    cfg: dict,
-    started: str,
-    outcome: str,
-    decisions: list[Decision] | None = None,
-    extra: dict | None = None,
-) -> None:
+@dataclass
+class _Run:
+    """One run's directory, and everything the record of it will need.
+
+    A holder rather than five arguments because the failure path has to write the
+    same record as the success path, from an ``except`` block that can see none of
+    the locals the body accumulated. Fields are filled in as they are learned, so
+    a run that dies at its third step still records its first two.
+    """
+
+    path: Path
+    command: str
+    cfg: dict
+    started: str
+    decisions: list[Decision] = field(default_factory=list)
+    extra: dict = field(default_factory=dict)
+
+
+def _record(run: _Run, outcome: str, **extra: Any) -> None:
     """``run.json``: what was asked, what was decided, what happened.
 
     Not the R5 build manifest -- that is baked at image build time and copied in
     by Stage 5. This is the half a runtime can actually observe.
     """
     _write_json(
-        run / "run.json",
+        run.path / "run.json",
         {
             "vcows": VERSION,
-            "command": command,
-            "deployment": cfg["deployment"],
-            "backend": cfg["backend"],
-            "started": started,
+            "command": run.command,
+            "deployment": run.cfg["deployment"],
+            "backend": run.cfg["backend"],
+            "started": run.started,
             "finished": _timestamp(),
             "outcome": outcome,
             "decisions": [
                 {"vm": d.vm_name, "action": d.action.value, "reason": d.reason}
-                for d in (decisions or [])
+                for d in run.decisions
             ],
-            **(extra or {}),
+            **run.extra,
+            **extra,
         },
     )
+
+
+def _guard(run: _Run, body: Callable[[], int]) -> int:
+    """Run one verb's body, and leave a record whatever it does.
+
+    ``BaseException``, so a Ctrl-C mid-teardown -- the run with the most to say and
+    the least chance of saying it -- writes one too. The exception then continues
+    to ``main``, which owns the message and the exit code; a failure writing the
+    record must not replace it with a worse one.
+    """
+    try:
+        return body()
+    except BaseException as exc:
+        # Suppressed, not handled: a full disk here must not replace the
+        # exception that says what actually went wrong.
+        with contextlib.suppress(OSError):
+            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+        raise
 
 
 # -- validate ---------------------------------------------------------------
@@ -129,10 +195,9 @@ def _record(
 
 def cmd_validate(args: argparse.Namespace) -> int:
     """Offline only. No connection is opened and nothing is written."""
-    cfg = load(args.config, REGISTRY)
-    # `load` raises on anything fatal, so what is left here is warnings -- which it
-    # discards. Re-running the same validation is cheaper than a second entry point.
-    for problem in validate(cfg, REGISTRY):
+    cfg, problems = load(args.config, REGISTRY)
+    # `load` raises on anything fatal, so what is left here is warnings.
+    for problem in problems:
         print(f"  {problem}", file=sys.stderr)
     print(
         f"{args.config}: valid ({len(cfg['vms'])} VMs, "
@@ -160,9 +225,9 @@ def _look(cfg: dict) -> tuple[Discovered, list[Decision], list[Problem]]:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    cfg = load(args.config, REGISTRY)
+    cfg, config_problems = load(args.config, REGISTRY)
     _, decisions, problems = _look(cfg)
-    _report(decisions, problems)
+    _report(decisions, config_problems + problems)
     refused = [d for d in decisions if d.action is Action.REFUSE]
     return 1 if refused or any(p.fatal for p in problems) else 0
 
@@ -171,25 +236,35 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:
-    cfg = load(args.config, REGISTRY)
-    backend = REGISTRY[cfg["backend"]]
+    cfg, config_problems = load(args.config, REGISTRY)
     started = _timestamp()
-    run = _run_dir(cfg, args.run_dir)
+    run = _Run(_run_dir(cfg, args.run_dir), "deploy", cfg, started)
+    return _guard(run, lambda: _deploy(run, config_problems))
 
-    discovered, decisions, problems = _look(cfg)
+
+def _deploy(run: _Run, config_problems: list[Problem]) -> int:
+    cfg = run.cfg
+    backend = REGISTRY[cfg["backend"]]
+
+    discovered, decisions, found = _look(cfg)
+    problems = config_problems + found
     _report(decisions, problems)
+    # As soon as they exist, so that every record from here on carries them --
+    # including the failure one. A refusal's reason belonged only to stderr.
+    run.decisions = decisions
+    run.extra["problems"] = [str(p) for p in problems]
 
     # Nothing has been touched yet, and this is the last point where that is true.
     if any(d.action is Action.REFUSE for d in decisions) or any(
         p.fatal for p in problems
     ):
-        _record(run, "deploy", cfg, started, "refused", decisions)
+        _record(run, "refused")
         print("refusing to deploy; nothing was changed", file=sys.stderr)
         return 1
 
     creating = {d.vm_name for d in decisions if d.action is Action.CREATE}
     if not creating:
-        _record(run, "deploy", cfg, started, "nothing-to-create", decisions)
+        _record(run, "nothing-to-create")
         print("nothing to create")
         return 0
 
@@ -199,9 +274,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # state of a new run directory (D40) there is nothing to drop it from.
     create_cfg = {**cfg, "vms": [vm for vm in cfg["vms"] if vm["name"] in creating]}
 
-    seed = run / "seed"
+    seed = run.path / "seed"
     seed.mkdir()
-    workdir = run / "tofu"
+    workdir = run.path / "tofu"
     workdir.mkdir()
 
     with backend.prepare(create_cfg, seed, discovered) as prepared:
@@ -209,27 +284,41 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         _stage_module(module_dir(backend), workdir)
         _write_json(workdir / "main.auto.tfvars.json", tfvars)
 
-        tofu.init(workdir)
+        inited = tofu.init(workdir)
         planned = tofu.plan(workdir, workdir / "plan.bin")
         if not planned.changes.get("add"):
             raise tofu.TofuError(
                 f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
             )
-        tofu.apply(workdir, workdir / "plan.bin")
+        applied = tofu.apply(workdir, workdir / "plan.bin")
         raw = tofu.outputs(workdir)
 
+    # OpenTofu printed these live -- `_run` inherits stdout -- so they are not
+    # re-printed. What they were missing is the run directory an air-gapped site
+    # ships back, where nothing recorded them at all.
+    run.extra["tofu_warnings"] = [
+        str(d) for r in (inited, planned, applied) for d in r.warnings
+    ]
+
     inventory = backend.parse_outputs(raw)
-    _write_json(run / "inventory.json", {"vms": inventory.vms})
+    if len(inventory.vms) != len(creating):
+        # The module is the authority on what it created and `creating` is the
+        # authority on what was asked for. When they disagree the run has two
+        # artifacts that contradict each other, and recording either as the truth
+        # is worse than refusing to record.
+        raise tofu.TofuError(
+            f"the module reported {len(inventory.vms)} VM(s) for the "
+            f"{len(creating)} it was asked to create: "
+            f"{', '.join(sorted(set(creating) - set(inventory.vms))) or 'names differ'}"
+        )
+    _write_json(run.path / "inventory.json", {"vms": inventory.vms})
     _record(
         run,
-        "deploy",
-        cfg,
-        started,
         "ok",
-        decisions,
-        extra={"created": sorted(creating), "tofu": tofu.version(workdir)},
+        created=sorted(creating),
+        tofu=tofu.version(workdir),
     )
-    print(f"created {len(inventory.vms)} VM(s); run directory {run}")
+    print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
     return 0
 
 
@@ -252,10 +341,17 @@ def _stage_module(source: Path, workdir: Path) -> None:
 
 
 def cmd_destroy(args: argparse.Namespace) -> int:
-    cfg = load(args.config, REGISTRY)
-    backend = REGISTRY[cfg["backend"]]
+    cfg, config_problems = load(args.config, REGISTRY)
     started = _timestamp()
-    run = _run_dir(cfg, args.run_dir)
+    run = _Run(_run_dir(cfg, args.run_dir), "destroy", cfg, started)
+    return _guard(run, lambda: _destroy(args, run, config_problems))
+
+
+def _destroy(
+    args: argparse.Namespace, run: _Run, config_problems: list[Problem]
+) -> int:
+    cfg = run.cfg
+    backend = REGISTRY[cfg["backend"]]
     deployment = cfg["deployment"]
 
     with backend.connect(cfg) as session:
@@ -271,8 +367,9 @@ def cmd_destroy(args: argparse.Namespace) -> int:
 
         # Advisory here, fatal on deploy: a base image whose size disagrees with
         # the local copy, or an orphaned volume, must not block a teardown.
-        for problem in discovered.problems:
+        for problem in config_problems + discovered.problems:
             print(f"  {problem}", file=sys.stderr)
+        run.extra["problems"] = [str(p) for p in config_problems + discovered.problems]
         for e in others:
             assert e.marker is not None  # `others` comes from `marked`
             print(
@@ -283,25 +380,45 @@ def cmd_destroy(args: argparse.Namespace) -> int:
             print(f"  {e.name:<20} destroy {e.marker.name if e.marker else ''}")
 
         if not targets:
-            _record(run, "destroy", cfg, started, "nothing-to-destroy")
+            _record(run, "nothing-to-destroy")
             print(f"no VMs marked for deployment {deployment!r} on this target")
             return 0
 
         if not _confirm(len(targets), deployment, args.yes):
-            _record(run, "destroy", cfg, started, "cancelled")
+            _record(run, "cancelled")
             return 1
 
-        backend.destroy(cfg, session, targets)
+        out = backend.destroy(cfg, session, targets)
+
+    # What it did, not what it was asked to do. A teardown that undefines a domain
+    # and leaves both its volumes on disk is the failure findings.md §1 rejects
+    # `tofu destroy` for, and it is indistinguishable from success unless this
+    # loop runs.
+    for name in out.skipped:
+        print(f"  {name:<20} skipped, not removed by this run")
+    for problem in out.problems:
+        print(f"  {problem}", file=sys.stderr)
 
     _record(
         run,
-        "destroy",
-        cfg,
-        started,
-        "ok",
-        extra={"destroyed": sorted(e.name for e in targets)},
+        "partial" if out.skipped else "ok",
+        destroyed=sorted(out.destroyed),
+        skipped=sorted(out.skipped),
+        problems=run.extra["problems"] + [str(p) for p in out.problems],
     )
-    print(f"destroyed {len(targets)} VM(s)")
+    print(f"destroyed {len(out.destroyed)} object(s)")
+    if out.skipped:
+        # Not a failure -- nothing here raised, and every target was attempted --
+        # but not a success either. A domain already gone is a resume finishing
+        # somebody else's crash; a volume that would not resolve is a leak. Both
+        # end with an object this run did not account for, and a script that
+        # reads only the exit code has to be told.
+        print(
+            f"{len(out.skipped)} object(s) were not removed by this run; "
+            f"{run.path}/run.json names them",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -386,6 +503,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         for problem in exc.problems:
             print(f"  {problem}", file=sys.stderr)
+        return 1
+    except UsageError as exc:
+        print(f"vcows: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)

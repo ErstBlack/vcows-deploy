@@ -68,6 +68,16 @@ class Result:
     def errors(self) -> tuple[Diagnostic, ...]:
         return tuple(d for d in self.diagnostics if d.severity == "error")
 
+    @property
+    def warnings(self) -> tuple[Diagnostic, ...]:
+        """The half that does not stop the run.
+
+        OpenTofu already rendered these on the operator's terminal -- ``_run``
+        inherits stdout -- so nothing re-prints them. They are here so the run
+        directory can record them, which is the copy that outlives the terminal.
+        """
+        return tuple(d for d in self.diagnostics if d.severity == "warning")
+
 
 class TofuError(Exception):
     """A tofu invocation failed, or produced something we refuse to continue on."""

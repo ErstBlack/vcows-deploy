@@ -37,21 +37,33 @@ def write(tmp_path, text, name="lab-a.yaml"):
 
 
 def test_loads_a_valid_config(tmp_path, registry):
-    cfg = load(write(tmp_path, CONFIG), registry)
+    cfg, _ = load(write(tmp_path, CONFIG), registry)
     assert cfg["backend"] == "fake"
     assert vm_names(cfg) == ["app01", "app02"]
+
+
+def test_load_hands_back_the_warnings_it_computed(tmp_path, registry):
+    """Every verb validates on the way in and every verb but `validate` threw the
+    non-fatal half away -- so `validate` recovered it by running the whole of
+    validation a second time, and the other three never mentioned it at all."""
+    from orchestrator.backends.base import Severity
+
+    text = CONFIG.replace("good://example", "odd://example")
+    cfg, problems = load(write(tmp_path, text), registry)
+    assert cfg["backend"] == "fake"
+    assert [p.severity for p in problems] == [Severity.WARNING]
 
 
 def test_deployment_defaults_to_filename_stem(tmp_path, registry):
     """A config that never says `deployment` still stamps something meaningful
     into every marker."""
     text = CONFIG.replace("deployment: lab-a\n", "")
-    cfg = load(write(tmp_path, text, name="site-7.yaml"), registry)
+    cfg, _ = load(write(tmp_path, text, name="site-7.yaml"), registry)
     assert cfg["deployment"] == "site-7"
 
 
 def test_explicit_deployment_wins(tmp_path, registry):
-    cfg = load(write(tmp_path, CONFIG, name="ignored.yaml"), registry)
+    cfg, _ = load(write(tmp_path, CONFIG, name="ignored.yaml"), registry)
     assert cfg["deployment"] == "lab-a"
 
 

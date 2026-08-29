@@ -161,3 +161,19 @@ def test_the_provider_is_given_the_transport_that_can_reach_the_host(cfg, prepar
     # Credentials travel through ~/.ssh/config, which the container's entrypoint
     # writes -- no spelling of the URI parameters reaches both clients.
     assert "?" not in rendered
+
+
+# -- the other half of the module contract ---------------------------------
+
+
+def test_a_missing_vms_output_is_a_broken_module_not_an_empty_inventory():
+    """`parse_outputs` exists so the module's `output` block is not the public
+    API. Reading a renamed output as `{}` spends that isolation on silence: the
+    deploy records `created 0 VM(s)` and `outcome: ok` beside an `inventory.json`
+    that contradicts both."""
+    from orchestrator.backends.libvirt import LibvirtBackend
+
+    backend = LibvirtBackend()
+    assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
+    with pytest.raises(ValueError, match="vms"):
+        backend.parse_outputs({"base_volume_path": {"value": "/pool/golden.qcow2"}})

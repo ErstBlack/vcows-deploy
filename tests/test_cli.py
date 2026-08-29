@@ -117,6 +117,21 @@ def test_validate_reports_every_problem_at_once(tmp_path, backend, capsys):
     assert "endpoint" in err
 
 
+def test_a_config_warning_reaches_more_than_validate(
+    backend, tmp_path, monkeypatch, capsys
+):
+    """`load` computes them on the way into every verb. Dropping them everywhere
+    but `validate` meant an operator only saw them if they asked twice."""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "lab-a.yaml"
+    path.write_text(CONFIG.replace("good://example", "odd://example"))
+
+    assert cli.main(["validate", str(path)]) == 0
+    assert "endpoint scheme is unusual" in capsys.readouterr().err
+    assert cli.main(["preflight", str(path)]) == 0
+    assert "endpoint scheme is unusual" in capsys.readouterr().err
+
+
 # -- preflight --------------------------------------------------------------
 
 
@@ -201,6 +216,90 @@ def test_a_refusal_stops_the_deploy_before_anything_is_built(
     assert "nothing was changed" in capsys.readouterr().err
 
 
+def test_a_refused_deploys_reason_reaches_the_run_record(
+    backend, config, tmp_path, monkeypatch
+):
+    """`decisions` records what would have been done; without `problems` the
+    *reason* it was not exists only on a terminal somebody has since closed."""
+    from orchestrator.backends.base import Discovered, Problem, Severity
+
+    monkeypatch.setattr(
+        backend,
+        "preflight",
+        lambda cfg, session: Discovered(
+            vms=[],
+            artifacts={"existing_names": []},
+            problems=[Problem(Severity.ERROR, "storage pool 'images' does not exist")],
+        ),
+    )
+    assert cli.main(["deploy", config]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "refused"
+    assert any("storage pool 'images'" in p for p in record["problems"])
+
+
+def test_a_failed_apply_still_leaves_a_run_record(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """The run directory is what a site ships back for support, and today it is
+    present for every run where nothing happened and absent for every run where
+    something did."""
+
+    def boom(*a, **k):
+        raise cli.tofu.TofuError("tofu init failed (exit 1): no provider mirror")
+
+    monkeypatch.setattr(cli.tofu, "init", boom)
+    assert cli.main(["deploy", config]) == 1
+
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "no provider mirror" in record["error"]
+    assert record["decisions"], "what it was about to do survives the failure"
+    assert "TofuError" in capsys.readouterr().err
+
+
+def test_an_interrupted_destroy_still_leaves_a_run_record(
+    backend, config, tmp_path, monkeypatch
+):
+    """Ctrl-C mid-teardown is the case with the most to say and the least chance
+    of being said. `except BaseException`, not `except Exception`."""
+
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(backend, "destroy", interrupt)
+    assert cli.main(["destroy", config, "--yes"]) == 1
+
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "KeyboardInterrupt" in record["error"]
+
+
+def test_a_module_that_created_fewer_vms_than_asked_fails_the_deploy(
+    backend, config, tmp_path, monkeypatch
+):
+    """A renamed or partial output yields `created 0 VM(s)` under `outcome: ok`:
+    a run whose two artifacts contradict each other, with the record siding
+    against the truth. This is the reporting shape acceptance defect 5 passed
+    through."""
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
+    )
+    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "outputs", lambda w: {"vms": {"value": {"app01": {"name": "app01"}}}}
+    )
+    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
+
+    assert cli.main(["deploy", config]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "1 VM(s) for the 2" in record["error"]
+    assert not (latest_run(tmp_path) / "inventory.json").exists()
+
+
 def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
     """`Discovered.problems` is how a backend reports what is wrong with the
     *target* -- a missing pool, an orphaned volume. Deploy treats them as fatal."""
@@ -219,6 +318,41 @@ def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
         cli.tofu, "init", lambda *a, **k: pytest.fail("tofu must not run")
     )
     assert cli.main(["deploy", config]) == 1
+
+
+# -- the run directory ------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [["deploy"], ["destroy", "--yes"]])
+def test_a_non_empty_run_dir_is_refused_before_anything_connects(
+    backend, config, tmp_path, capsys, argv
+):
+    """D40 gives every run a fresh state, and reusing a directory breaks it two
+    different ways: deploy dies on `seed/` with a bare FileExistsError, destroy
+    creates no subdirectories at all and silently overwrites the earlier run's
+    `run.json` beside its still-current `inventory.json`. Refuse both, and refuse
+    before the connected preflight has spent a session and printed clean.
+    """
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "run.json").write_text("{}\n")
+
+    assert cli.main([argv[0], config, "--run-dir", str(used), *argv[1:]]) == 1
+    assert backend.sessions == [], "the refusal must land before a connection"
+    err = capsys.readouterr().err
+    assert "--run-dir" in err and str(used) in err
+    assert (used / "run.json").read_text() == "{}\n", "nothing was overwritten"
+
+
+def test_an_empty_run_dir_still_works(backend, config, tmp_path):
+    """The bind-mounted mountpoint. `podman run -v ./runs/lab-a:/run-dir` presents
+    an empty directory that already exists, and that has to keep working."""
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    backend.world = [ours("app01")]
+
+    assert cli.main(["destroy", config, "--yes", "--run-dir", str(mount)]) == 0
+    assert (mount / "run.json").is_file()
 
 
 # -- destroy ----------------------------------------------------------------
@@ -240,6 +374,36 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     assert json.loads((latest_run(tmp_path) / "run.json").read_text())["destroyed"] == [
         "app01"
     ]
+
+
+def test_a_destroy_that_could_not_finish_says_what_it_left(
+    backend, config, tmp_path, capsys
+):
+    """2.3, end to end. An inactive pool makes every disk in it resolve as
+    "already gone": the domain is destroyed and undefined, its marker with it,
+    both volumes stay on disk, and the operator was told it worked."""
+    from orchestrator.backends.base import Outcome, Problem, Severity
+
+    backend.world = [ours("app01")]
+    backend.outcome = Outcome(
+        destroyed=["app01"],
+        skipped=["/pool/app01.qcow2", "/pool/app01-seed.iso"],
+        problems=[
+            Problem(Severity.WARNING, "could not refresh pool 'images'", "storage")
+        ],
+    )
+
+    assert cli.main(["destroy", config, "--yes"]) == 1
+    captured = capsys.readouterr()
+    assert "/pool/app01.qcow2" in captured.out
+    assert "/pool/app01-seed.iso" in captured.out
+    assert "could not refresh pool" in captured.err
+
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "partial"
+    assert record["destroyed"] == ["app01"]
+    assert record["skipped"] == ["/pool/app01-seed.iso", "/pool/app01.qcow2"]
+    assert any("could not refresh pool" in p for p in record["problems"])
 
 
 def test_destroy_needs_an_answer_when_there_is_nobody_to_ask(

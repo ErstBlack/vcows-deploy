@@ -45,8 +45,17 @@ class FakeVolume:
 
 
 class FakePool:
-    def __init__(self, name: str, volumes: dict[str, str], active: bool = True):
+    def __init__(
+        self,
+        name: str,
+        volumes: dict[str, str],
+        active: bool = True,
+        path: str = "/pool",
+    ):
         self._name = name
+        #: The pool's target directory. Readable on an inactive pool, which is the
+        #: only way to tell whether one holds a disk this teardown needs.
+        self._path = path
         #: name -> XMLDesc. Keys not in `visible` are on disk but not in libvirt's
         #: in-memory cache, which is the state D35 exists for.
         self.volumes = dict(volumes)
@@ -60,6 +69,12 @@ class FakePool:
 
     def isActive(self) -> bool:
         return self._active
+
+    def XMLDesc(self, _flags: int = 0) -> str:
+        return (
+            f"<pool type='dir'><name>{self._name}</name>"
+            f"<target><path>{self._path}</path></target></pool>"
+        )
 
     def refresh(self, _flags: int = 0) -> None:
         self.refreshed += 1

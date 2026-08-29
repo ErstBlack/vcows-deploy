@@ -192,7 +192,7 @@ class Backend(ABC):
     @abstractmethod
     def parse_outputs(self, raw) -> Inventory: ...
     @abstractmethod
-    def destroy(self, cfg, session, targets) -> None: ...
+    def destroy(self, cfg, session, targets) -> Outcome: ...
 ```
 
 Convention, not a method: the module lives at `backends/<name>/tofu/`.
@@ -263,6 +263,27 @@ Keep the `target.<backend>` nesting. An earlier note suggested flattening it to 
 1. Core runs the full pipeline — validate → preflight → prepare → render → apply → outputs → destroy — **with no libvirt import anywhere in the call path.** That is the actual test of whether the seam is real.
 2. The ownership policy is exercised against a backend with no libvirt semantics: absent → create, ours → skip, unmarked → refuse.
 3. Two backends register simultaneously and the config schema composes.
+
+### Four result carriers, and why they stay four
+
+`Outcome`, `Discovered.problems`, `Result.diagnostics` and `ConfigError.problems`
+are four independently-invented ways of saying what went wrong. They are not
+unified, and that is a decision rather than an oversight.
+
+They answer different questions at different times: what is wrong with the config
+(before anything connects), what is wrong with the target (while connected), what
+OpenTofu said about a plan it has already printed to the terminal, and what a
+teardown did to each of twenty objects. A single carrier would have to be the
+union of four shapes, and every consumer would filter it back down to the one it
+started with.
+
+What was actually wrong is that three of them lost their contents at the consumer.
+The rule instead is **each is printed where it arrives**: `load` returns its
+warnings to every verb rather than only `validate` re-deriving them,
+`Discovered.problems` reaches stderr on all three connected verbs, `Outcome` is
+returned and reported by `cmd_destroy`, and `Result.warnings` is recorded into
+`run.json` — not re-printed, because `tofu` inherits stdout and has already
+rendered them live.
 
 ### Explicitly not built
 

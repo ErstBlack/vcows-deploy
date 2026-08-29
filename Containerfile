@@ -160,5 +160,11 @@ LABEL org.opencontainers.image.title="vcows-deploy" \
       vendor="vcows" \
       license="${IMAGE_LICENSES}"
 
+# Explicit, because the default run directory is `runs/<deployment>/<timestamp>`
+# relative to it -- so this is what makes the README's `-v ./runs:/runs` land where
+# vcows writes. The Rocky base sets no WORKDIR and podman would default to `/`
+# anyway; the point is that it stays true if either of those changes.
+WORKDIR /
+
 ENTRYPOINT ["/usr/local/bin/vcows-entrypoint"]
 CMD ["--help"]

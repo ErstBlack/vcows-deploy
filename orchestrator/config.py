@@ -97,12 +97,17 @@ def core_schema(registry: dict[str, Any]) -> dict:
     }
 
 
-def load(path: str | Path, registry: dict[str, Any]) -> dict:
-    """Load, validate, and return the config.
+def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem]]:
+    """Load, validate, and return the config and everything non-fatal about it.
 
     Raises ``ConfigError`` carrying *every* problem rather than the first: an
     operator editing a config at a site should not have to round-trip once per
     typo.
+
+    The warnings come back rather than being dropped because this is the only
+    place they are computed. Every verb loads, so every verb has them; returning
+    them is what stopped ``validate`` from being the one command that could see
+    them, and only by validating a second time.
     """
     path = Path(path)
     try:
@@ -132,7 +137,7 @@ def load(path: str | Path, registry: dict[str, Any]) -> dict:
     problems = validate(raw, registry)
     if any(p.fatal for p in problems):
         raise ConfigError(problems)
-    return raw
+    return raw, problems
 
 
 def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:

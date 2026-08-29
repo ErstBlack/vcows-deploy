@@ -63,8 +63,13 @@ podman run --rm \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
 
-Then `deploy /config.yaml --run-dir /runs/lab-a`, and `destroy /config.yaml` when
-it is time. `validate` needs none of the mounts but the config.
+Then `deploy /config.yaml`, and `destroy /config.yaml` when it is time. `validate`
+needs none of the mounts but the config.
+
+Each run writes `/runs/<deployment>/<timestamp>/` — its plan, its state, its seed
+ISOs and a `run.json` saying what happened. `--run-dir` puts one run somewhere
+else instead, and takes the timestamp with it: the directory must be empty, since
+the state is thrown away between runs and two of them cannot share one.
 
 | Command | |
 |---|---|
