@@ -48,8 +48,24 @@ create is never adopted or overwritten.
 
 Rootless podman. The image sets no `USER`: under rootless podman container root
 *is* the invoking user, which is what makes a bind-mounted run directory and a
-0600 SSH key work without a UID-mapping dance. Running it as a different UID is
-supported (`--user`) but then the bind mounts are yours to line up.
+0600 SSH key work without a UID-mapping dance.
+
+**`--user` works, and it needs two things lined up, not one.** Measured with
+`--user 4242`:
+
+* podman synthesises a passwd entry whose home is `/`, and `/` is not writable.
+  The entrypoint resolves `~` from that entry — not from `HOME`, deliberately,
+  because that is what `ssh` does — so it cannot write `~/.ssh/config`, says so,
+  and the connection then fails with `Host key verification failed`. Setting
+  `HOME` does not help. Give it a writable home (`--passwd-entry`) or mount your
+  own config at the passwd home's `.ssh/config`.
+* the mounted 0600 key is owned by the mapped host UID, so uid 4242 cannot read
+  it: `Load key ...: Permission denied`. `:U` on that mount fixes it, at the
+  cost of chowning your host copy.
+
+With both, `preflight` and `deploy` run clean. With neither, a run directory on
+a foreign-UID mount also stays `0755` and vcows tells you what that costs rather
+than failing — the seed ISOs in it carry `user_data` verbatim.
 
 ## Using it
 

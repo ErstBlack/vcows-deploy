@@ -45,9 +45,14 @@ IMAGE_SCHEMA = {
     "properties": {
         # Path inside the container, bind-mounted read-only. Absolute, because a
         # relative path resolves against a working directory nothing here
-        # controls, and because the backend hands this string to the provider as
-        # a volume source -- where a `file://` or `http://` form would be
-        # resolved by something other than us, if it is resolved at all.
+        # controls, and because the backend hands this string to the provider's
+        # `create.content.url`, which really does resolve a URL. Measured on the
+        # rig: a bare path, `file://` and `http://` all create the volume, and
+        # the HTTP fetch came from the *client* -- an http server bound to the
+        # client's loopback, which the hypervisor cannot reach, served it. So
+        # without this anchor a config could send the container to the network
+        # for its own base image, at a site whose whole premise is that there
+        # isn't one.
         "source_qcow2": {"type": "string", "minLength": 1, "pattern": r"^/"},
         "sha256": {"type": "string", "pattern": r"^[0-9a-fA-F]{64}\Z"},
         # Deterministic and shared per host. Named after the image rather than

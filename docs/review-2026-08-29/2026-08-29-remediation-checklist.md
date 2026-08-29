@@ -244,15 +244,28 @@ before the code lands means doing them twice.
 
 These cannot be closed by reading or by a fix on this machine. Schedule the host.
 
-- [ ] **2.15** `<os firmware='efi'>` beside a pinned loader. **Do not ship a fix on reading alone.** Define the module's XML for one pinned-loader VM on a Rocky 9 host, `virsh dumpxml`, diff against the tfvars. If old libvirt honours the pin, this drops to S5. `main.tf:109` [04 F-TOFU-01, 17 NEEDS-EVIDENCE]
-- [ ] **2.12** Whether the provider actually resolves `file://` / `http://` in `create.content.url`. One rig execution. The fix does not depend on the answer. [18 F-SEC-02, 17]
-- [ ] Whether a split `virtproxyd` can present a domain-driver failure with a live storage driver. If it can, 2.9 rises. [14]
-- [ ] **D3** — the real golden artifact is still unverified; the acceptance run used the `Rocky-9-GenericCloud-Base` stand-in. [acceptance.md]
-- [ ] cloud-init 22.1 / 23.1 on RHEL 9.0–9.3 EUS, and the `sysconfig` renderer path. [03, 19 G3]
-- [ ] Run the rig gate once with `VCOWS_RIG_URI` set — 15 tests, read-only by construction, never executed. [19 G9]
-- [ ] `systemctl restart virtqemud`, then re-read a probe's metadata. This is the one `findings.md` claim (`:109`, marker survives a daemon restart) verified by nothing, and the spike file says so in writing. [19 G6]
-- [ ] `podman run --rm --user 4242 IMAGE id`, plus one deploy with `--run-dir` on a foreign-UID bind mount. Settles README:48-53. [06, 13 F-RUNDIR-06, 19 G11]
-- [ ] Whether `UNDEFINE_NVRAM` reliably removes the varstore, and what a flag-shed retry to `FLOOR` leaves on RHEL 9 EUS. [11]
+**The host was scheduled on 2026-08-29.** Six of these nine are now closed and one
+is narrowed; each row below carries its own evidence. What survived the session
+splits cleanly in two, and neither half is about access:
+
+* **Needs an *old* libvirt.** The rig is Fedora 44 / libvirt 12.0.0, newer than any
+  target vcows ships against, so the firmware pin on old libvirt, the raw `.fd`
+  varstore, and the flag-shed to `FLOOR` cannot be asked here at any privilege
+  level.
+* **Needs an artifact or an image nobody has staged.** D3's real golden image, and
+  a Rocky 9.0–9.3 cloud image for the old-cloud-init question.
+
+Root on the rig was available and used, so nothing below is waiting on permission.
+
+- [ ] **2.15** `<os firmware='efi'>` beside a pinned loader. **Still blocked, and narrower now.** Run on the rig 2026-08-29: libvirt **12.0.0** honours the pin exactly — `app02` came back with its configured `OVMF_CODE_4M.qcow2` and named template, `secure-boot` and `enrolled-keys` both `no`, while the autoselected `app01` got `OVMF_CODE_4M.secboot.qcow2` with both `yes`. So the construct is not wrong in principle. The open question is unchanged: whether **old** libvirt honours it. Needs a Rocky 8 or Rocky 9 host, or a nested one. `main.tf:109` [04 F-TOFU-01, 17 NEEDS-EVIDENCE]
+- [x] **2.12** **Closed 2026-08-29 — it resolves, and the threat was real.** Three applies of a one-resource module against the rig: a bare path, `file:///…` and `http://127.0.0.1:18080/…` all created the volume. The HTTP fetch was served by an http server bound to the *client's* loopback, which the hypervisor cannot reach, so the provider resolves the URL **client-side** — inside the container, over whatever egress it has. S5's `"pattern": "^/"` on `source_qcow2` was closing a real path to the network, not a footgun. Recorded at `config.py`. [18 F-SEC-02, 17]
+- [x] **Closed 2026-08-29 — it cannot, so 2.9 does not rise.** Tested in the equivalent shape, since this rig runs no `virtproxyd`: `virtqemud` and its sockets stopped, `virtstoraged` left running. `virtstoraged-sock` stays present and listening and is unreachable anyway — every client enters through `virtqemud-sock`, so the connection never opens. `virsh` on the rig itself gets the same refusal vcows does, before any driver call. The stale-target window `_reverify` closes is a race against another operator, not a driver asymmetry. [14]
+- [ ] **D3** — the real golden artifact is still unverified; the acceptance run used the `Rocky-9-GenericCloud-Base` stand-in, and so did the 2026-08-29 rig session. **Blocked on the artifact, not on hardware** — no amount of rig time substitutes for it. [acceptance.md]
+- [ ] cloud-init 22.1 / 23.1 on RHEL 9.0–9.3 EUS, and the `sysconfig` renderer path. **Still open and worth scheduling first of what is left**: it is the same class of failure as the acceptance run's defect 5, which was the worst of the five — a guest that boots healthy on an address nobody asked for. Needs a Rocky 9.0–9.3 image, which is a download rather than a hypervisor. [03, 19 G3]
+- [x] **Closed 2026-08-29.** The rig gate ran for the first time: **15 passed**. With `VCOWS_GATES=all` plus the rig and image gates supplied, the full suite is **390 passed, 0 skipped** — the first run in which no gate reported itself unlooked-at. [19 G9]
+- [x] **Closed 2026-08-29.** `virtqemud` restarted; `vcows-probe02`'s payload came back **byte-identical and un-reindented**, still found by marker rather than by name. That also closes §6 spike item 2's round trip, which the same session exercised through the OpenTofu create path. Host reboot rests on the same persistence and stays inferred. [19 G6]
+- [x] **Closed 2026-08-29, and it corrected the README.** `--user 4242` hits **two** walls, not the one README named. First: podman synthesises a passwd entry whose home is `/`, unwritable, and `entrypoint.home()` reads the passwd entry rather than `HOME` — deliberately, because that is what `ssh` does — so `~/.ssh/config` cannot be written and the connection dies with `Host key verification failed`. Setting `HOME` is not a lever. Second, and only then: the 0600 key is owned by the mapped host UID and uid 4242 cannot read it. With `--passwd-entry` giving a writable home and `:U` on the key mount, `preflight` runs clean. A `--run-dir` on a foreign-UID mount stays `0755` and S9's warning names exactly what that costs. [06, 13 F-RUNDIR-06, 19 G11]
+- [x] **Half closed 2026-08-29.** Two EFI domains — one autoselected, one with a pinned loader — wrote `app01_VARS.qcow2` and `app02_VARS.qcow2` at define time, and `destroy` removed both, watched at two-second resolution from a root shell. `acceptance.md`'s claim, which had no evidence behind it, is confirmed and `findings.md` §2 corrected. **Still open:** this is the qcow2 template path on libvirt 12.0.0. The raw `.fd` templates Rocky 9 and 10 ship, and what a flag-shed retry to `FLOOR` leaves on 9.0/9.1 EUS, need an old-libvirt target. [11]
 
 ## Not scheduled — decisions, not tasks
 

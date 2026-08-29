@@ -133,7 +133,11 @@ acceptance run as what would confirm it. It disconfirmed it.
   findings.md §2's accepted gap, behaving as specified.
 * **The NVRAM suffix.** Both domains wrote `<name>_VARS.qcow2`, matching the
   qcow2 template, and both files were removed by the `UNDEFINE_NVRAM` bit on
-  teardown — the first NVRAM files this rig has ever had.
+  teardown — the first NVRAM files this rig has ever had. **Independently
+  confirmed on 2026-08-29** by watching `/var/lib/libvirt/qemu/nvram/` from a root
+  shell at two-second resolution across a second deploy and destroy; this run
+  could not read that directory itself, so until then the claim rested on
+  inference. See `findings.md` §2.
 * **Secure Boot, incidentally.** With no `loader` configured, libvirt selected
   `OVMF_CODE_4M.secboot.qcow2` with enrolled keys, and the guest booted. The
   pinned-loader VM got the non-secboot build. Both work.
