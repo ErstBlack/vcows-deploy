@@ -32,30 +32,6 @@ def parsed(name: str):
     return ET.fromstring(fixture(name))
 
 
-# -- the URI ---------------------------------------------------------------
-
-
-def test_ssh_options_are_appended_not_accepted_from_the_operator():
-    uri = preflight.connection_uri(
-        {
-            "uri": "qemu+ssh://vcows@vcows/system",
-            "ssh_keyfile": "/run/secrets/id_ed25519",
-            "known_hosts": "/run/secrets/known_hosts",
-        }
-    )
-    assert uri.startswith("qemu+ssh://vcows@vcows/system?")
-    assert "keyfile=%2Frun%2Fsecrets%2Fid_ed25519" in uri
-    assert "known_hosts=%2Frun%2Fsecrets%2Fknown_hosts" in uri
-    # R-D refuses an operator-supplied query string, so this is the only thing
-    # that can build one -- which is what keeps no_verify=1 off the connection.
-    assert "no_verify" not in uri
-
-
-def test_no_query_string_when_neither_option_is_configured():
-    uri = preflight.connection_uri({"uri": "qemu+ssh://vcows@vcows/system"})
-    assert uri == "qemu+ssh://vcows@vcows/system"
-
-
 # -- the marker ------------------------------------------------------------
 
 

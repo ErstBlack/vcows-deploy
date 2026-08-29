@@ -22,7 +22,13 @@ from typing import Any
 
 from ...marker import Marker
 from ..base import Prepared
-from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT, mac_of, primary_index
+from .schema import (
+    FIRMWARE_DEFAULT,
+    MACHINE_DEFAULT,
+    connection_uri,
+    mac_of,
+    primary_index,
+)
 
 # Names are the logical name, undecorated (D16). Maximally predictable for
 # hand-debugging at a site, where an operator has the config and `virsh list` and
@@ -47,7 +53,12 @@ def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
     seeds = prepared.artifacts["seed_isos"]
 
     return {
-        "uri": target["uri"],
+        # The *assembled* URI, not the operator's. This provider's `qemu+ssh://`
+        # is the go-libvirt dialer, not the ssh binary -- it does not read
+        # ~/.ssh/config and falls back to a default key path that does not exist
+        # in the container, so without the keyfile and known_hosts vcows builds
+        # here, preflight would authenticate and the apply would not.
+        "uri": connection_uri(target),
         "pool": target["pool"],
         "base_volume": {
             "name": base["name"],

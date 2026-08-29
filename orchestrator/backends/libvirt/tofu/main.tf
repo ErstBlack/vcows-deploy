@@ -112,7 +112,12 @@ resource "libvirt_domain" "vm" {
     loader_readonly = each.value.loader != null ? "yes" : null
 
     nv_ram = each.value.nvram_template != null ? {
-      nv_ram = "/var/lib/libvirt/qemu/nvram/${each.value.domain_name}_VARS.fd"
+      // The suffix follows the format, the way libvirt names its own: the rig
+      // writes <name>_VARS.qcow2 from a qcow2 template, while a raw .fd template
+      // gives .fd. Hardcoding .fd put qcow2 content under a raw name -- harmless,
+      // since the declared `format` is what is read, and misleading to anyone
+      // debugging it on a host whose other domains disagree.
+      nv_ram = "/var/lib/libvirt/qemu/nvram/${each.value.domain_name}_VARS.${each.value.loader_format == "qcow2" ? "qcow2" : "fd"}"
       // The variables file follows the firmware build it was templated from, so
       // one config field settles both.
       format          = each.value.loader_format

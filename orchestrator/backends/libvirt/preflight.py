@@ -31,34 +31,16 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
 from ..base import Discovered, Existing, Problem, Severity
 from .render import overlay_name, seed_name
-from .schema import mac_of
+from .schema import connection_uri, mac_of
 
 #: The marker element as ``XMLDesc`` reports it. ``dom.metadata()`` strips the
 #: xmlns and would need a different tag; spike A2 caught the disagreement.
 MARKER_TAG = f"{{{MARKER_XMLNS}}}{MARKER_ELEMENT}"
-
-
-def connection_uri(target: dict) -> str:
-    """Assemble the libvirt URI, appending the SSH options vcows controls.
-
-    The operator's ``uri`` is refused at validate time if it carried a query string
-    (R-D), so this is the only thing that can put one there. That is what keeps
-    ``no_verify=1`` -- and a smuggled ``keyfile``/``known_hosts`` -- out of the
-    connection.
-    """
-    parts = urlsplit(target["uri"])
-    query = {}
-    if keyfile := target.get("ssh_keyfile"):
-        query["keyfile"] = keyfile
-    if known_hosts := target.get("known_hosts"):
-        query["known_hosts"] = known_hosts
-    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 @contextmanager

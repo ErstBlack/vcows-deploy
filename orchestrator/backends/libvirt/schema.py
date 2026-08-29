@@ -24,7 +24,7 @@ from __future__ import annotations
 import ipaddress
 import uuid
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import jsonschema
 
@@ -133,6 +133,23 @@ def primary_index(vm: dict) -> int:
         if nic.get("primary"):
             return i
     return 0
+
+
+def connection_uri(target: dict) -> str:
+    """Assemble the libvirt URI, appending the SSH options vcows controls.
+
+    The operator's ``uri`` is refused at validate time if it carried a query string
+    (R-D), so this is the only thing that can put one there. That is what keeps
+    ``no_verify=1`` -- and a smuggled ``keyfile``/``known_hosts`` -- out of the
+    connection.
+    """
+    parts = urlsplit(target["uri"])
+    query = {}
+    if keyfile := target.get("ssh_keyfile"):
+        query["keyfile"] = keyfile
+    if known_hosts := target.get("known_hosts"):
+        query["known_hosts"] = known_hosts
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def validate(cfg: dict) -> list[Problem]:

@@ -140,3 +140,19 @@ def test_only_the_vms_it_is_given_are_rendered(cfg, prepared):
 def test_module_helpers_agree_with_the_rendered_names():
     assert render_mod.overlay_name("app01") == "app01.qcow2"
     assert render_mod.seed_name("app01") == "app01-seed.iso"
+
+
+def test_the_provider_is_given_the_same_uri_preflight_connects_with(cfg, prepared):
+    """Preflight authenticating and the apply not is a failure mode with a 646 MB
+    upload in front of it, and it cannot be caught anywhere but here: this
+    provider's `qemu+ssh://` is the go-libvirt dialer, which does not read
+    ~/.ssh/config and falls back to a default key path that does not exist in the
+    container. So the credentials vcows assembles have to reach the provider.
+    """
+    from orchestrator.backends.libvirt.schema import connection_uri
+
+    target = cfg["target"]["libvirt"]
+    rendered = render(cfg, prepared)["uri"]
+    assert rendered == connection_uri(target)
+    assert rendered != target["uri"], "the raw URI carries no credentials"
+    assert "keyfile=" in rendered and "known_hosts=" in rendered
