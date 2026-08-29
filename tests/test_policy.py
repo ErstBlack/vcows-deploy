@@ -79,3 +79,47 @@ def test_mixed_world_decides_each_independently():
         "app04": Action.REFUSE,  # other deployment
     }
     assert problems == []  # every marked VM was wanted
+
+
+def test_two_markers_for_one_logical_name_refuse_in_either_order():
+    """Ownership decided by enumeration order is the defect, so the test is the
+    same world twice.
+
+    Both VMs claim logical name 'app01'. A dict keyed on the marker keeps
+    whichever came last, so `[mine, theirs]` refused and named a deployment the
+    operator does not own, `[theirs, mine]` skipped and reported success, and
+    neither said the other VM existed. `virt-clone` copies `<metadata>`, and on
+    vSphere and Proxmox cloning is the ordinary way to provision.
+    """
+    mine = ours("app01")
+    theirs = ours("app01", deployment="lab-b", hv_name="app01-copy")
+    for world in ([mine, theirs], [theirs, mine]):
+        decisions, problems = decide(["app01"], world, "lab-a")
+        assert [d.action for d in decisions] == [Action.REFUSE]
+        fatal = [p for p in problems if p.fatal]
+        assert len(fatal) == 1
+        for text in (decisions[0].reason, fatal[0].message):
+            assert "'app01'" in text and "'app01-copy'" in text
+
+
+def test_a_duplicate_marker_is_an_error_even_when_nobody_wants_the_name():
+    """The refusal only fires for a name in the config. The ambiguity is a fact
+    about the target either way, and the operator has to resolve it before the
+    deploy that does want it."""
+    world = [ours("app03"), ours("app03", hv_name="app03-copy")]
+    decisions, problems = decide(["app01"], world, "lab-a")
+    assert [d.action for d in decisions] == [Action.CREATE]
+    fatal = [p for p in problems if p.fatal]
+    assert len(fatal) == 1
+    assert fatal[0].where == "app03"
+
+
+def test_a_marked_vm_holding_the_hypervisor_name_we_want_refuses():
+    """The clash check covered unmarked VMs only, so this fell through to CREATE
+    and collided inside `tofu apply` at define time -- after that VM's overlay
+    volume and seed ISO were written, which is the orphan-volume path."""
+    other = Existing(name="app01", id="i1", marker=Marker.for_vm("web01", "lab-b"))
+    decisions, problems = decide(["app01"], [other], "lab-a")
+    assert decisions[0].action is Action.REFUSE
+    assert "'web01'" in decisions[0].reason and "'lab-b'" in decisions[0].reason
+    assert not any(p.fatal for p in problems)

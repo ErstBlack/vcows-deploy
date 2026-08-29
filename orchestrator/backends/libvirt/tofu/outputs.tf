@@ -14,7 +14,10 @@ output "vms" {
       // uses whichever the discovery path produced.
       uuid = dom.uuid
 
-      address = var.vms[key].address
+      // The config echoed back, never observed: nothing here asks libvirt what
+      // address a guest came up on. The name says so, because `address` read as
+      // a measurement to everyone who met it.
+      configured_address = var.vms[key].configured_address
 
       // Both per-VM volumes, so a teardown reconciled against this record can
       // see the seed ISO as well as the overlay. Never the base image: it only
@@ -26,9 +29,4 @@ output "vms" {
       ]
     }
   }
-}
-
-output "base_volume_path" {
-  description = "Where the golden image lives on this host, whether this run uploaded it or found it."
-  value       = local.base_path
 }

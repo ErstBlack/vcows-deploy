@@ -129,10 +129,10 @@ address. Two hosts running the *same* deployment name still derive the same
 MACs: the derivation narrows that collision, it does not close it.
 
 **The first NIC is primary** unless one carries `primary: true`. Its address is
-what the inventory reports, and its gateway is the only one that becomes a
-default route — a second NIC keeps its address and its gateway is checked
-against its own subnet, but does not add a second route for the guest to choose
-between.
+what the inventory reports as `configured_address`, and its gateway is the only
+one that becomes a default route — a second NIC keeps its address and its
+gateway is checked against its own subnet, but does not add a second route for
+the guest to choose between.
 
 **`vcpus`, `memory_mib` and `disk_gb` have ceilings** — 512, 4 TiB and 64 TiB —
 so a fat-fingered zero is refused before the run creates anything. They are a
@@ -146,6 +146,13 @@ removing it breaks running VMs. Point `base_volume_name` at a name the pool does
 not hold and re-run: vcows uploads the new image alongside, and VMs created from
 then on back onto it. Sweeping the old one is a host-level chore for when nothing
 references it any more.
+
+**VMs vcows creates start with the host.** Every domain is defined with
+autostart on, so a hypervisor reboot brings them back without vcows. The
+alternative is worse than it sounds: a re-run after a reboot finds the domains
+defined, reports them as ours, prints `nothing to create` and exits 0, with every
+guest powered off. There is no `start` verb — turn autostart off per domain
+with `virsh autostart --disable <name>` if a host must come up quiet.
 
 > **The config is a secret artifact.** Credentials are cleartext at v0.1,
 > deliberately and temporarily. Do not commit it, and do not ship it as an
@@ -174,7 +181,7 @@ verbatim.
 ```
 seed/*.iso        what each VM was given
 tofu/             the module, the tfvars, the saved plan, the JSON streams, the state
-inventory.json    name -> address, uuid, disks. Minimal, and unstable at v0.1
+inventory.json    name -> configured_address, uuid, disks. Minimal, and unstable at v0.1
 manifest.json     which build produced this run
 run.json          what was asked, what was decided, what happened
 ```
@@ -223,7 +230,7 @@ manifest. The OpenTofu provider's licence and its provenance are vendored at
 
 ```bash
 uv venv --python /usr/bin/python3 --system-site-packages
-uv pip install -e '.[dev]'
+uv pip install -e . --group dev
 pytest
 ```
 

@@ -100,12 +100,13 @@ def test_firmware_defaults_and_overrides(cfg, prepared):
     assert vms["app02"]["loader_format"] == "qcow2"
 
 
-def test_address_is_the_primary_nics(cfg, prepared):
+def test_configured_address_is_the_primary_nics(cfg, prepared):
     second = dict(cfg["vms"][0]["nics"][0])
     second["ip_cidr"] = "192.168.122.70/24"
     second["primary"] = True
     cfg["vms"][0]["nics"].append(second)
-    assert render(cfg, prepared)["vms"]["app01"]["address"] == "192.168.122.70"
+    vms = render(cfg, prepared)["vms"]
+    assert vms["app01"]["configured_address"] == "192.168.122.70"
 
 
 def test_base_volume_when_it_is_already_on_the_host(cfg, tmp_path):
@@ -176,4 +177,4 @@ def test_a_missing_vms_output_is_a_broken_module_not_an_empty_inventory():
     backend = LibvirtBackend()
     assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
     with pytest.raises(ValueError, match="vms"):
-        backend.parse_outputs({"base_volume_path": {"value": "/pool/golden.qcow2"}})
+        backend.parse_outputs({"something_else": {"value": "not an inventory"}})

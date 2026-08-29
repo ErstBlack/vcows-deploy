@@ -66,8 +66,8 @@ variable "vms" {
     nvram_template = optional(string)
 
     // What the config said, for the inventory. The tool never asks libvirt for
-    // an address.
-    address = string
+    // an address, which is what the name records.
+    configured_address = string
 
     nics = list(object({
       mac   = string

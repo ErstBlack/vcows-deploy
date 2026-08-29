@@ -559,4 +559,4 @@ def preflight(cfg: dict, session: Any) -> Discovered:
         problems += orphan_volumes(cfg, volumes, claimed)
 
     problems += address_conflicts(session, cfg, by_mac)
-    return Discovered(vms=vms, artifacts=artifacts, problems=problems)
+    return Discovered(vms=tuple(vms), artifacts=artifacts, problems=tuple(problems))

@@ -15,6 +15,7 @@ apply, and that the apply's outputs come back through `parse_outputs`.
 from __future__ import annotations
 
 import json
+import re
 import stat
 import textwrap
 
@@ -235,9 +236,9 @@ def test_a_refused_deploys_reason_reaches_the_run_record(
         backend,
         "preflight",
         lambda cfg, session: Discovered(
-            vms=[],
+            vms=(),
             artifacts={"existing_names": []},
-            problems=[Problem(Severity.ERROR, "storage pool 'images' does not exist")],
+            problems=(Problem(Severity.ERROR, "storage pool 'images' does not exist"),),
         ),
     )
     assert cli.main(["deploy", config]) == 1
@@ -333,6 +334,43 @@ def test_a_module_that_created_fewer_vms_than_asked_fails_the_deploy(
     assert not (latest_run(tmp_path) / "inventory.json").exists()
 
 
+def test_staging_refuses_a_module_directory_it_cannot_copy_whole(tmp_path):
+    """Staging copies `*.tf` and the lock, so anything else is left behind and the
+    apply runs against a module missing a piece of itself -- diagnosed at a site,
+    as OpenTofu's error for whatever the absent file defined."""
+    source = tmp_path / "tofu"
+    source.mkdir()
+    (source / "main.tf").write_text("# module\n")
+    (source / "cloud-init.tftpl").write_text("# a template nothing carries\n")
+    with pytest.raises(RuntimeError, match=re.escape("cloud-init.tftpl")):
+        cli._stage_module(source, tmp_path / "workdir")
+
+
+def test_staging_ignores_what_a_local_tofu_init_left_behind(tmp_path):
+    """`.terraform/` and its state file are byproducts, not module content -- the
+    staged copy initialises itself. Refusing them would mean a developer who ran
+    `tofu init` in the source tree could no longer deploy."""
+    source = tmp_path / "tofu"
+    (source / ".terraform" / "providers").mkdir(parents=True)
+    (source / "main.tf").write_text("# module\n")
+    (source / ".terraform.tfstate").write_text("{}\n")
+    (source / ".terraform.lock.hcl").write_text("# lock\n")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cli._stage_module(source, workdir)
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        ".terraform.lock.hcl",
+        "main.tf",
+    ]
+
+
+def test_staging_an_empty_module_directory_is_not_an_empty_module(tmp_path):
+    source = tmp_path / "tofu"
+    source.mkdir()
+    with pytest.raises(RuntimeError, match="no module to stage"):
+        cli._stage_module(source, tmp_path)
+
+
 def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
     """`Discovered.problems` is how a backend reports what is wrong with the
     *target* -- a missing pool, an orphaned volume. Deploy treats them as fatal."""
@@ -342,9 +380,9 @@ def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
         backend,
         "preflight",
         lambda cfg, session: Discovered(
-            vms=[],
+            vms=(),
             artifacts={"existing_names": []},
-            problems=[Problem(Severity.ERROR, "storage pool 'images' does not exist")],
+            problems=(Problem(Severity.ERROR, "storage pool 'images' does not exist"),),
         ),
     )
     monkeypatch.setattr(

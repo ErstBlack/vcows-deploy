@@ -96,8 +96,9 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
         "loader_format": vm.get("loader_format"),
         "nvram_template": vm.get("nvram_template"),
         # The tool never asks libvirt for an address; this is what the config
-        # said and what cloud-init was told to configure.
-        "address": primary["ip_cidr"].split("/")[0],
+        # said and what cloud-init was told to configure. The name is the
+        # inventory's, and it carries that distinction the whole way through.
+        "configured_address": primary["ip_cidr"].split("/")[0],
         "nics": [_nic(vm, i, cfg["deployment"]) for i in range(len(vm["nics"]))],
     }
 

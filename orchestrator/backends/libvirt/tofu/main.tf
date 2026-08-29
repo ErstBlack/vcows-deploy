@@ -91,6 +91,13 @@ resource "libvirt_domain" "vm" {
   memory_unit = "MiB"
   running     = true
 
+  // Without this a hypervisor reboot leaves every VM vcows created powered off,
+  // and the next run does not say so: `listAllDomains(0)` returns inactive
+  // domains too, so `decide()` still reports them as ours and skips them, and the
+  // deploy prints `nothing to create` and exits 0. There is no `start` verb --
+  // recovery is `virsh start` per domain, by hand, at the site.
+  autostart = true
+
   // The durable record of what vcows created. The state file is a convenience;
   // this is the truth, and it is what destroy discovers by.
   metadata = { xml = each.value.marker_xml }
@@ -146,11 +153,32 @@ resource "libvirt_domain" "vm" {
     apic = {}
   }
 
+  // libvirt supplies no timers of its own. A minimally defined domain on this rig
+  // carries `<clock offset='utc'/>` and nothing else
+  // (tests/fixtures/libvirt/domain-marked.xml), while the same host's
+  // virt-install guests carry exactly this set -- so it is the host's own answer,
+  // not a guess. `present` is a string rather than a boolean, for the reason
+  // `loader_readonly` above is: the provider's schema is the ground truth and its
+  // generated docs disagree with it.
+  clock = {
+    offset = "utc"
+    timer = [
+      { name = "rtc", tick_policy = "catchup" },
+      { name = "pit", tick_policy = "delay" },
+      { name = "hpet", present = "no" },
+    ]
+  }
+
   devices = {
     disks = [
       {
         device = "disk"
-        driver = { name = "qemu", type = "qcow2" }
+        // `discard` because without it the guest's deletes and `fstrim` never
+        // reach the qcow2, so a 40 GiB overlay only ever ratchets toward its
+        // declared size -- on a pool that belongs to somebody else (D29) and that
+        // nothing prunes. Not on the cdrom below, which is read-only, and no
+        // `cache`/`io` alongside it: no failure is attached to those.
+        driver = { name = "qemu", type = "qcow2", discard = "unmap" }
         // The volume's computed path, never source.volume{pool,volume}. A
         // type='volume' disk writes <source pool= volume=> into the persistent
         // XML, which is not what the destroy path parses -- this keeps one
@@ -185,5 +213,12 @@ resource "libvirt_domain" "vm" {
     // type unset, which libvirt fills in as `pty`.
     serials  = [{ target = { port = 0 } }]
     consoles = [{ target = { type = "serial", port = 0 } }]
+
+    // Same reason as the console: nothing adds one. A Rocky 9 first boot
+    // generates its sshd host keys and seeds the kernel CRNG before cloud-init
+    // finishes, and with no virtio-rng that comes from RDRAND alone. `backend`
+    // takes `random` -- a host source path -- not a model; the provider's schema
+    // has no `model` under it.
+    rngs = [{ model = "virtio", backend = { random = "/dev/urandom" } }]
   }
 }

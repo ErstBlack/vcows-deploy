@@ -154,4 +154,48 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     condition     = libvirt_domain.vm["app01"].devices.interfaces[0].mac.address == var.vms["app01"].nics[0].mac
     error_message = "the NIC does not carry the derived MAC the seed's network-config matches on"
   }
+
+  // -- what libvirt does not supply ----------------------------------------
+  // Four settings the provider writes only because the module names them. Each
+  // has a failure that is invisible on the day of the deploy: the VMs come up,
+  // the run reports success, and the cost arrives at a reboot, a full pool, or a
+  // first boot short of entropy.
+  assert {
+    condition     = libvirt_domain.vm["app01"].autostart == true
+    error_message = "autostart is off: a host reboot leaves every VM down and the next deploy prints `nothing to create`"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].devices.disks[0].driver.discard == "unmap"
+    error_message = "the overlay disk passes no discard: guest deletes never return blocks and the overlay only grows"
+  }
+  assert {
+    condition     = length(libvirt_domain.vm["app01"].devices.rngs) == 1 && libvirt_domain.vm["app01"].devices.rngs[0].model == "virtio"
+    error_message = "no virtio-rng: a first boot seeds its CRNG and sshd host keys from RDRAND alone"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].devices.rngs[0].backend.random == "/dev/urandom"
+    error_message = "the rng backend names no host source, so the device has nothing to read"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].clock.offset == "utc"
+    error_message = "the guest clock does not follow the host in UTC"
+  }
+  assert {
+    condition     = [for t in libvirt_domain.vm["app01"].clock.timer : t.name] == ["rtc", "pit", "hpet"]
+    error_message = "the timer set is not the one this rig's own virt-install guests carry"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].clock.timer[2].present == "no"
+    error_message = "`present` is a string here, as `loader_readonly` is: a boolean does not render"
+  }
+
+  // -- the inventory's half of the contract --------------------------------
+  assert {
+    condition     = output.vms["app01"].configured_address == var.vms["app01"].configured_address
+    error_message = "the inventory output does not carry the configured address"
+  }
+  assert {
+    condition     = !contains(keys(output.vms["app01"]), "address")
+    error_message = "`address` reads as something libvirt was asked; nothing here observes one"
+  }
 }

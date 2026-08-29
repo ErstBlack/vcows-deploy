@@ -527,7 +527,7 @@ def test_preflight_reports_ours_theirs_and_the_base_volume(cfg, tmp_path):
     assert by_name["rocky9-box"].marker is None
 
     assert discovered.artifacts["base_volume"]["create"] is True
-    assert discovered.problems == []
+    assert discovered.problems == ()
 
 
 def test_preflight_carries_the_disks_it_found(cfg, tmp_path):
@@ -556,7 +556,7 @@ def test_our_own_macs_are_not_reported_as_somebody_elses(cfg, tmp_path):
     cfg["vms"][0]["name"] = "probe02"
     cfg["vms"][0]["nics"][0]["mac"] = "52:54:00:c0:ff:ee"
     discovered = preflight.preflight(cfg, rig_connection(cfg))
-    assert discovered.problems == []
+    assert discovered.problems == ()
 
 
 def test_a_domain_the_walk_could_not_read_reaches_the_operator(cfg, tmp_path):

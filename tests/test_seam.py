@@ -166,7 +166,7 @@ def test_prepare_and_render_work_from_data_alone(no_libvirt, cfg, tmp_path):
     config, _ = load(cfg, {"fake": backend})
 
     with backend.prepare(
-        config, tmp_path, Discovered(vms=[], artifacts={"existing_names": []})
+        config, tmp_path, Discovered(vms=(), artifacts={"existing_names": []})
     ) as prepared:
         tfvars = backend.render(config, prepared)
 

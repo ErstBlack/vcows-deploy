@@ -86,7 +86,7 @@ class FakeBackend(Backend):
 
     def preflight(self, cfg: dict, session: Any) -> Discovered:
         return Discovered(
-            vms=list(session.world),
+            vms=tuple(session.world),
             # Stands in for whatever else a backend has to look at while it is
             # connected -- for libvirt, whether the golden image is already in
             # the pool. Core never reads this.

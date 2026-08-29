@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,7 +56,15 @@ class Existing:
     """
 
     name: str
-    """Hypervisor name. Not identity -- a renamed VM is still ours."""
+    """Hypervisor name. Not identity -- a renamed VM is still ours.
+
+    ``decide()`` compares this against the config's *logical* name, which works
+    only because the libvirt backend names a domain after the logical name. A
+    backend that prefixes or namespaces -- ``lab-a-app01``, a vSphere folder path
+    -- must return the transformed form here, and must know that the name-clash
+    refusal is then comparing two different things and will never fire. It is the
+    one core safety check whose mechanism is not backend-neutral.
+    """
 
     id: str
     """UUID / moid / vmid."""
@@ -91,13 +100,13 @@ class Discovered:
     than a rule someone has to remember.
     """
 
-    vms: list[Existing]
+    vms: tuple[Existing, ...]
     """What ``decide()`` consumes."""
 
     artifacts: dict[str, Any] = field(default_factory=dict)
     """Opaque to core. Whatever else the backend had to look at while connected."""
 
-    problems: list[Problem] = field(default_factory=list)
+    problems: tuple[Problem, ...] = ()
     """What the backend found wrong with the *target*, as opposed to the config.
 
     A missing pool, an orphaned volume, a base image whose size disagrees with the
@@ -107,6 +116,11 @@ class Discovered:
     an operator at an air-gapped site should not round-trip once per fault.
 
     Core reads this and ``vms``, and still never reads ``artifacts``.
+
+    A tuple, like ``Existing.disks``: ``frozen=True`` blocks rebinding only, so a
+    list field leaves ``d.problems.append(...)`` working on the one record
+    documented as crossing from the connected half of the pipeline into the pure
+    half. ``artifacts`` stays a dict because it is genuinely opaque.
     """
 
 
@@ -181,14 +195,21 @@ class Decision:
 
 
 def decide(
-    wanted: list[str],
-    existing: list[Existing],
+    wanted: Sequence[str],
+    existing: Sequence[Existing],
     deployment: str,
 ) -> tuple[list[Decision], list[Problem]]:
     """Apply the ownership rules. **This is the dangerous logic, written once.**
 
     Checked in order:
 
+    * More than one marked VM carrying one logical name -> **ERROR**, and a
+      **refusal** if we wanted that name. Ambiguous ownership must not be
+      resolved by enumeration order, and a dict keyed on the marker resolves it
+      exactly that way: the earlier holder disappears from every rule below and
+      from the report. On libvirt this needs ``virt-clone``, which copies
+      ``<metadata>``; on vSphere and Proxmox cloning is the normal idiom and the
+      annotation travels by default.
     * A marked VM carrying a logical name we want, from this deployment ->
       **skip**, reported as "exists (not compared)". No half-comparator: libvirt
       rewrites domain XML on define -- adding defaults, PCI addresses, device
@@ -197,28 +218,59 @@ def decide(
       sprawled.
     * The same, but from a *different* deployment -> **refuse**. Someone else
       owns that name here.
-    * An unmarked VM whose hypervisor name we want -> **refuse**. libvirt would
-      reject the duplicate itself; checking here buys a clear message instead of
-      a raw libvirt error. The check does not decide ownership.
+    * Any VM whose hypervisor name we want -> **refuse**. libvirt would reject
+      the duplicate itself; checking here buys a clear message instead of a raw
+      libvirt error, and buys it *before* the apply writes that VM's overlay and
+      seed ISO. The check does not decide ownership.
     * Otherwise -> **create**.
 
     Marked VMs *not* in the config are reported and left alone. Consistent with
     never-converge: removing a VM from the config does not delete it.
     """
-    by_logical: dict[str, Existing] = {
-        e.marker.name: e for e in existing if e.marker is not None
-    }
-    unmarked_by_name: dict[str, Existing] = {
-        e.name: e for e in existing if e.marker is None
-    }
+    holders: dict[str, list[Existing]] = {}
+    for e in existing:
+        if e.marker is not None:
+            holders.setdefault(e.marker.name, []).append(e)
+
+    # Every existing VM, not only the unmarked ones. A marked domain whose
+    # *hypervisor* name is one we want, under some other logical name, is in
+    # neither lookup otherwise and falls through to CREATE; the collision then
+    # surfaces inside `tofu apply` at define time, after that VM's overlay volume
+    # and seed ISO have been written -- findings.md §2's orphan-volume path. A
+    # hypervisor that allows two VMs to share a name would collapse here, and
+    # libvirt is not one.
+    by_hv_name: dict[str, Existing] = {e.name: e for e in existing}
 
     decisions: list[Decision] = []
     problems: list[Problem] = []
 
+    for logical, held in sorted(holders.items()):
+        if len(held) > 1:
+            problems.append(
+                Problem(
+                    Severity.ERROR,
+                    f"{len(held)} VMs carry the marker for logical name "
+                    f"{logical!r}: {_named(held)}. vcows cannot tell which one it "
+                    f"owns, and will not decide it by enumeration order.",
+                    where=logical,
+                )
+            )
+
     for name in wanted:
-        ours = by_logical.get(name)
+        held = holders.get(name, [])
+        if len(held) > 1:
+            decisions.append(
+                Decision(
+                    name,
+                    Action.REFUSE,
+                    f"{len(held)} VMs carry this marker: {_named(held)}",
+                )
+            )
+            continue
+
+        ours = held[0] if held else None
         if ours is not None:
-            assert ours.marker is not None  # by construction of by_logical
+            assert ours.marker is not None  # by construction of `holders`
             if ours.marker.deployment == deployment:
                 decisions.append(
                     Decision(
@@ -240,17 +292,24 @@ def decide(
                 )
             continue
 
-        clash = unmarked_by_name.get(name)
+        clash = by_hv_name.get(name)
         if clash is not None:
-            decisions.append(
-                Decision(
-                    name,
-                    Action.REFUSE,
+            if clash.marker is None:
+                reason = (
                     f"an unmarked VM named {name!r} already exists (id {clash.id}); "
-                    f"vcows will not adopt or overwrite it",
-                    clash,
+                    f"vcows will not adopt or overwrite it"
                 )
-            )
+            else:
+                # Ours, and not adoptable either: the marker says it is a
+                # different logical VM, so this one still needs its own domain
+                # and the hypervisor has no name left to give it.
+                reason = (
+                    f"a VM named {name!r} already exists (id {clash.id}); it is "
+                    f"ours, but as logical name {clash.marker.name!r} in deployment "
+                    f"{clash.marker.deployment or '<unset>'!r}, so creating this one "
+                    f"would collide on the hypervisor name"
+                )
+            decisions.append(Decision(name, Action.REFUSE, reason, clash))
             continue
 
         decisions.append(Decision(name, Action.CREATE, "does not exist"))
@@ -271,9 +330,16 @@ def decide(
     return decisions, problems
 
 
+def _named(vms: list[Existing]) -> str:
+    """Hypervisor name and id for each, so an operator can go and look."""
+    return ", ".join(f"{e.name!r} (id {e.id})" for e in sorted(vms, key=lambda e: e.id))
+
+
 class Backend(ABC):
-    """One backend is one package. Its tofu module lives at ``<pkg>/tofu/`` by
-    convention, not by method."""
+    """One backend is one package, and its tofu module sits beside the file that
+    defines the class -- by convention, not by method. That is ``<pkg>/tofu/``
+    only while the class is defined in the package's own ``__init__.py``, which
+    ``cli.module_dir`` resolves and does not enforce."""
 
     name: str
 

@@ -42,11 +42,6 @@ MARKER_XMLNS = "urn:vcows:1"
 #: Element name inside ``<metadata>``.
 MARKER_ELEMENT = "vcows"
 
-#: Prefix for backends whose marker lives in a free-text field (a vSphere
-#: annotation, a Proxmox description) rather than structured metadata. It lives
-#: here so there is one serializer regardless of backend.
-TEXT_FIELD_PREFIX = "vcows-managed: "
-
 
 class MarkerError(ValueError):
     """A marker was present but could not be understood."""
@@ -128,11 +123,6 @@ class Marker:
             f'<{MARKER_ELEMENT} xmlns="{MARKER_XMLNS}">'
             f"{self.to_json()}</{MARKER_ELEMENT}>"
         )
-
-    def to_text_field(self) -> str:
-        """The free-text form: its own line, prefixed so it is findable and
-        removable without clobbering human-written text sharing the field."""
-        return TEXT_FIELD_PREFIX + self.to_json()
 
 
 def _text(data: dict, key: str, default: str | None = None) -> str:

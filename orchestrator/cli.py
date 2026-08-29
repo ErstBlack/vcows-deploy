@@ -48,6 +48,9 @@ from .config import ConfigError, load, vm_names
 #: release, and inventing a manifest for one would make the two indistinguishable.
 MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
 
+#: The one non-`.tf` file `_stage_module` will carry out of a module directory.
+LOCK_NAME = ".terraform.lock.hcl"
+
 
 class UsageError(Exception):
     """The command cannot run as invoked, and the reason is a sentence.
@@ -72,6 +75,11 @@ def module_dir(backend: Backend) -> Path:
     findings.md §3 fixes the layout as ``backends/<name>/tofu/`` and deliberately
     does not put it on the ABC. Reading it off the class's own module keeps that
     promise without an eighth abstract method nobody would implement differently.
+
+    Strictly this resolves beside the file *defining the class*, so it is
+    ``backends/<name>/tofu/`` only while that file is the package's
+    ``__init__.py``. A backend defining its class in a submodule gets that
+    submodule's directory, and ``_stage_module`` then reports an empty one.
     """
     package = sys.modules[type(backend).__module__]
     assert package.__file__ is not None  # every backend is a file on disk
@@ -329,12 +337,30 @@ def _stage_module(source: Path, workdir: Path) -> None:
     module does not -- the committed lock lives at ``docs/provider-0.9.8.lock.hcl``
     and the constraint is pinned exactly -- and Stage 5 replaces this copy with a
     pre-initialised tree anyway (R6).
+
+    **Module content this does not copy is refused, not skipped.** It copies two
+    patterns, so a ``.tftpl``, a ``modules/`` subdirectory or a ``main.tf.json``
+    would be left behind in silence and the apply would run against a module
+    missing a piece of itself -- diagnosed at a site, through OpenTofu's error for
+    whatever the absent file defined. Widening the copy instead would invent a
+    layout nobody has chosen.
+
+    Dotfiles other than the lock are byproducts rather than content: ``tofu init``
+    run in the source tree leaves ``.terraform/`` and a state file behind, and the
+    staged copy initialises itself, so neither is a missing piece.
     """
-    for tf in sorted(source.glob("*.tf")):
-        shutil.copy(tf, workdir)
-    lock = source / ".terraform.lock.hcl"
-    if lock.is_file():
-        shutil.copy(lock, workdir)
+    if not any(source.glob("*.tf")):
+        raise RuntimeError(f"no module to stage: {source} holds no .tf files")
+    for entry in sorted(source.iterdir()):
+        if entry.name.startswith(".") and entry.name != LOCK_NAME:
+            continue
+        if not (entry.is_file() and (entry.suffix == ".tf" or entry.name == LOCK_NAME)):
+            raise RuntimeError(
+                f"the module at {source} holds {entry.name!r}, which staging does "
+                f"not copy -- only *.tf and {LOCK_NAME}. Applying without it would "
+                f"run against an incomplete module."
+            )
+        shutil.copy(entry, workdir)
 
 
 # -- destroy ----------------------------------------------------------------
@@ -370,7 +396,7 @@ def _destroy(
         # out loud rather than left as a comment, because these name a shared
         # golden image and a volume of unknown ownership to an operator who is
         # already tearing things down.
-        advisory = config_problems + discovered.problems
+        advisory = config_problems + list(discovered.problems)
         if advisory:
             print(
                 "  these were computed for a deploy; none of them changes "

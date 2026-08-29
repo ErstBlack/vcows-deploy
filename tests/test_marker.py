@@ -115,11 +115,3 @@ def test_xml_payload_needs_no_escaping():
     A2 verified would stop holding."""
     payload = Marker.for_vm("app01", "lab-a").to_json()
     assert not (set("<>&") & set(payload))
-
-
-def test_text_field_form_is_findable_and_removable():
-    m = Marker.for_vm("app01", "lab-a")
-    line = m.to_text_field()
-    assert line.startswith("vcows-managed: ")
-    assert "\n" not in line
-    assert Marker.from_json(line.removeprefix("vcows-managed: ")) == m
