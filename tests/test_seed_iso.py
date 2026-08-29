@@ -164,6 +164,38 @@ def test_multiple_nics_each_get_their_own_match(cfg):
     assert macs["nic0"] != macs["nic1"]
 
 
+def two_nics(cfg, primary=None):
+    """app01 with a second NIC on the same subnet. Returns its network-config."""
+    second = dict(cfg["vms"][0]["nics"][0])
+    second["ip_cidr"] = "192.168.122.70/24"
+    second["gateway"] = "192.168.122.2"
+    cfg["vms"][0]["nics"].append(second)
+    if primary is not None:
+        cfg["vms"][0]["nics"][primary]["primary"] = True
+    return yaml.safe_load(prepare.seed_files(cfg["vms"][0], cfg)["network-config"])
+
+
+def test_only_the_primary_nic_gets_the_default_route(cfg):
+    """Two default routes leave the guest choosing its egress by metric -- the
+    same failure shape as the `default` keyword: it boots, it routes, and it
+    routes somewhere nobody chose."""
+    net = two_nics(cfg)
+    assert net["ethernets"]["nic0"]["routes"] == [
+        {"to": "0.0.0.0/0", "via": "192.168.122.1"}
+    ]
+    assert "routes" not in net["ethernets"]["nic1"]
+    # The address is still configured. Only the route moved.
+    assert net["ethernets"]["nic1"]["addresses"] == ["192.168.122.70/24"]
+
+
+def test_the_default_route_follows_an_explicit_primary(cfg):
+    net = two_nics(cfg, primary=1)
+    assert "routes" not in net["ethernets"]["nic0"]
+    assert net["ethernets"]["nic1"]["routes"] == [
+        {"to": "0.0.0.0/0", "via": "192.168.122.2"}
+    ]
+
+
 def test_build_all_names_one_iso_per_vm(cfg, tmp_path):
     built = prepare.build_all(cfg, tmp_path)
     assert set(built) == {"app01", "app02"}

@@ -62,6 +62,63 @@ def test_deployment_defaults_to_filename_stem(tmp_path, registry):
     assert cfg["deployment"] == "site-7"
 
 
+def test_a_bad_filename_stem_blames_the_file_not_the_key(tmp_path, registry):
+    """The stem *became* the deployment name, so complaining about `deployment`
+    names a key the operator never wrote."""
+    text = CONFIG.replace("deployment: lab-a\n", "")
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text, name="9 bad name.yaml"), registry)
+    message = str(exc.value)
+    assert "9 bad name" in message and "filename" in message
+    assert "[deployment]" not in message
+
+
+def test_an_explicit_deployment_is_still_blamed_on_the_key(tmp_path, registry):
+    """The rewrite is for the defaulted case only. A value the operator wrote is
+    reported where they wrote it."""
+    text = CONFIG.replace("deployment: lab-a", "deployment: 'bad name'")
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text), registry)
+    assert "[deployment]" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value", ["images/golden.qcow2", "http://host/golden.qcow2", "./golden.qcow2"]
+)
+def test_source_qcow2_must_be_absolute(tmp_path, registry, value):
+    """It is opened here and handed to the backend as a volume source. A relative
+    path resolves against a working directory nothing here controls."""
+    text = CONFIG.replace("/images/golden.qcow2", value)
+    with pytest.raises(ConfigError):
+        load(write(tmp_path, text), registry)
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("deployment: lab-a", 'deployment: "lab-a\\n"'),
+        (
+            "  base_volume_name: golden.qcow2",
+            f'  base_volume_name: golden.qcow2\n  sha256: "{"a" * 64}\\n"',
+        ),
+    ],
+)
+def test_a_trailing_newline_is_rejected(tmp_path, registry, before, after):
+    """Python's `$` also matches before a trailing newline, so every pattern in
+    the tree anchors with `\\Z` instead."""
+    with pytest.raises(ConfigError):
+        load(write(tmp_path, CONFIG.replace(before, after)), registry)
+
+
+def test_a_sha256_without_a_newline_passes(tmp_path, registry):
+    text = CONFIG.replace(
+        "  base_volume_name: golden.qcow2",
+        f'  base_volume_name: golden.qcow2\n  sha256: "{"a" * 64}"',
+    )
+    cfg, _ = load(write(tmp_path, text), registry)
+    assert cfg["image"]["sha256"] == "a" * 64
+
+
 def test_explicit_deployment_wins(tmp_path, registry):
     cfg, _ = load(write(tmp_path, CONFIG, name="ignored.yaml"), registry)
     assert cfg["deployment"] == "lab-a"

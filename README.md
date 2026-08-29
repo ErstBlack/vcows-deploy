@@ -89,7 +89,7 @@ deployment: lab-a              # defaults to the filename stem; goes in every ma
 backend: libvirt
 target:
   libvirt:
-    uri: qemu+ssh://vcows@hypervisor.example/system   # no query string
+    uri: qemu+ssh://vcows@hypervisor.example/system   # no query string, no password
     pool: images                                       # must exist and be active
     ssh_keyfile: /run/secrets/id_ed25519      # mounted; see below
     known_hosts: /run/secrets/known_hosts     # mounted; see below
@@ -127,6 +127,18 @@ exists. Set `mac:` on a NIC to override it — that is the only escape, and it i
 what to use when a site's DHCP reservations or switch policy already own an
 address. Two hosts running the *same* deployment name still derive the same
 MACs: the derivation narrows that collision, it does not close it.
+
+**The first NIC is primary** unless one carries `primary: true`. Its address is
+what the inventory reports, and its gateway is the only one that becomes a
+default route — a second NIC keeps its address and its gateway is checked
+against its own subnet, but does not add a second route for the guest to choose
+between.
+
+**`vcpus`, `memory_mib` and `disk_gb` have ceilings** — 512, 4 TiB and 64 TiB —
+so a fat-fingered zero is refused before the run creates anything. They are a
+typo check, not a statement about supported sizes. On a host bigger than one of
+them, raise it: `VCOWS_MAX_VCPUS`, `VCOWS_MAX_MEMORY_MIB` and `VCOWS_MAX_DISK_GB`
+are read from the container's environment.
 
 **Replacing the golden image is not a deletion.** `base_volume_name` is shared
 by every deployment on that host and every VM's disk is an overlay on it, so

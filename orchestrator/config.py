@@ -30,17 +30,23 @@ from .backends.base import Problem, Severity
 
 SCHEMA_VERSION = 1
 
-#: Deployment names end up in markers and in operator-facing messages.
-DEPLOYMENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+#: Deployment names end up in markers and in operator-facing messages. ``\Z``
+#: rather than ``$``, because Python's ``$`` also matches before a trailing
+#: newline and this value is stamped into every marker.
+DEPLOYMENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z"
 
 IMAGE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["source_qcow2", "base_volume_name"],
     "properties": {
-        # Path inside the container, bind-mounted read-only.
-        "source_qcow2": {"type": "string", "minLength": 1},
-        "sha256": {"type": "string", "pattern": r"^[0-9a-fA-F]{64}$"},
+        # Path inside the container, bind-mounted read-only. Absolute, because a
+        # relative path resolves against a working directory nothing here
+        # controls, and because the backend hands this string to the provider as
+        # a volume source -- where a `file://` or `http://` form would be
+        # resolved by something other than us, if it is resolved at all.
+        "source_qcow2": {"type": "string", "minLength": 1, "pattern": r"^/"},
+        "sha256": {"type": "string", "pattern": r"^[0-9a-fA-F]{64}\Z"},
         # Deterministic and shared per host. Named after the image rather than
         # the deployment because the base volume is shared across deployments --
         # that sharing is the whole point of not re-pushing multi-GB images.
@@ -132,12 +138,34 @@ def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem
     # `deployment` is document-level identity rather than a per-VM value, so it
     # is the one field with a default: the config's filename stem, so a config
     # that never mentions it still stamps something meaningful into every marker.
+    defaulted = "deployment" not in raw
     raw.setdefault("deployment", path.stem)
 
     problems = validate(raw, registry)
+    if defaulted:
+        problems = [_blame_the_filename(p, path) for p in problems]
     if any(p.fatal for p in problems):
         raise ConfigError(problems)
     return raw, problems
+
+
+def _blame_the_filename(problem: Problem, path: Path) -> Problem:
+    """Re-point a complaint about a defaulted ``deployment`` at the file.
+
+    The stem became the deployment name, so a filename the pattern rejects is
+    reported against a key the operator never wrote. Rewritten here rather than
+    checked before ``validate`` so ``load`` still returns every problem rather
+    than the first.
+    """
+    if problem.where != "deployment":
+        return problem
+    return Problem(
+        problem.severity,
+        f"the deployment name defaults to this config's filename, and "
+        f"{path.stem!r} is not usable as one: {problem.message} Rename the file, "
+        f"or set `deployment:` in it.",
+        where=str(path),
+    )
 
 
 def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:

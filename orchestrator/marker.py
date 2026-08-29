@@ -108,12 +108,12 @@ class Marker:
         if missing:
             raise MarkerError(f"marker missing required key(s): {sorted(missing)}")
         return cls(
-            v=str(data["v"]),
-            name=str(data["name"]),
+            v=_text(data, "v"),
+            name=_text(data, "name"),
             # Absent in markers written before `deployment` existed. Empty
             # string, never None, so callers need no null check.
-            deployment=str(data.get("deployment", "")),
-            id=str(data["id"]),
+            deployment=_text(data, "deployment", ""),
+            id=_text(data, "id"),
         )
 
     def to_xml(self) -> str:
@@ -133,6 +133,24 @@ class Marker:
         """The free-text form: its own line, prefixed so it is findable and
         removable without clobbering human-written text sharing the field."""
         return TEXT_FIELD_PREFIX + self.to_json()
+
+
+def _text(data: dict, key: str, default: str | None = None) -> str:
+    """One string field, or a refusal. Never a coercion.
+
+    ``str()`` would turn ``{"name": 123}`` into ``"123"`` and ``{"id": null}``
+    into ``"None"``, so a marker that should be reported as unreadable instead
+    names a VM -- and that name is what ``decide()`` compares against the config.
+    A marker this malformed was not written by vcows.
+    """
+    if key not in data and default is not None:
+        return default
+    value = data[key]
+    if not isinstance(value, str):
+        raise MarkerError(
+            f"marker key {key!r} is {type(value).__name__}, expected string"
+        )
+    return value
 
 
 def derive_id(name: str, deployment: str) -> str:

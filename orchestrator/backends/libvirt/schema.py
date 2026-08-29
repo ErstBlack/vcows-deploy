@@ -7,7 +7,9 @@ with. Everything below is either in F11's list or is a check F11 implies.
 Two things F11 left open, settled here:
 
 * ``nics`` is a list but the inventory carries one address, so **the first NIC is
-  primary** unless one carries ``primary: true``.
+  primary** unless one carries ``primary: true``. Primary means two things: its
+  address is the one the inventory reports, and its gateway is the one that
+  becomes the guest's default route.
 * A per-VM value **replaces**, never merges. There is no ``defaults`` block at
   v0.1 so nothing exercises it yet, but the rule is invisible until the first
   nested field and by then configs exist.
@@ -22,7 +24,10 @@ close to unreadable, where a Python check names both fields the operator set.
 from __future__ import annotations
 
 import ipaddress
+import os
+import sys
 import uuid
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -33,10 +38,12 @@ from ...marker import VCOWS_NS
 from ..base import Problem, Severity
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
-#: of two volume names.
-NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+#: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
+#: out below: Python's ``$`` also matches before a trailing newline, and a name
+#: carrying one reaches libvirt as a domain name.
+NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z"
 
-MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"
+MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
 #: An absolute path with no whitespace in it. Both credential paths are
 #: interpolated verbatim into ``~/.ssh/config`` by the container entrypoint, one
@@ -54,6 +61,40 @@ MAC_OUI = (0x52, 0x54, 0x00)
 #: VM omits the key -- there is no resolution step and no merge semantics.
 FIRMWARE_DEFAULT = "efi"
 MACHINE_DEFAULT = "q35"
+
+
+def _ceiling(name: str, default: int) -> int:
+    """One size ceiling, overrideable from the environment.
+
+    Same shape as ``cli.MANIFEST``: a constant with an environment override, so a
+    site on hardware we have not seen raises the bound from the outside rather
+    than editing a file inside the image. A value that will not parse, or is not
+    positive, is reported and ignored -- taking it silently is the failure mode
+    the reporting work existed to remove.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(
+            f"vcows: ignoring {name}={raw!r}: not a positive integer. Using {default}.",
+            file=sys.stderr,
+        )
+        return default
+    return value
+
+
+#: Sanity ceilings, **not** a supported-configuration claim. They exist to catch
+#: a fat-fingered zero before a run creates volumes for a VM no host can start;
+#: the hypervisor stays the authority on what it will actually serve. Each is
+#: overrideable, and raising one is always safe.
+MAX_VCPUS = _ceiling("VCOWS_MAX_VCPUS", 512)
+MAX_MEMORY_MIB = _ceiling("VCOWS_MAX_MEMORY_MIB", 4 * 1024 * 1024)
+MAX_DISK_GB = _ceiling("VCOWS_MAX_DISK_GB", 64 * 1024)
 
 NIC_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -79,9 +120,9 @@ VM_SCHEMA: dict[str, Any] = {
     "required": ["name", "vcpus", "memory_mib", "disk_gb", "nics"],
     "properties": {
         "name": {"type": "string", "pattern": NAME_PATTERN},
-        "vcpus": {"type": "integer", "minimum": 1},
-        "memory_mib": {"type": "integer", "minimum": 256},
-        "disk_gb": {"type": "integer", "minimum": 1},
+        "vcpus": {"type": "integer", "minimum": 1, "maximum": MAX_VCPUS},
+        "memory_mib": {"type": "integer", "minimum": 256, "maximum": MAX_MEMORY_MIB},
+        "disk_gb": {"type": "integer", "minimum": 1, "maximum": MAX_DISK_GB},
         # UEFI is not changeable after creation, which is why it is here rather
         # than being inferred.
         "firmware": {"enum": ["efi", "bios"]},
@@ -178,7 +219,11 @@ def connection_uri(target: dict, transport: str = "ssh") -> str:
     run ``ssh``, so the credentials reach them through ``~/.ssh/config``, which
     the container's entrypoint writes from ``ssh_keyfile`` and ``known_hosts``.
     R-D's refusal of an operator-supplied query string still matters: it is what
-    keeps ``no_verify=1`` off the connection.
+    keeps ``no_verify=1`` off the connection. **The netloc, by contrast, travels
+    verbatim** -- only the scheme and the query are replaced here -- which is why
+    a password is refused in ``_check_target`` rather than stripped here. Left to
+    this function it would reach the rendered tfvars and sit in the run directory
+    in plaintext.
     """
     parts = urlsplit(target["uri"])
     return urlunsplit(parts._replace(scheme=f"qemu+{transport}", query=""))
@@ -280,10 +325,41 @@ def _check_target(target: dict) -> list[Problem]:
                 where=where,
             )
         )
+    if parts.password is not None:
+        # The query string is not the only way credentials reach the URI, and
+        # this one survives further: `connection_uri` replaces the scheme and
+        # clears the query but leaves the netloc alone, so a password is
+        # rendered into the tfvars and sits in the run directory in plaintext.
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                "URI must carry no password. Neither client would use it -- both "
+                "run ssh, so credentials travel via ~/.ssh/config, which the "
+                "container entrypoint writes from ssh_keyfile and known_hosts. "
+                "It would be written to the run directory in plaintext.",
+                where=where,
+            )
+        )
     if parts.fragment:
         problems.append(
             Problem(Severity.ERROR, f"unexpected fragment {parts.fragment!r}", where)
         )
+
+    for field in ("ssh_keyfile", "known_hosts"):
+        path = target.get(field)
+        # A warning, not an error: `validate` is the offline phase and runs
+        # anywhere, while these are paths on whichever machine runs the deploy --
+        # normally the container, where they are bind-mounted at run time.
+        if path is not None and not Path(path).is_file():
+            problems.append(
+                Problem(
+                    Severity.WARNING,
+                    f"{path} does not exist here. It is read on the machine "
+                    f"running the deploy, not on the target, so this matters "
+                    f"only if that is this one.",
+                    where=f"target.libvirt.{field}",
+                )
+            )
     return problems
 
 
@@ -345,6 +421,20 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
                 where=f"{where}.loader_format",
             )
         )
+    if loader is not None and "loader_format" not in vm:
+        # The module does not treat an absent format as "unknown", it treats it
+        # as raw: main.tf builds the varstore path with an `.fd` suffix and
+        # passes `format = null`. A qcow2 loader then gets an `.fd` varstore,
+        # which is the mismatch the first acceptance run already paid for.
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                "'loader' was set without 'loader_format'. It is not optional: "
+                "the varstore path is built from it, and an absent value is "
+                "taken as 'raw'. Fedora's OVMF is qcow2, RHEL's is raw.",
+                where=f"{where}.loader",
+            )
+        )
     return problems
 
 
@@ -383,6 +473,23 @@ def _check_nics(
             )
 
         iface = _parse_interface(nic.get("ip_cidr", ""), f"{at}.ip_cidr", problems)
+        if iface is not None and iface.network.num_addresses > 2:
+            # Skipped for /31 and /32 -- and /127 and /128 -- where every address
+            # in the block is a host address. `num_addresses` says that in one
+            # condition for both families.
+            reserved = {
+                iface.network.network_address: "the network address",
+                iface.network.broadcast_address: "the broadcast address",
+            }
+            if iface.ip in reserved:
+                problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"{iface.ip} is {reserved[iface.ip]} of "
+                        f"{iface.network}, not a host address in it",
+                        where=f"{at}.ip_cidr",
+                    )
+                )
         gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
         if iface is not None and gateway is not None:
             if gateway not in iface.network:

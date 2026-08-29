@@ -84,6 +84,13 @@ def test_marker_without_deployment_parses_to_empty_string():
         ("not json at all", "not valid JSON"),
         ("[1,2,3]", "expected object"),
         ('{"v":"0.1.0.0"}', "missing required key"),
+        # Coerced with `str()` these become "123", "None" and "7" -- a marker
+        # that should be unreadable instead names a VM, and that name is what
+        # `decide()` compares against the config.
+        ('{"v":"0.1.0.0","name":123,"id":"x"}', "'name' is int"),
+        ('{"v":"0.1.0.0","name":"app01","id":null}', "'id' is NoneType"),
+        ('{"v":0,"name":"app01","id":"x"}', "'v' is int"),
+        ('{"v":"0.1.0.0","name":"app01","id":"x","deployment":7}', "'deployment' is"),
     ],
 )
 def test_malformed_markers_raise(raw, fragment):

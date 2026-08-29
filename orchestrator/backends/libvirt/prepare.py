@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from .schema import mac_of
+from .schema import mac_of, primary_index
 
 #: Both cloud-init and libvirt find a NoCloud datasource by this volume label.
 VOLUME_LABEL = "cidata"
@@ -75,7 +75,15 @@ def _network_config(vm: dict, deployment: str) -> dict:
     parser does not implement, and the failure is the worst shape available: the
     guest boots, falls back to DHCP, and comes up healthy on an address nobody
     asked for. ``gateway4`` would also work and is deprecated; a CIDR is neither.
+
+    **Only the primary NIC gets it.** One default route per NIC leaves a
+    multi-NIC guest choosing its egress by metric, which is the same shape of
+    failure: it boots, it routes, and it routes somewhere nobody chose.
+    ``gateway`` stays required on every NIC even so -- it is what the address is
+    checked against, and making a required field optional later is the
+    backward-compatible direction.
     """
+    default_route = primary_index(vm)
     ethernets = {}
     for i, nic in enumerate(vm["nics"]):
         entry: dict = {
@@ -83,8 +91,9 @@ def _network_config(vm: dict, deployment: str) -> dict:
             "dhcp4": False,
             "dhcp6": False,
             "addresses": [nic["ip_cidr"]],
-            "routes": [{"to": "0.0.0.0/0", "via": nic["gateway"]}],
         }
+        if i == default_route:
+            entry["routes"] = [{"to": "0.0.0.0/0", "via": nic["gateway"]}]
         if nic.get("nameservers"):
             entry["nameservers"] = {"addresses": list(nic["nameservers"])}
         ethernets[f"nic{i}"] = entry

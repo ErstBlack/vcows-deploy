@@ -52,7 +52,9 @@ def errors(problems) -> list:
 
 
 def test_the_canonical_config_has_no_errors(cfg):
-    """Only the unreadable golden image, which is a warning by design."""
+    """Only the unreadable golden image, which is a warning by design -- and,
+    off a host with the secrets mounted, the two credential paths, for the same
+    reason and with the same severity."""
     problems = schema.validate(cfg)
     assert errors(problems) == [], messages(problems)
 
@@ -77,6 +79,63 @@ def test_unknown_key_in_a_vm_is_rejected(cfg):
     assert "memory_gb" in messages(schema.validate(cfg))
 
 
+# -- names, and the sizes ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key, value, where",
+    [
+        ("name", "app01\n", "vms[0].name"),
+        ("mac", "52:54:00:aa:bb:cc\n", "vms[0].nics[0].mac"),
+    ],
+)
+def test_a_trailing_newline_is_rejected(cfg, key, value, where):
+    """Python's `$` also matches before a trailing newline. A name carrying one
+    becomes a libvirt domain name and the stem of two volume names."""
+    target = cfg["vms"][0] if key == "name" else cfg["vms"][0]["nics"][0]
+    target[key] = value
+    assert where in [p.where for p in errors(schema.validate(cfg))]
+
+
+@pytest.mark.parametrize("key", ["vcpus", "memory_mib", "disk_gb"])
+def test_a_size_above_the_ceiling_is_rejected(cfg, key):
+    """A fat-fingered zero, caught before the run creates volumes for a VM no
+    host will start."""
+    cfg["vms"][0][key] = getattr(schema, f"MAX_{key.upper()}", 512) + 1
+    assert key in messages(errors(schema.validate(cfg)))
+
+
+def test_the_ceilings_are_raisable_from_the_environment(cfg, monkeypatch):
+    """A site on hardware we have not seen raises the bound from the outside.
+    The constants are read at import, so this reloads the module."""
+    import importlib
+
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", str(schema.MAX_VCPUS + 8))
+    reloaded = importlib.reload(schema)
+    try:
+        cfg["vms"][0]["vcpus"] = reloaded.MAX_VCPUS
+        assert errors(reloaded.validate(cfg)) == []
+    finally:
+        monkeypatch.delenv("VCOWS_MAX_VCPUS")
+        importlib.reload(schema)
+
+
+def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", "lots")
+    monkeypatch.setenv("VCOWS_MAX_DISK_GB", "-1")
+    import importlib
+
+    try:
+        reloaded = importlib.reload(schema)
+        assert reloaded.MAX_VCPUS == 512 and reloaded.MAX_DISK_GB == 64 * 1024
+        err = capsys.readouterr().err
+        assert "VCOWS_MAX_VCPUS='lots'" in err and "VCOWS_MAX_DISK_GB='-1'" in err
+    finally:
+        monkeypatch.delenv("VCOWS_MAX_VCPUS")
+        monkeypatch.delenv("VCOWS_MAX_DISK_GB")
+        importlib.reload(schema)
+
+
 # -- R-D: the URI is ours to assemble ---------------------------------------
 
 
@@ -89,6 +148,11 @@ def test_unknown_key_in_a_vm_is_rejected(cfg):
         ("qemu+tcp://host/system", "qemu+ssh"),
         ("qemu+ssh:///system", "no host"),
         ("qemu+ssh://vcows@vcows/session", "/system"),
+        # The query string is not the only way a credential reaches the URI, and
+        # a password survives further: `connection_uri` clears the query but
+        # leaves the netloc, so it reaches the tfvars in the run directory.
+        ("qemu+ssh://vcows:hunter2@vcows/system", "no password"),
+        ("qemu+ssh://vcows:@vcows/system", "no password"),
     ],
 )
 def test_bad_uris_are_rejected(cfg, uri, expect):
@@ -99,6 +163,29 @@ def test_bad_uris_are_rejected(cfg, uri, expect):
 def test_a_good_uri_passes(cfg):
     cfg["target"]["libvirt"]["uri"] = "qemu+ssh://root@10.0.0.5:2222/system"
     assert not [p for p in errors(schema.validate(cfg)) if "uri" in p.where]
+
+
+# -- credential paths -------------------------------------------------------
+
+
+def test_a_missing_credential_path_warns_and_does_not_refuse(cfg):
+    """`validate` is the offline phase and runs anywhere. These are paths on
+    whichever machine runs the deploy, normally the container, where they are
+    bind-mounted at run time -- so their absence here is not an answer."""
+    cfg["target"]["libvirt"]["ssh_keyfile"] = "/nowhere/id_ed25519"
+    problems = schema.validate(cfg)
+    assert errors(problems) == [], messages(problems)
+    assert "/nowhere/id_ed25519 does not exist here" in messages(problems)
+
+
+def test_a_credential_path_that_exists_warns_about_nothing(cfg, tmp_path):
+    key = tmp_path / "id_ed25519"
+    key.write_text("")
+    known = tmp_path / "known_hosts"
+    known.write_text("")
+    cfg["target"]["libvirt"]["ssh_keyfile"] = str(key)
+    cfg["target"]["libvirt"]["known_hosts"] = str(known)
+    assert not [p for p in schema.validate(cfg) if "does not exist" in p.message]
 
 
 # -- R-G: firmware settings are not changeable after creation ---------------
@@ -118,6 +205,18 @@ def test_nvram_template_without_loader_is_rejected(cfg):
 def test_loader_format_without_loader_is_rejected(cfg):
     cfg["vms"][0]["loader_format"] = "raw"
     assert "loader_format" in messages(schema.validate(cfg))
+
+
+def test_loader_without_loader_format_is_rejected(cfg):
+    """It is not optional. The module builds the varstore path from it and takes
+    an absent value as `raw`, so a qcow2 loader would get an `.fd` varstore --
+    the mismatch the first acceptance run already paid for."""
+    del cfg["vms"][1]["loader_format"]
+    assert "without 'loader_format'" in messages(schema.validate(cfg))
+
+
+def test_loader_with_its_format_passes(cfg):
+    assert not [p for p in errors(schema.validate(cfg)) if "loader" in p.where]
 
 
 def test_uefi_settings_with_bios_firmware_are_rejected(cfg):
@@ -169,6 +268,27 @@ def test_ip_without_a_prefix_is_rejected(cfg):
 def test_unparseable_address_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.999/24"
     assert errors(schema.validate(cfg))
+
+
+@pytest.mark.parametrize(
+    "ip_cidr, expect",
+    [
+        ("192.168.122.0/24", "the network address"),
+        ("192.168.122.255/24", "the broadcast address"),
+        ("192.168.122.64/26", "the network address"),
+    ],
+)
+def test_an_address_that_is_not_a_host_address_is_rejected(cfg, ip_cidr, expect):
+    cfg["vms"][0]["nics"][0]["ip_cidr"] = ip_cidr
+    assert expect in messages(schema.validate(cfg))
+
+
+@pytest.mark.parametrize("ip_cidr", ["192.168.122.60/31", "192.168.122.60/32"])
+def test_a_point_to_point_block_has_no_reserved_addresses(cfg, ip_cidr):
+    """Every address in a /31 or /32 is a host address, so the check is skipped
+    rather than applied and got wrong."""
+    cfg["vms"][0]["nics"][0]["ip_cidr"] = ip_cidr
+    assert not [p for p in schema.validate(cfg) if "host address" in p.message]
 
 
 def test_gateway_outside_the_subnet_is_rejected(cfg):
