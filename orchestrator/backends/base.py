@@ -228,7 +228,9 @@ class Backend(ABC):
         """What exists on the target. Mechanism is per-backend; policy is core."""
 
     @abstractmethod
-    def prepare(self, cfg: dict, workdir: Path) -> AbstractContextManager[Prepared]:
+    def prepare(
+        self, cfg: dict, workdir: Path, session: Any
+    ) -> AbstractContextManager[Prepared]:
         """Build whatever the apply needs, and hold it open for the apply's life.
 
         A context manager because a future backend may need the orchestrator to
@@ -236,6 +238,13 @@ class Backend(ABC):
         socket held open for the duration and torn down after. For libvirt it
         yields immediately after building the seed ISOs. It costs nothing today;
         retrofitting it later would mean restructuring.
+
+        **Takes the session** because each apply runs against a fresh, empty
+        OpenTofu state, so the module only ever creates -- and something has to
+        tell it which of the things it would create are already there. ``render``
+        is pure and ``preflight`` returns domains, so this is the one hook that
+        can look. Whatever it finds goes into ``Prepared.artifacts``, which keeps
+        core from ever learning what a storage volume is.
         """
 
     @abstractmethod

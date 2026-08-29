@@ -11,3 +11,7 @@ runs/
 .terraform/
 *.tfstate
 *.tfstate.backup
+
+# Dev-box provider mirror. Rebuildable from docs/provider-0.9.8.lock.hcl;
+# the real one is baked into the image at /opt/tofu-mirror.
+.tools/

@@ -85,11 +85,17 @@ class FakeBackend(Backend):
     # -- apply -----------------------------------------------------------
 
     @contextmanager
-    def prepare(self, cfg: dict, workdir: Path):
+    def prepare(self, cfg: dict, workdir: Path, session: Any):
         self.prepared_dirs.append(workdir)
         (workdir / "fake-artifact").write_text("seed\n")
         yield Prepared(
-            workdir=workdir, artifacts={"seed": str(workdir / "fake-artifact")}
+            workdir=workdir,
+            artifacts={
+                "seed": str(workdir / "fake-artifact"),
+                # Stands in for "what does the target already have" -- the whole
+                # reason prepare takes a session.
+                "existing_names": sorted(e.name for e in session.world),
+            },
         )
 
     def render(self, cfg: dict, prepared: Prepared) -> dict:

@@ -89,8 +89,9 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
 
         workdir = tmp_path / "work"
         workdir.mkdir()
-        with backend.prepare(config, workdir) as prepared:
+        with backend.prepare(config, workdir, session) as prepared:
             tfvars = backend.render(config, prepared)
+        assert prepared.artifacts["existing_names"] == []
 
         assert set(tfvars["vms"]) == {"app01", "app02"}
         for name, vm in tfvars["vms"].items():

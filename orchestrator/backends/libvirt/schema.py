@@ -1,0 +1,401 @@
+"""The ``target.libvirt`` block and the per-VM shape -- findings.md F11.
+
+**This is the one-way door.** Other groups author these configs by hand and keep
+them in their own version control, so the shape settled here is the shape we live
+with. Everything below is either in F11's list or is a check F11 implies.
+
+Two things F11 left open, settled here:
+
+* ``nics`` is a list but the inventory carries one address, so **the first NIC is
+  primary** unless one carries ``primary: true``.
+* A per-VM value **replaces**, never merges. There is no ``defaults`` block at
+  v0.1 so nothing exercises it yet, but the rule is invisible until the first
+  nested field and by then configs exist.
+
+The split with core is D11: core's ``vms`` schema requires only ``name``, and
+everything about a VM's shape -- especially NICs, whose valid forms are entirely
+backend-specific -- is checked here. That keeps core backend-agnostic and produces
+better messages: a jsonschema ``oneOf`` failure on the bridge/network union is
+close to unreadable, where a Python check names both fields the operator set.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import uuid
+from typing import Any
+from urllib.parse import urlsplit
+
+import jsonschema
+
+from ... import qcow2
+from ...marker import VCOWS_NS
+from ..base import Problem, Severity
+
+#: Same shape as a deployment name: it becomes a libvirt domain name and the stem
+#: of two volume names.
+NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+
+MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"
+
+#: QEMU's OUI. Locally administered, and what every libvirt-generated MAC uses.
+MAC_OUI = (0x52, 0x54, 0x00)
+
+#: Field-level defaults, not a ``defaults`` block. Each is one value used when a
+#: VM omits the key -- there is no resolution step and no merge semantics.
+FIRMWARE_DEFAULT = "efi"
+MACHINE_DEFAULT = "q35"
+
+NIC_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ip_cidr", "gateway"],
+    "properties": {
+        # Exactly one of these two. Checked in Python, not as a jsonschema
+        # `oneOf`, so the error can name what was actually set.
+        "network": {"type": "string", "minLength": 1},
+        "bridge": {"type": "string", "minLength": 1},
+        "ip_cidr": {"type": "string", "minLength": 1},
+        "gateway": {"type": "string", "minLength": 1},
+        "nameservers": {"type": "array", "items": {"type": "string"}},
+        "mac": {"type": "string", "pattern": MAC_PATTERN},
+        "model": {"type": "string", "minLength": 1},
+        "primary": {"type": "boolean"},
+    },
+}
+
+VM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "vcpus", "memory_mib", "disk_gb", "nics"],
+    "properties": {
+        "name": {"type": "string", "pattern": NAME_PATTERN},
+        "vcpus": {"type": "integer", "minimum": 1},
+        "memory_mib": {"type": "integer", "minimum": 256},
+        "disk_gb": {"type": "integer", "minimum": 1},
+        # UEFI is not changeable after creation, which is why it is here rather
+        # than being inferred.
+        "firmware": {"enum": ["efi", "bios"]},
+        # Host-specific, and the reason firmware autoselection is not assumed:
+        # Fedora ships OVMF_CODE_4M.qcow2, RHEL ships a raw .fd, and an early
+        # RHEL 9 may not carry the firmware descriptors autoselection needs.
+        "loader": {"type": "string", "minLength": 1},
+        "loader_format": {"enum": ["raw", "qcow2"]},
+        "nvram_template": {"type": "string", "minLength": 1},
+        "machine": {"type": "string", "minLength": 1},
+        # Passed to cloud-init verbatim. vcows writes meta-data and
+        # network-config; this is the operator's half and is not interpreted.
+        "user_data": {"type": "string"},
+        "nics": {"type": "array", "minItems": 1, "items": NIC_SCHEMA},
+    },
+}
+
+TARGET_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["uri", "pool"],
+    "properties": {
+        # qemu+ssh:// only. No local socket at v0.1.
+        "uri": {"type": "string", "minLength": 1},
+        # Must already exist. Creating a pool is a host-level mutation on someone
+        # else's hypervisor; preflight refuses when it is missing or inactive.
+        "pool": {"type": "string", "minLength": 1},
+        "ssh_keyfile": {"type": "string", "minLength": 1},
+        "known_hosts": {"type": "string", "minLength": 1},
+    },
+}
+
+
+def derive_mac(name: str, index: int) -> str:
+    """A deterministic MAC for one VM's Nth NIC.
+
+    cloud-init's ``network-config`` matches an interface by MAC to apply the
+    static address, so the MAC has to be known at render time. Deriving it keeps
+    a single-NIC config to three lines, stays correct for multiple NICs, and
+    regenerates identically with no state file -- the same property, for the same
+    reason, as ``derive_id``.
+
+    **This derivation is permanent.** Changing it renames the interface every
+    running VM's guest configuration is keyed to. ``tests/test_libvirt_schema.py``
+    pins it.
+    """
+    raw = uuid.uuid5(VCOWS_NS, f"{name}#nic{index}").bytes
+    return ":".join(f"{b:02x}" for b in (*MAC_OUI, raw[0], raw[1], raw[2]))
+
+
+def mac_of(vm: dict, index: int) -> str:
+    return vm["nics"][index].get("mac") or derive_mac(vm["name"], index)
+
+
+def primary_index(vm: dict) -> int:
+    """Which NIC's address represents this VM. First wins unless one says so."""
+    for i, nic in enumerate(vm["nics"]):
+        if nic.get("primary"):
+            return i
+    return 0
+
+
+def validate(cfg: dict) -> list[Problem]:
+    """Offline checks. No connection, no I/O against the target.
+
+    Returns every problem rather than the first, matching ``config.load``.
+    """
+    problems: list[Problem] = []
+    problems += _check_target(cfg["target"]["libvirt"])
+
+    seen_ips: dict[str, str] = {}
+    seen_macs: dict[str, str] = {}
+    for i, vm in enumerate(cfg["vms"]):
+        where = f"vms[{i}]"
+        structural = _check_vm_structure(vm, where)
+        problems += structural
+        if structural:
+            # The checks below index into fields the schema just rejected.
+            continue
+        problems += _check_firmware(vm, where)
+        problems += _check_nics(vm, where, seen_ips, seen_macs)
+
+    problems += _check_disk_capacity(cfg)
+    return problems
+
+
+def _check_target(target: dict) -> list[Problem]:
+    """R-D: the URI is ours to assemble, not the operator's to decorate."""
+    where = "target.libvirt.uri"
+    uri = target["uri"]
+    parts = urlsplit(uri)
+
+    problems: list[Problem] = []
+    if parts.scheme != "qemu+ssh":
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"scheme must be 'qemu+ssh', got {parts.scheme or '<none>'!r}. "
+                f"v0.1 connects over SSH only; a local socket is later work.",
+                where=where,
+            )
+        )
+    if not parts.hostname:
+        problems.append(
+            Problem(Severity.ERROR, f"no host in {uri!r}", where=where),
+        )
+    if parts.path != "/system":
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"path must be '/system', got {parts.path or '<none>'!r}",
+                where=where,
+            )
+        )
+    if parts.query:
+        # The single most important check here. `no_verify=1` disables SSH host
+        # key checking, and `keyfile=`/`known_hosts=` would silently override
+        # what vcows appends from ssh_keyfile/known_hosts.
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"URI must carry no query string, got {parts.query!r}. vcows "
+                f"builds it from ssh_keyfile and known_hosts; setting it here "
+                f"can disable host key verification.",
+                where=where,
+            )
+        )
+    if parts.fragment:
+        problems.append(
+            Problem(Severity.ERROR, f"unexpected fragment {parts.fragment!r}", where)
+        )
+    return problems
+
+
+def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
+    validator = jsonschema.Draft202012Validator(VM_SCHEMA)
+    return [
+        Problem(
+            Severity.ERROR,
+            err.message,
+            where=where
+            + "".join(
+                f".{p}" if isinstance(p, str) else f"[{p}]" for p in err.absolute_path
+            ),
+        )
+        for err in sorted(
+            validator.iter_errors(vm), key=lambda e: list(map(str, e.absolute_path))
+        )
+    ]
+
+
+def _check_firmware(vm: dict, where: str) -> list[Problem]:
+    """R-G. None of this is changeable after a domain is created."""
+    firmware = vm.get("firmware", FIRMWARE_DEFAULT)
+    loader = vm.get("loader")
+    template = vm.get("nvram_template")
+
+    problems: list[Problem] = []
+    if firmware == "bios":
+        for key in ("loader", "loader_format", "nvram_template"):
+            if key in vm:
+                problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"{key!r} is a UEFI setting and cannot appear with "
+                        f"firmware: bios",
+                        where=f"{where}.{key}",
+                    )
+                )
+        return problems
+
+    if (loader is None) != (template is None):
+        present, missing = (
+            ("loader", "nvram_template") if loader else ("nvram_template", "loader")
+        )
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"{present!r} was set without {missing!r}. A UEFI domain needs "
+                f"both, or neither -- with neither, libvirt selects the firmware "
+                f"itself from the host's descriptors.",
+                where=f"{where}.{present}",
+            )
+        )
+    if "loader_format" in vm and loader is None:
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                "'loader_format' describes 'loader', which is not set",
+                where=f"{where}.loader_format",
+            )
+        )
+    return problems
+
+
+def _check_nics(
+    vm: dict, where: str, seen_ips: dict[str, str], seen_macs: dict[str, str]
+) -> list[Problem]:
+    problems: list[Problem] = []
+    primaries = [i for i, n in enumerate(vm["nics"]) if n.get("primary")]
+    if len(primaries) > 1:
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"{len(primaries)} NICs claim primary: true (indices {primaries}); "
+                f"at most one may. Omit it entirely and the first NIC is primary.",
+                where=f"{where}.nics",
+            )
+        )
+
+    for i, nic in enumerate(vm["nics"]):
+        at = f"{where}.nics[{i}]"
+        attachments = [k for k in ("bridge", "network") if k in nic]
+        if len(attachments) != 1:
+            problems.append(
+                Problem(
+                    Severity.ERROR,
+                    "exactly one of 'bridge' or 'network' is required, found "
+                    + (
+                        f"both ({', '.join(attachments)})" if attachments else "neither"
+                    ),
+                    where=at,
+                )
+            )
+
+        iface = _parse_interface(nic.get("ip_cidr", ""), f"{at}.ip_cidr", problems)
+        gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
+        if iface is not None and gateway is not None:
+            if gateway not in iface.network:
+                problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"gateway {gateway} is outside {iface.network}",
+                        where=f"{at}.gateway",
+                    )
+                )
+            owner = seen_ips.setdefault(str(iface.ip), at)
+            if owner != at:
+                problems.append(
+                    Problem(
+                        Severity.ERROR,
+                        f"address {iface.ip} is already used by {owner}",
+                        where=f"{at}.ip_cidr",
+                    )
+                )
+        for j, ns in enumerate(nic.get("nameservers", [])):
+            _parse_address(ns, f"{at}.nameservers[{j}]", problems)
+
+        mac = mac_of(vm, i).lower()
+        owner = seen_macs.setdefault(mac, at)
+        if owner != at:
+            problems.append(
+                Problem(
+                    Severity.ERROR, f"MAC {mac} is already used by {owner}", where=at
+                )
+            )
+    return problems
+
+
+def _parse_interface(
+    raw: str, where: str, problems: list[Problem]
+) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface | None:
+    if "/" not in raw:
+        problems.append(
+            Problem(
+                Severity.ERROR,
+                f"{raw!r} needs a prefix length, e.g. '192.168.122.60/24'",
+                where=where,
+            )
+        )
+        return None
+    try:
+        return ipaddress.ip_interface(raw)
+    except ValueError as exc:
+        problems.append(Problem(Severity.ERROR, str(exc), where=where))
+        return None
+
+
+def _parse_address(
+    raw: str, where: str, problems: list[Problem]
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError as exc:
+        problems.append(Problem(Severity.ERROR, str(exc), where=where))
+        return None
+
+
+def _check_disk_capacity(cfg: dict) -> list[Problem]:
+    """R-F: an overlay smaller than its backing image cannot be created.
+
+    Uses the qcow2 header read rather than ``qemu-img info`` -- see D18 and
+    orchestrator/qcow2.py. Degrades to a warning rather than an error when the
+    image cannot be read, because ``validate`` is the offline phase and the golden
+    image is bind-mounted at run time.
+    """
+    source = cfg["image"]["source_qcow2"]
+    try:
+        virtual = qcow2.virtual_size(source)
+    except OSError as exc:
+        return [
+            Problem(
+                Severity.WARNING,
+                f"cannot read {source} to check disk_gb against it ({exc.strerror}); "
+                f"a VM whose disk_gb is below the image's virtual size will fail "
+                f"at create time",
+                where="image.source_qcow2",
+            )
+        ]
+    except qcow2.NotAQcow2 as exc:
+        return [Problem(Severity.ERROR, str(exc), where="image.source_qcow2")]
+
+    problems = []
+    for i, vm in enumerate(cfg["vms"]):
+        want = vm.get("disk_gb")
+        if isinstance(want, int) and want * 1024**3 < virtual:
+            problems.append(
+                Problem(
+                    Severity.ERROR,
+                    f"disk_gb is {want} but {source} has a virtual size "
+                    f"of {virtual / 1024**3:.1f} GiB; an overlay cannot be "
+                    f"smaller than the image it backs onto",
+                    where=f"vms[{i}].disk_gb",
+                )
+            )
+    return problems
