@@ -16,7 +16,8 @@ all, and it is what the fake-backend seam test checks.
 from __future__ import annotations
 
 from .base import Backend
+from .libvirt import LibvirtBackend
 
-REGISTRY: dict[str, Backend] = {}
+REGISTRY: dict[str, Backend] = {"libvirt": LibvirtBackend()}
 
 __all__ = ["REGISTRY", "Backend"]

@@ -48,10 +48,15 @@ def no_libvirt(monkeypatch):
 
     real_import = builtins.__import__
 
-    def guarded(name, *args, **kwargs):
-        if name == "libvirt" or name.startswith("libvirt."):
+    def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+        # `level` matters: the backend package is *also* called libvirt, so
+        # `from .libvirt import LibvirtBackend` arrives here as name="libvirt"
+        # with level=1. Blocking that would prove nothing about the hypervisor
+        # binding and would only stop the registry importing itself. Absolute
+        # imports -- level 0 -- are the ones this fixture exists to catch.
+        if level == 0 and (name == "libvirt" or name.startswith("libvirt.")):
             raise ImportError(f"{name} is blocked by the seam test")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded)
 

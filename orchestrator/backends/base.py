@@ -97,6 +97,18 @@ class Discovered:
     artifacts: dict[str, Any] = field(default_factory=dict)
     """Opaque to core. Whatever else the backend had to look at while connected."""
 
+    problems: list[Problem] = field(default_factory=list)
+    """What the backend found wrong with the *target*, as opposed to the config.
+
+    A missing pool, an orphaned volume, a base image whose size disagrees with the
+    local one: none of these are ownership questions, so ``decide()`` cannot reach
+    them, and all of them must stop a deploy. They are a list rather than an
+    exception for the same reason ``config.load`` reports every problem at once --
+    an operator at an air-gapped site should not round-trip once per fault.
+
+    Core reads this and ``vms``, and still never reads ``artifacts``.
+    """
+
 
 @dataclass(frozen=True)
 class Prepared:
