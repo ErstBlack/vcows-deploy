@@ -5,7 +5,7 @@ a VM, a pool or a hypervisor -- the same reason ``config.py`` knows nothing abou
 NICs. Swapping OpenTofu for something else means rewriting this file and nothing
 else.
 
-**Why ``subprocess.run`` and not something cleverer.** OpenTofu ships as a Go
+**Why a subprocess and not something cleverer.** OpenTofu ships as a Go
 binary with no Python API. The only in-process path is speaking ``tfplugin6`` gRPC
 to the provider directly, which means reimplementing the graph walker, dependency
 resolution and state -- the entire reason for choosing OpenTofu in the first place
@@ -20,6 +20,11 @@ reading it live means a line reader and the classic two-pipe deadlock. ``-json-i
 (1.12.0) writes the same stream to a file *while* normal output goes to the
 terminal, so tofu simply inherits stdout and we read the file after it exits.
 Measured on 1.12.6 against ``plan``, ``apply``, ``init`` and ``output``.
+
+``Popen`` itself *is* used below, with no pipes: what that paragraph rejects is
+reading the stream live, not the call. It is there so that a Ctrl-C mid-apply
+waits for tofu to unwind, which ``subprocess.run`` does not -- it sleeps 0.25 s
+and SIGKILLs.
 """
 
 from __future__ import annotations
@@ -166,18 +171,35 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
 
     # Not `start_new_session`: Ctrl-C must reach tofu so it shuts down the way it
     # would if the operator had run it themselves.
-    completed = subprocess.run(
-        argv,
-        env=_env(),
-        timeout=SHORT_TIMEOUT if cmd == "init" else None,
-        check=False,
-    )
+    proc = subprocess.Popen(argv, env=_env())
+    try:
+        proc.wait(timeout=SHORT_TIMEOUT if cmd == "init" else None)
+    except KeyboardInterrupt:
+        # tofu already has the SIGINT -- it is in our process group -- and what
+        # it does with it is release the state lock and stop between resources.
+        # `subprocess.run` gives it 0.25 s and then SIGKILL, which lands in the
+        # middle of an apply and leaves the state file as whatever it was
+        # mid-write. So wait; a second Ctrl-C is the operator saying they meant
+        # it, and gets the kill.
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.kill()
+            proc.wait()
+        raise
+    except BaseException:
+        # The timeout on `init`, and anything else. Same contract as
+        # `subprocess.run`: kill, reap, re-raise.
+        proc.kill()
+        proc.wait()
+        raise
+
     diagnostics, changes = _read_stream(stream)
-    result = Result(completed.returncode, diagnostics, changes)
-    if completed.returncode != 0:
+    result = Result(proc.returncode, diagnostics, changes)
+    if proc.returncode != 0:
         errors = "; ".join(str(d) for d in result.errors)
         raise TofuError(
-            f"tofu {cmd} failed (exit {completed.returncode})"
+            f"tofu {cmd} failed (exit {proc.returncode})"
             + (f": {errors}" if errors else ""),
             result,
         )

@@ -34,3 +34,17 @@ def test_marker_carries_the_version():
 def test_pyproject_agrees():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert data["project"]["version"] == VERSION
+
+
+def test_the_image_tag_agrees():
+    """The consumer the docstring above claims and nothing asserted.
+
+    `ARG VCOWS_VERSION` is what names the image, what reaches the OCI version
+    label, and what the build manifest records -- so a bump here that missed the
+    Containerfile would ship an image whose tag, label and manifest all disagreed
+    with the marker inside every VM it created.
+    """
+    text = (ROOT / "Containerfile").read_text()
+    found = re.search(r"^ARG VCOWS_VERSION=(\S+)$", text, re.MULTILINE)
+    assert found is not None, "Containerfile no longer declares ARG VCOWS_VERSION"
+    assert found.group(1) == VERSION

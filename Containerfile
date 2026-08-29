@@ -11,9 +11,20 @@
 # venv to hide the libvirt binding from.
 #
 # Build:
+#   ship='orchestrator container licenses docs/provider-0.9.8.lock.hcl'
 #   podman build -t vcows-deploy:0.1.0.0 \
-#     --build-arg GIT_SHA="$(git rev-parse HEAD)" \
+#     --build-arg GIT_SHA="$(git rev-parse HEAD)$(git status --porcelain -- $ship \
+#                             | grep -q . && printf -- -dirty)" \
 #     --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+#
+# The `-dirty` suffix is not decoration. The image built at e5d5a2c recorded a
+# clean SHA for a commit that did not contain the `container/entrypoint.py` it
+# shipped, which is the one question R5 exists to answer. `.git/` is outside the
+# build context, so only the caller can compute this -- and `container/manifest.py`
+# records `unknown` rather than trust anything that is not 40 hex or 40 hex plus
+# `-dirty`. The paths are the ones this file COPYs: a change under `docs/` or
+# `tests/` cannot reach the image, and flagging the build for one would make the
+# suffix mean nothing.
 #
 # The provider mirror must exist at .tools/tofu-mirror first; see the Stage 2
 # prerequisites. It is the one thing under .tools/ the build context admits.
@@ -49,9 +60,12 @@ ARG BUILD_DATE=unknown
 ARG TOFU_VERSION=1.12.6
 ARG TOFU_RPM_SHA256=547fe4544d3091ede04478f143fbb17bb0e010999237d904bf8950ad7542848f
 
+# No lock hash here: the manifest reads the version and the `h1:` hash out of the
+# committed lock below, which is the file the deploy actually installs from. Two
+# records of one fact is how a manifest ends up naming a provider the image does
+# not contain.
 ARG PROVIDER_VERSION=0.9.8
 ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
-ARG PROVIDER_LOCK_HASH=h1:yqZeKoJ+EZc3687/+ZBqBmtwzvBPLNwaEHW74+bSc6Y=
 
 # Taken from the manifest's own licence fields rather than asserted, and
 # deliberately not exhaustive -- the true conjunction across 161 packages runs to
@@ -86,6 +100,13 @@ RUN curl -fsSLo /tmp/tofu.rpm \
 # The provider, and the CLI config that is the only thing pointing at it.
 COPY .tools/tofu-mirror /opt/tofu-mirror
 COPY container/tofurc /opt/tofu/tofurc
+
+# The mirror is a directory in somebody's build context, assembled by a command
+# nothing here can see. `tofu init` will verify the zip against the lock's `h1:`
+# hash -- but only at a site, inside a deploy, which is the wrong place to learn
+# that the wrong artifact was baked in. This says it at build time.
+RUN echo "${PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_${PROVIDER_VERSION}_linux_amd64.zip" \
+  | sha256sum -c -
 
 # Redistributing the provider means shipping its licence, which upstream does not
 # carry in 0.9.x. The provenance note explains why that is a gap rather than a
@@ -136,8 +157,8 @@ RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
 COPY container/manifest.py /tmp/manifest.py
 RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}" \
     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}" \
-    PROVIDER_VERSION="${PROVIDER_VERSION}" PROVIDER_SHA256="${PROVIDER_SHA256}" \
-    PROVIDER_LOCK_HASH="${PROVIDER_LOCK_HASH}" \
+    PROVIDER_SHA256="${PROVIDER_SHA256}" \
+    PROVIDER_LOCK=/opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl \
     python3 /tmp/manifest.py > /opt/vcows/manifest.json \
  && rm -f /tmp/manifest.py
 

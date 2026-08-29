@@ -101,6 +101,14 @@ def ssh_config(keyfile: str | None, known_hosts: str | None) -> str:
         "# place that reaches both. Delete or override by mounting your own.",
         "Host *",
         "  BatchMode yes",
+        # A tunnel that stops answering otherwise hangs the run forever. D42
+        # gives `plan` and `apply` no timeout on purpose -- a multi-GB
+        # `vol-upload` has no resume, so any clock long enough to be safe is too
+        # long to be useful -- and this is the other half of that: it bounds a
+        # *dead* connection at three minutes without putting a clock on a live
+        # transfer, because keepalives only fire when nothing is moving.
+        "  ServerAliveInterval 30",
+        "  ServerAliveCountMax 6",
     ]
     if keyfile:
         lines += [f"  IdentityFile {keyfile}", "  IdentitiesOnly yes"]
@@ -124,8 +132,17 @@ def install(argv: list[str]) -> None:
     if not isinstance(cfg, dict):
         return
 
-    target = (cfg.get("target") or {}).get("libvirt") or {}
-    keyfile, known_hosts = target.get("ssh_keyfile"), target.get("known_hosts")
+    # Two `isinstance` checks rather than `or {}`, because this is the operator's
+    # YAML and either level can be a string, a list or a number. `.get` on one of
+    # those is an `AttributeError` out of the entrypoint -- a traceback where
+    # `vcows validate`, a moment later, has a sentence.
+    target = cfg.get("target")
+    if not isinstance(target, dict):
+        return
+    libvirt = target.get("libvirt")
+    if not isinstance(libvirt, dict):
+        return
+    keyfile, known_hosts = libvirt.get("ssh_keyfile"), libvirt.get("known_hosts")
     if not keyfile and not known_hosts:
         return
 
@@ -149,7 +166,14 @@ def install(argv: list[str]) -> None:
     ssh_dir = where / ".ssh"
     destination = ssh_dir / "config"
     if destination.exists():
-        # Somebody mounted their own. Theirs wins.
+        # Somebody mounted their own. Theirs wins -- and it is said out loud,
+        # because the alternative is debugging a credential the config named and
+        # nothing ever installed.
+        print(
+            f"vcows: {destination} already exists; leaving it alone. This run's "
+            f"ssh_keyfile and known_hosts were not installed.",
+            file=sys.stderr,
+        )
         return
 
     try:

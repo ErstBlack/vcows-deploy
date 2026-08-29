@@ -23,7 +23,9 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -63,10 +65,19 @@ class UsageError(Exception):
 
 
 def manifest() -> dict | None:
+    """The build manifest, or ``None`` when there is none to read.
+
+    Absent and unreadable are different facts and used to be one return value.
+    Absent is ordinary -- a checkout is not a release. A file that exists and will
+    not parse is the R5 record of a delivered artifact being unreadable, which is
+    worth a line on stderr rather than the silence a dev box gets.
+    """
+    if not MANIFEST.is_file():
+        return None
     try:
         return json.loads(MANIFEST.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{MANIFEST}: {exc}") from exc
 
 
 def module_dir(backend: Backend) -> Path:
@@ -120,8 +131,22 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
                 else "Remove it, or move it aside."
             )
         )
-    # mkdir's mode argument is masked by umask; this is not.
-    os.chmod(path, 0o700)
+    # `main` sets a 0o077 umask, so a directory vcows created is already private
+    # and this has work to do only for one an operator handed us. Skipped when it
+    # is already tight, because the chmod is the half that can fail: a bind mount
+    # owned by another UID (README's `--user`) refuses it, and that must not stop
+    # a run that is otherwise fine.
+    if path.stat().st_mode & 0o077:
+        try:
+            os.chmod(path, 0o700)
+        except PermissionError:
+            print(
+                f"vcows: cannot make {path} 0700; it stays "
+                f"{stat.S_IMODE(path.stat().st_mode):04o}. This run's seed ISOs "
+                f"carry user_data verbatim, and anyone who can read that "
+                f"directory can read them.",
+                file=sys.stderr,
+            )
     return path
 
 
@@ -157,9 +182,20 @@ class _Run:
 def _record(run: _Run, outcome: str, **extra: Any) -> None:
     """``run.json``: what was asked, what was decided, what happened.
 
-    Not the R5 build manifest -- that is baked at image build time and copied in
-    by Stage 5. This is the half a runtime can actually observe.
+    The R5 build manifest is copied in beside it, not merged into it: that half is
+    baked at image build time and this half is what a runtime can observe. The
+    copy matters because the run directory is what an air-gapped site ships back,
+    and "which build did this" is unanswerable from it otherwise. Absent outside
+    the image, where there is nothing to copy.
     """
+    if MANIFEST.is_file():
+        # Suppressed for the same reason `_guard` suppresses: a failure copying
+        # provenance must not cost the record of what happened.
+        with contextlib.suppress(OSError):
+            # `copyfile`, not `copy`: the latter carries the source's mode across
+            # and would land 0644 in a 0700 directory whose every other file the
+            # umask made private.
+            shutil.copyfile(MANIFEST, run.path / "manifest.json")
     _write_json(
         run.path / "run.json",
         {
@@ -294,6 +330,17 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
 
         inited = tofu.init(workdir)
         planned = tofu.plan(workdir, workdir / "plan.bin")
+        if not planned.changes:
+            # No change summary at all is not the same fact as a plan that
+            # creates nothing. `_read_stream` returns `{}` for a stream that is
+            # missing or will not parse -- deliberately, since the exit code is
+            # the authority on success -- and without this branch that arrives
+            # as "the module proposes no creates", which sends whoever reads it
+            # to the module rather than to the file.
+            raise tofu.TofuError(
+                f"tofu plan exited 0 but reported no change summary; "
+                f"{workdir / 'plan.json'} is the stream it should be in"
+            )
         if not planned.changes.get("add"):
             raise tofu.TofuError(
                 f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
@@ -360,7 +407,11 @@ def _stage_module(source: Path, workdir: Path) -> None:
                 f"not copy -- only *.tf and {LOCK_NAME}. Applying without it would "
                 f"run against an incomplete module."
             )
-        shutil.copy(entry, workdir)
+        # `copyfile` rather than `copy`, so the module lands at the umask `main`
+        # set rather than at whatever mode a checkout or an image layer gave it.
+        # It is the only thing in the run directory that comes from a file
+        # already on disk, and so the only one that could arrive world-readable.
+        shutil.copyfile(entry, workdir / entry.name)
 
 
 # -- destroy ----------------------------------------------------------------
@@ -480,21 +531,35 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
 # -- version ----------------------------------------------------------------
 
 
+def _print_manifest() -> None:
+    """What this image is, printed before anything that can return early.
+
+    It used to sit below ``tofu.version()``, which bails on a missing or broken
+    binary -- so the one command that answers "which build is this" answered
+    nothing at all on exactly the image somebody would be asking about.
+    """
+    try:
+        build = manifest()
+        if build is None:
+            return
+        print(f"image   {build['git_sha']} built {build['built']}")
+        print(f"base    {build['base_image']['name']}@{build['base_image']['digest']}")
+        print(f"provider {build['provider']['source']} {build['provider']['version']}")
+        packages, sources = len(build["packages"]), len(build["source_rpms"])
+        print(f"packages {packages} from {sources} sources")
+    except (ValueError, KeyError, TypeError) as exc:
+        print(f"image: {MANIFEST} will not parse ({exc})", file=sys.stderr)
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     print(f"vcows-deploy {VERSION}")
+    _print_manifest()
     try:
         info = tofu.version()
     except (tofu.TofuError, OSError) as exc:
         print(f"tofu: unavailable ({exc})")
         return 0
     print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")
-    build = manifest()
-    if build is not None:
-        print(f"image   {build['git_sha']} built {build['built']}")
-        print(f"base    {build['base_image']['name']}@{build['base_image']['digest']}")
-        print(f"provider {build['provider']['source']} {build['provider']['version']}")
-        packages, sources = len(build["packages"]), len(build["source_rpms"])
-        print(f"packages {packages} from {sources} sources")
     return 0
 
 
@@ -533,6 +598,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The run directory is 0700, and until this its *contents* were not: the
+    # OpenTofu state, the saved plan and the JSON streams are written by a
+    # subprocess and the seed ISOs by pycdlib, so vcows opens none of them and no
+    # per-file chmod can reach them. A umask is the only lever that covers a
+    # child process, and it has to be set before the first verb runs.
+    os.umask(0o077)
     args = _parser().parse_args(argv)
     try:
         return int(args.func(args))
@@ -552,6 +623,10 @@ def main(argv: list[str] | None = None) -> int:
         # one would break the seam. `str()` on the libvirt backend's DestroyError
         # already carries every per-object failure.
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if os.environ.get("VCOWS_TRACEBACK"):
+            # The message above is what an operator needs; this is what a bug
+            # report needs, and an air-gapped site cannot just re-run it here.
+            traceback.print_exc()
         return 1
 
 

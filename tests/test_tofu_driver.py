@@ -244,6 +244,55 @@ def test_version_reports_what_actually_ran(fake_tofu, workdir, monkeypatch):
     assert tofu.version()["terraform_version"] == "1.12.6"
 
 
+# -- Ctrl-C ------------------------------------------------------------------
+
+
+class Stubborn:
+    """A child that raises KeyboardInterrupt from `wait` a given number of times.
+
+    Faked rather than signalled for real: the behaviour under test is which of
+    the two waits runs and whether `kill` follows, and driving that with actual
+    SIGINTs would make it a test of process-group delivery.
+    """
+
+    def __init__(self, interrupts: int):
+        self.remaining = interrupts
+        self.killed = False
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        if self.remaining:
+            self.remaining -= 1
+            raise KeyboardInterrupt
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
+def test_one_ctrl_c_waits_for_tofu_instead_of_killing_it(
+    fake_tofu, workdir, monkeypatch
+):
+    """`subprocess.run` sleeps 0.25 s and then SIGKILLs, which lands in the middle
+    of an apply. tofu's own handler releases the state lock and stops between
+    resources, and that shutdown is worth waiting for."""
+    child = Stubborn(interrupts=1)
+    monkeypatch.setattr(tofu.subprocess, "Popen", lambda *a, **k: child)
+
+    with pytest.raises(KeyboardInterrupt):
+        tofu.apply(workdir, workdir / "plan.bin")
+    assert not child.killed
+
+
+def test_a_second_ctrl_c_is_the_operator_meaning_it(fake_tofu, workdir, monkeypatch):
+    child = Stubborn(interrupts=2)
+    monkeypatch.setattr(tofu.subprocess, "Popen", lambda *a, **k: child)
+
+    with pytest.raises(KeyboardInterrupt):
+        tofu.apply(workdir, workdir / "plan.bin")
+    assert child.killed
+
+
 def test_a_missing_binary_says_so(workdir, monkeypatch):
     monkeypatch.setenv("PATH", "")
     with pytest.raises(tofu.TofuError, match="not on PATH"):

@@ -22,6 +22,8 @@ GOOD_HOSTS = "/run/secrets/known_hosts"
 DIRECTIVES = [
     "Host *",
     "BatchMode yes",
+    "ServerAliveInterval 30",
+    "ServerAliveCountMax 6",
     f"IdentityFile {GOOD_KEY}",
     "IdentitiesOnly yes",
     f"UserKnownHostsFile {GOOD_HOSTS}",
@@ -101,6 +103,31 @@ def test_install_writes_the_file_for_a_good_config(tmp_path, fake_home):
     written = fake_home / ".ssh" / "config"
     assert f"IdentityFile {GOOD_KEY}" in written.read_text()
     assert written.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "target", ["target: qemu+ssh://h/system", "target:\n  - libvirt"]
+)
+def test_install_survives_a_config_shaped_nothing_like_one(tmp_path, fake_home, target):
+    """`install` runs before `vcows` is a process, so it meets the YAML raw. A
+    scalar or a list where a mapping belongs used to be an `AttributeError` --
+    a traceback in place of the sentence `validate` was about to print."""
+    path = tmp_path / "deployment.yaml"
+    path.write_text(target + "\n")
+    entrypoint.install([str(path)])
+    assert not (fake_home / ".ssh" / "config").exists()
+
+
+def test_a_mounted_ssh_config_wins_and_says_so(tmp_path, fake_home, capsys):
+    """Theirs wins, which is the documented behaviour. The silence was not: a
+    credential the config named and nothing installed looks like a vcows bug."""
+    ssh = fake_home / ".ssh"
+    ssh.mkdir(mode=0o700)
+    (ssh / "config").write_text("Host *\n  IdentityFile /mine\n")
+
+    entrypoint.install([str(config_file(tmp_path))])
+    assert (ssh / "config").read_text() == "Host *\n  IdentityFile /mine\n"
+    assert "already exists" in capsys.readouterr().err
 
 
 def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsys):

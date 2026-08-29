@@ -187,6 +187,21 @@ CONFIG: dict = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _umask():
+    """Put the process umask back after every test.
+
+    `cli.main` sets 0o077, and the tests call it in-process -- so without this the
+    first CLI test quietly changes the mode of every file every later test writes,
+    which is the kind of ordering dependency that shows up as one unexplained
+    failure months later.
+    """
+    before = os.umask(0o022)
+    os.umask(before)
+    yield
+    os.umask(before)
+
+
 @pytest.fixture
 def cfg() -> dict:
     """A fresh deep copy, so a test that mutates it cannot poison the next."""

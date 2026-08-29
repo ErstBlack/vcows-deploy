@@ -494,6 +494,112 @@ def test_destroy_with_nothing_of_ours_is_not_an_error(backend, config, capsys):
     assert "no VMs marked for deployment 'lab-a'" in capsys.readouterr().out
 
 
+# -- the build manifest, and the modes ---------------------------------------
+
+
+def test_the_build_manifest_travels_with_the_run(
+    backend, config, tmp_path, monkeypatch
+):
+    """The run directory is what an air-gapped site ships back, and "which build
+    did this" is unanswerable from it unless R5's record goes along."""
+    backend.world = [ours("app01"), ours("app02")]
+    baked = tmp_path / "baked-manifest.json"
+    baked.write_text('{"git_sha": "da3f45c"}')
+    monkeypatch.setattr(cli, "MANIFEST", baked)
+
+    assert cli.main(["deploy", config]) == 0
+    copied = json.loads((latest_run(tmp_path) / "manifest.json").read_text())
+    assert copied["git_sha"] == "da3f45c"
+
+
+def test_a_checkout_has_no_manifest_and_that_is_not_an_error(
+    backend, config, tmp_path, monkeypatch
+):
+    """A checkout is not a release. Inventing a manifest for one would make the
+    two indistinguishable, which is the thing the manifest exists to settle."""
+    backend.world = [ours("app01"), ours("app02")]
+    monkeypatch.setattr(cli, "MANIFEST", tmp_path / "there-is-none.json")
+
+    assert cli.main(["deploy", config]) == 0
+    assert not (latest_run(tmp_path) / "manifest.json").exists()
+
+
+def test_version_says_when_the_manifest_exists_and_will_not_parse(
+    tmp_path, monkeypatch, capsys
+):
+    """Absent and unreadable used to be one return value, so an unreadable R5
+    record on a delivered image looked exactly like a dev box."""
+    bad = tmp_path / "manifest.json"
+    bad.write_text("{ this is not json")
+    monkeypatch.setattr(cli, "MANIFEST", bad)
+
+    assert cli.main(["version"]) == 0
+    assert "will not parse" in capsys.readouterr().err
+
+
+def test_a_run_dir_handed_to_us_is_made_private(backend, config, tmp_path):
+    """The umask covers what vcows creates; this is the other case -- a directory
+    that already existed, at whatever mode the operator left it."""
+    backend.world = [ours("app01"), ours("app02")]
+    given = tmp_path / "handed-over"
+    given.mkdir(mode=0o755)
+
+    assert cli.main(["deploy", config, "--run-dir", str(given)]) == 0
+    assert stat.S_IMODE(given.stat().st_mode) == 0o700
+
+
+def test_a_run_dir_that_cannot_be_made_private_says_which_mode_it_wanted(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """Refusing would break the foreign-UID bind mount README:48-53 documents.
+    Saying nothing would leave `user_data` readable with nobody told."""
+    backend.world = [ours("app01"), ours("app02")]
+    given = tmp_path / "not-ours"
+    given.mkdir(mode=0o755)
+
+    def denied(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(cli.os, "chmod", denied)
+    assert cli.main(["deploy", config, "--run-dir", str(given)]) == 0
+    err = capsys.readouterr().err
+    assert "0700" in err and "user_data" in err
+
+
+@needs_tofu_binary
+def test_nothing_in_the_run_directory_is_readable_by_anyone_else(
+    backend, config, offline, tmp_path
+):
+    """The directory has been 0700 since Stage 4; its contents were not. The
+    state, the saved plan and the JSON streams are written by tofu and the seed
+    ISOs by pycdlib, so vcows opens none of them and no chmod can reach them."""
+    assert cli.main(["deploy", config]) == 0
+    loose = sorted(
+        str(p.relative_to(latest_run(tmp_path)))
+        for p in latest_run(tmp_path).rglob("*")
+        if p.stat().st_mode & 0o077
+    )
+    assert loose == []
+
+
+def test_a_plan_with_no_change_summary_is_not_a_plan_that_creates_nothing(
+    backend, config, tmp_path, monkeypatch
+):
+    """`_read_stream` returns `{}` for a stream that is missing or will not parse,
+    deliberately -- the exit code is the authority on success. Reported as "no
+    creates" it sends whoever reads it to the module instead of to the file."""
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(cli.tofu, "plan", lambda w, o: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "apply", lambda *a, **k: pytest.fail("apply must not run")
+    )
+    assert cli.main(["deploy", config]) == 1
+
+    error = json.loads((latest_run(tmp_path) / "run.json").read_text())["error"]
+    assert "no change summary" in error
+    assert "plan.json" in error
+
+
 def test_a_backend_exception_becomes_a_message_and_an_exit_code(
     backend, config, monkeypatch, capsys
 ):
@@ -512,3 +618,20 @@ def test_a_backend_exception_becomes_a_message_and_an_exit_code(
     )
     assert cli.main(["destroy", config, "--yes"]) == 1
     assert "DestroyError: app01: could not stop" in capsys.readouterr().err
+
+
+def test_the_traceback_is_there_when_it_is_asked_for(
+    backend, config, monkeypatch, capsys
+):
+    """The message above is what an operator needs. A bug report needs the stack,
+    and an air-gapped site cannot just re-run it under a debugger."""
+    monkeypatch.setenv("VCOWS_TRACEBACK", "1")
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(
+        backend, "destroy", lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert cli.main(["destroy", config, "--yes"]) == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert "RuntimeError: boom" in err

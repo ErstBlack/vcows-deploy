@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import textwrap
 
@@ -237,15 +238,55 @@ def test_the_labels_are_ours_and_not_the_bases():
     assert labels["org.opencontainers.image.base.digest"].startswith("sha256:")
 
 
+#: What the Containerfile's documented build command computes, and the only two
+#: shapes `container/manifest.py` will record.
+GIT_SHA = re.compile(r"[0-9a-f]{40}(-dirty)?\Z")
+
+#: The paths the Containerfile COPYs. A change anywhere else cannot reach the
+#: image, so it must not decide whether this build was clean.
+SHIPPED = ("orchestrator", "container", "licenses", "docs/provider-0.9.8.lock.hcl")
+
+
+def head_if_clean() -> str | None:
+    """``git rev-parse HEAD``, when HEAD is really what is on disk.
+
+    ``None`` when it is not, because then no value in the manifest is checkable
+    against this working tree and asserting one would be asserting the tree.
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=True
+        ).stdout
+
+    if git("status", "--porcelain", "--", *SHIPPED).strip():
+        return None
+    return git("rev-parse", "HEAD").strip()
+
+
 def test_the_build_manifest_records_what_shipped():
     """R5, and D51: the source-RPM list is what turns the GPL sidecar from a
-    research task into a reposync against a list that already exists."""
+    research task into a reposync against a list that already exists.
+
+    ``git_sha`` is asserted because it was wrong and nothing said so: the image
+    built at `e5d5a2c` named a commit that did not contain the
+    `container/entrypoint.py` it shipped.
+    """
     result = run(
         "-c", "print(open('/opt/vcows/manifest.json').read())", entrypoint="python3"
     )
     manifest = json.loads(result.stdout)
 
     assert manifest["vcows"] == VERSION
+    assert GIT_SHA.match(manifest["git_sha"]), (
+        f"{manifest['git_sha']!r} is neither a commit nor a commit marked dirty"
+    )
+    head = head_if_clean()
+    if head is not None:
+        assert manifest["git_sha"] == head, (
+            f"the image was built from {manifest['git_sha']}, this tree is {head}; "
+            f"rebuild before trusting the gate"
+        )
     assert manifest["tofu"]["terraform_version"] == "1.12.6"
     assert manifest["provider"]["version"] == "0.9.8"
     assert manifest["provider"]["lock_hash"].startswith("h1:")
@@ -253,6 +294,13 @@ def test_the_build_manifest_records_what_shipped():
 
     packages = {p["name"] for p in manifest["packages"]}
     assert {"python3-libvirt", "python3-pycdlib", "tofu", "openssh-clients"} <= packages
+    # The vendor field exists to make the EPEL entries findable: the sidecar is a
+    # reposync, and pycdlib comes from a different repository than everything
+    # else in the closure. (`tofu` carries no vendor at all -- it is a GitHub
+    # release RPM, not a distribution package -- so this names the two that do.)
+    vendors = {p["name"]: p["vendor"] for p in manifest["packages"]}
+    assert vendors["python3-pycdlib"] == "Fedora Project"
+    assert vendors["python3-libvirt"] == "Rocky Enterprise Software Foundation"
     assert manifest["source_rpms"], "the sidecar list is the point of recording these"
     assert len(manifest["source_rpms"]) < len(manifest["packages"])
 

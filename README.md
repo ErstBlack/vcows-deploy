@@ -55,13 +55,19 @@ supported (`--user`) but then the bind mounts are yours to line up.
 
 ```bash
 podman run --rm \
-  -v ./lab-a.yaml:/config.yaml:ro,Z \
-  -v ~/.ssh/id_ed25519:/run/secrets/id_ed25519:ro,Z \
-  -v ~/.ssh/known_hosts:/run/secrets/known_hosts:ro,Z \
-  -v /srv/images:/images:ro,Z \
+  -v ./lab-a.yaml:/config.yaml:ro,z \
+  -v ~/.ssh/id_ed25519:/run/secrets/id_ed25519:ro,z \
+  -v ~/.ssh/known_hosts:/run/secrets/known_hosts:ro,z \
+  -v /srv/images:/images:ro,z \
   -v ./runs:/runs:Z \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
+
+**The read-only mounts are `:z` and the run directory is `:Z`.** On an SELinux
+host `:Z` relabels the *host* path with a category private to one container, so
+nothing else — including your own `ssh` — can read it afterwards. That is right
+for `./runs`, which belongs to that run alone, and wrong for a key, a config and
+a golden-image directory the rest of the host shares.
 
 Then `deploy /config.yaml`, and `destroy /config.yaml` when it is time. `validate`
 needs none of the mounts but the config.
@@ -188,6 +194,14 @@ run.json          what was asked, what was decided, what happened
 
 The OpenTofu state is written here and **never read back**. Destroy works from the
 marker, so losing the state costs nothing.
+
+**Nothing expires them.** Run directories accumulate, each with the seed ISOs of
+its deploy, and deleting them is the operator's job — vcows never does, because a
+run it removed is the one somebody needed. On a host that keeps them:
+
+```bash
+find runs/ -mindepth 2 -maxdepth 2 -type d -mtime +30 -exec rm -rf {} +
+```
 
 ## Air gap
 
