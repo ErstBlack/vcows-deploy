@@ -167,9 +167,11 @@ class Backend(ABC):
     @abstractmethod
     def validate(self, cfg) -> list[Problem]: ...  # offline, no connection
     @abstractmethod
+    def connect(self, cfg) -> ContextManager[Any]: ...  # opens and closes the session
+    @abstractmethod
     def preflight(self, cfg, session) -> list[Existing]: ...
     @abstractmethod
-    def prepare(self, cfg, workdir) -> ContextManager[Prepared]: ...
+    def prepare(self, cfg, workdir, session) -> ContextManager[Prepared]: ...
     @abstractmethod
     def render(self, cfg, prepared) -> dict: ...  # pure -> tfvars
     @abstractmethod
@@ -182,6 +184,12 @@ Convention, not a method: the module lives at `backends/<name>/tofu/`.
 
 **ABC with `@abstractmethod`, and no default implementations.** The thing to avoid is *noop defaults*, not ABCs — a backend that forgets `destroy` and inherits a no-op deletes nothing and exits successfully; one that forgets `preflight` skips the safety check entirely. An ABC fails loudly at instantiation, which beats a `Protocol` that only complains if someone remembers to run mypy.
 
+**`connect` — who builds the session.** The signatures above take `session` as a
+parameter without saying where it comes from. Somebody must build it, and if that is
+core then core imports libvirt and the seam is decorative — which is exactly what the
+fake-backend test exists to catch. So the backend opens it and closes it on the way
+out, and the session stays opaque to everything above.
+
 **`preflight` — the "is it ours" seam.** Mechanism is per-backend, **policy is core**. libvirt reads domain `<metadata>`; vSphere would read an annotation; Proxmox a description. All three return the same record:
 
 ```python
@@ -190,11 +198,22 @@ class Existing:
     name: str  # hypervisor name
     id: str  # UUID / moid / vmid
     marker: Marker | None  # parsed payload, or None if unmarked
+    disks: tuple[str, ...] = ()  # source paths of attached media, for teardown
 ```
+
+`disks` carries what §2 deliberately kept **out** of the marker: it is read from the
+live domain XML at discovery time rather than stored, so it cannot go stale. Never a
+`<backingStore>` path.
 
 Core parses the marker, applies the rules from §2, and decides skip/create/refuse. **The dangerous logic is written once** — a backend author cannot implement the refusal incorrectly because they never implement it. Core also owns the marker's content and serialization (`marker.py`); the backend owns only where it is stored and how it is read back.
 
-**`prepare` — a context manager, and this is the non-obvious choice.** For libvirt it yields immediately after building the seed ISO. It is a context manager because Proxmox may need the orchestrator to **serve the qcow2 over HTTP on the local network** so PVE can pull it via the download-url API — a listening socket held open for the duration of the apply and torn down after. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring. `with backend.prepare(cfg, workdir) as prepared:` costs nothing today and absorbs vSphere's qcow2→VMDK→OVA conversion too, which needs the `workdir` plus a cache path.
+**`prepare` — a context manager, and this is the non-obvious choice.** For libvirt it yields immediately after building the seed ISO. It is a context manager because Proxmox may need the orchestrator to **serve the qcow2 over HTTP on the local network** so PVE can pull it via the download-url API — a listening socket held open for the duration of the apply and torn down after. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring. `with backend.prepare(...) as prepared:` costs nothing today and absorbs vSphere's qcow2→VMDK→OVA conversion too, which needs the `workdir` plus a cache path.
+
+**`prepare` also takes the `session`, and the reason is forced rather than chosen.** Each apply runs against a fresh, empty state — state is disposable, so the module only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be declared as a resource, and the overlay needs its path on the host. The pinned provider has **no pool and no volume data source** — `dmacvicar/libvirt` 0.9.8 exposes only `libvirt_domain_interface_addresses`, `libvirt_node_device_info`, `libvirt_node_devices` and `libvirt_node_info` — so "is it already here, and where" cannot be answered from HCL, and it cannot be answered from the config either. Something in the backend has to ask. `render` is pure and `preflight` returns VMs, so `prepare` is the only hook left, and it is already the impure one. The answer goes into `Prepared.artifacts`, so **core still never learns what a storage volume is.** Every alternative relocates that call rather than removing it; the ones that hide it — caching the fact on the backend instance — are worse, because `REGISTRY` holds a singleton and that is process-global mutable state that silently yields "not present" if `prepare` ever runs without `preflight`.
+
+**The scope of that permission is deliberately narrow.** `prepare` may read the target *only* to answer "does this artifact already exist here, and where". Everything about VMs stays in `preflight`. Without that line the parameter becomes the cheapest place to put any future hypervisor read, and `preflight`'s monopoly on discovery erodes one convenient call at a time — which is the shape sprawl takes.
+
+**The session is closed before the apply, not held across it.** The provider opens its own connection from `var.uri`, so holding ours adds a second idle SSH session that buys the transfer nothing. libvirt-python registers no event loop here, so there is no keepalive and no RPC timeout: a socket that hangs rather than resetting can block the closing RPC and leave the CLI wedged *after* a successful apply. `prepare` needs the session only before it yields, so an `ExitStack` closes the connection while `prepared` stays live for the apply's duration. A backend that genuinely needs something held open — Proxmox's HTTP server — holds a socket it opened itself, not the hypervisor session.
 
 **`render` stays pure** — config plus the record `prepare` produced, out to a dict. This was the original document's seam and it is right; it was wrong only as the *sole* seam, since it cannot express the I/O that `preflight` and `prepare` now own.
 
