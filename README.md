@@ -147,6 +147,21 @@ DNS and hanging. The gate for this is `tests/test_image.py`, which runs
 `--network=none` and requires `tofu init` and `tofu validate` to succeed against
 the real module with no network at all.
 
+## The image
+
+Built from `quay.io/rockylinux/rockylinux:10`, pinned by digest, ~444 MB on disk
+and ~152 MB as a delivered `podman save | gzip` tarball. Most of that is payload
+rather than base: the OpenTofu binary is 115 MB and the provider another 26 MB.
+Smaller bases were measured and both pass the same gate — `10-minimal` delivers
+at 134 MB, losing `vi`, `less`, `tar`, `ping` and `dnf`; a `10-ubi-micro` builder
+build delivers at 118 MB and additionally has no `rpm`, so the image cannot report
+its own contents at a site. Switching later is one `ARG` and a package-manager
+name.
+
+The provider plugin cache is warmed at build time, so `tofu init` symlinks into
+`/opt/tofu/plugin-cache` instead of unpacking a 26 MB copy into every run
+directory.
+
 ## Licensing
 
 `/opt/vcows/manifest.json` lists every package in the image with its version,

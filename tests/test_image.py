@@ -69,8 +69,10 @@ vms:
 OFFLINE_ENV = ("-e", "PIP_NO_INDEX=1", "-e", "no_proxy=*")
 
 
-def run(*args, entrypoint=None, mounts=(), check=False):
+def run(*args, entrypoint=None, mounts=(), env=None, check=False):
     argv = ["podman", "run", "--rm", "--network=none", *OFFLINE_ENV]
+    for key, value in (env or {}).items():
+        argv += ["-e", f"{key}={value}"]
     for host, dest in mounts:
         argv += ["-v", f"{host}:{dest}:ro,Z"]
     if entrypoint is not None:
@@ -138,8 +140,20 @@ sys.exit(0 if a == b else 'init rewrote the committed lock')
 
 @pytest.fixture(scope="module")
 def gate():
-    """One offline init -> validate -> plan against the real libvirt module."""
-    return run("-c", GATE, entrypoint="sh", mounts=[(GOLDEN, "/vars.json")])
+    """One offline init -> validate -> plan against the real libvirt module.
+
+    The plugin cache is disabled for this run *on purpose*. The image ships a warm
+    one, and with it `init` is satisfied before it ever consults the mirror -- so
+    leaving it on would quietly turn the air-gap assertion below into a test of the
+    cache. Disabling it puts the mirror back on the only path.
+    """
+    return run(
+        "-c",
+        GATE,
+        entrypoint="sh",
+        mounts=[(GOLDEN, "/vars.json")],
+        env={"TF_PLUGIN_CACHE_DIR": ""},
+    )
 
 
 def test_the_provider_installs_from_the_baked_mirror_offline(gate):
@@ -171,6 +185,30 @@ def test_plan_reaches_the_hypervisor_connection_and_fails_only_there(gate):
         "No value for required variable",
     ):
         assert wrong_failure not in output
+
+
+CACHE_GATE = textwrap.dedent("""\
+    set -e
+    mod=/opt/vcows/orchestrator/backends/libvirt/tofu
+    mkdir -p /tmp/run && cd /tmp/run
+    cp $mod/*.tf $mod/.terraform.lock.hcl .
+    tofu init -input=false -no-color > /dev/null
+    du -sk .terraform | cut -f1
+""")
+
+
+def test_the_plugin_cache_keeps_the_provider_out_of_every_run_directory():
+    """Without it, `init` copies a 26 MB provider into the working directory --
+    and D40 makes that a brand new directory on every single deploy, so the cost
+    recurs for the life of the deployment. With the cache warmed at build time,
+    `.terraform` is symlinks and the run directory carries only its own artifacts.
+    """
+    result = run("-c", CACHE_GATE, entrypoint="sh")
+    assert result.returncode == 0, result.stderr
+    kilobytes = int(result.stdout.strip().splitlines()[-1])
+    assert kilobytes < 1024, (
+        f".terraform is {kilobytes} KiB; the cache is not being used"
+    )
 
 
 # -- what the image says about itself ---------------------------------------

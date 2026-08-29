@@ -17,6 +17,17 @@
 #
 # The provider mirror must exist at .tools/tofu-mirror first; see the Stage 2
 # prerequisites. It is the one thing under .tools/ the build context admits.
+#
+# **Base image: the standard one, for now.** All three were built and put through
+# the same gate. Delivered (podman save | gzip): rockylinux:10 **152 MB**,
+# 10-minimal **134 MB**, a builder-stage 10-ubi-micro **118 MB**. The payload
+# dominates all three -- the tofu binary alone is 115 MB uncompressed and the
+# provider another 26 MB -- so the base is worth 18 MB, not a redesign. minimal
+# keeps `sh`, `rpm`, `python3` and `microdnf` while dropping `vi`, `less`, `tar`,
+# `ping` and `dnf`, and pulls in a font stack the base does not have; micro drops
+# `rpm` too and needs two stages. Both pass the gate, so switching later is an
+# `ARG` and a package-manager name -- revisit when the size matters more than the
+# tooling does.
 
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10
 ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
@@ -62,8 +73,9 @@ RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
       python3-jsonschema \
       python3-pycdlib \
       openssh-clients \
+ && dnf -y remove epel-release \
  && dnf clean all \
- && rm -rf /var/cache/dnf /var/cache/libdnf5
+ && rm -rf /var/cache/dnf /var/cache/libdnf5 /etc/yum.repos.d/epel*.repo
 
 RUN curl -fsSLo /tmp/tofu.rpm \
       "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_amd64.rpm" \
@@ -99,7 +111,18 @@ ENV PYTHONPATH=/opt/vcows \
     PYTHONDONTWRITEBYTECODE=1 \
     VCOWS_MANIFEST=/opt/vcows/manifest.json \
     CHECKPOINT_DISABLE=1 \
-    TF_CLI_CONFIG_FILE=/opt/tofu/tofurc
+    TF_CLI_CONFIG_FILE=/opt/tofu/tofurc \
+    TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache
+
+# Warm the plugin cache at build time. Without it `init` *copies* a 26 MB
+# provider into every run directory -- and D40 makes every deploy a new one, so
+# the cost recurs forever. With it, `.terraform` is symlinks into this directory
+# and a run directory holds nothing but its own artifacts. Costs 26 MB once.
+RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
+ && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf \
+       /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/ \
+ && (cd /tmp/warm && tofu init -input=false -no-color > /dev/null) \
+ && rm -rf /tmp/warm
 
 # Last, so it describes the finished image. Everything above is already in place
 # by the time `rpm -qa` runs.
