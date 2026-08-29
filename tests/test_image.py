@@ -28,16 +28,15 @@ import textwrap
 import pytest
 
 from orchestrator import VERSION
-from tests.conftest import REPO
+from tests.conftest import REPO, gate
 
 IMAGE = os.environ.get("VCOWS_IMAGE")
 
-pytestmark = pytest.mark.skipif(
-    IMAGE is None,
-    reason=(
-        "set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) "
-        "to run the container gate; build it with `podman build -t ... .`"
-    ),
+pytestmark = gate(
+    "image",
+    IMAGE is not None,
+    "set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) "
+    "to run the container gate; build it with `podman build -t ... .`",
 )
 
 GOLDEN = REPO / "tests" / "golden" / "libvirt.tfvars.json"

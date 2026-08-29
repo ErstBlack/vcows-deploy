@@ -457,7 +457,11 @@ def test_credentials_never_reach_the_uri():
     carrying them would be a silently ignored promise."""
     uri = schema.connection_uri(
         {
-            "uri": "qemu+ssh://vcows@vcows/system",
+            # A query string the validator would have refused, because the only
+            # thing `query=""` does is strip one. Fed a clean URI this test could
+            # not fail: `connection_uri` never *adds* credentials, so deleting the
+            # strip passed it.
+            "uri": "qemu+ssh://vcows@vcows/system?no_verify=1",
             "ssh_keyfile": "/run/secrets/id_ed25519",
             "known_hosts": "/run/secrets/known_hosts",
         }

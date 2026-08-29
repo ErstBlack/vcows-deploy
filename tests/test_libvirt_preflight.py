@@ -593,3 +593,28 @@ def test_a_disk_of_the_same_name_elsewhere_does_not_clear_the_refusal(cfg, tmp_p
     discovered = preflight.preflight(cfg, conn)
     assert [p.severity for p in discovered.problems] == [Severity.ERROR]
     assert "no domain on this host references it" in discovered.problems[0].message
+
+
+# -- the connection --------------------------------------------------------
+
+
+def test_preflight_dials_qemu_ssh_not_sshcmd(cfg, monkeypatch):
+    """The two clients need different transports and `connection_uri` takes the
+    one it is given, so the call site is where the choice actually happens.
+
+    libvirt's own C client does not recognise `sshcmd` at all. Handing it one is
+    half of what the acceptance run found, and at a site it presents as
+    `remote_open: transport in URL not recognised` -- loud, fatal, and not
+    obviously about a URI scheme. `render`'s call site is pinned twice; this one
+    was pinned by nothing, and changing it passed the whole suite.
+    """
+    dialled = []
+    monkeypatch.setattr(libvirt, "open", lambda uri: dialled.append(uri) or conn)
+    conn = FakeConnection()
+
+    with preflight.connect(cfg) as session:
+        assert session is conn
+
+    assert dialled == ["qemu+ssh://vcows@vcows/system"]
+    assert "sshcmd" not in dialled[0]
+    assert conn.closed

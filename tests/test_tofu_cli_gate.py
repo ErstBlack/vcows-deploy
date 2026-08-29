@@ -28,11 +28,9 @@ import shutil
 import pytest
 
 from orchestrator import tofu
-from tests.conftest import REPO, tofu_env
+from tests.conftest import REPO, gate, tofu_env
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("tofu") is None, reason="needs `tofu` on PATH"
-)
+pytestmark = gate("tofu", shutil.which("tofu") is not None, "needs `tofu` on PATH")
 
 MODULE = REPO / "tests" / "tofu"
 

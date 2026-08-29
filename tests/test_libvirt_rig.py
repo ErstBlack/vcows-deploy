@@ -24,12 +24,14 @@ import pytest
 from orchestrator.backends.base import Action, Severity, decide
 from orchestrator.backends.libvirt import preflight
 from orchestrator.config import vm_names
+from tests.conftest import gate
 
 RIG = os.environ.get("VCOWS_RIG_URI")
 
-needs_rig = pytest.mark.skipif(
-    RIG is None,
-    reason="set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate",
+needs_rig = gate(
+    "rig",
+    RIG is not None,
+    "set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate",
 )
 
 pytestmark = needs_rig

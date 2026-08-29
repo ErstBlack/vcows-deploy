@@ -101,7 +101,15 @@ def _network_config(vm: dict, deployment: str) -> dict:
 
 
 def build_seed_iso(files: dict[str, bytes], out: Path) -> Path:
-    """Write one ``cidata`` ISO. Overwrites; the run directory is ours."""
+    """Write one ``cidata`` ISO. Overwrites; the run directory is ours.
+
+    **The bytes are not reproducible, the content is.** pycdlib stamps
+    ``time.time()`` into the volume descriptors and into every directory record,
+    and ``new()`` takes no date argument, so pinning them would mean freezing a
+    process-global clock for the duration of the write. Two builds of one input
+    therefore carry identical files and differ in a few dozen bytes, which is what
+    ``tests/test_seed_iso.py`` asserts.
+    """
     import pycdlib
 
     out.unlink(missing_ok=True)

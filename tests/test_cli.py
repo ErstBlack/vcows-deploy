@@ -15,7 +15,6 @@ apply, and that the apply's outputs come back through `parse_outputs`.
 from __future__ import annotations
 
 import json
-import shutil
 import stat
 import textwrap
 
@@ -24,7 +23,7 @@ import pytest
 from orchestrator import VERSION, cli
 from orchestrator.backends.base import Existing
 from orchestrator.marker import Marker
-from tests.conftest import tofu_env
+from tests.conftest import needs_tofu_binary, tofu_env
 from tests.fake_backend import FakeBackend
 from tests.test_seam import no_libvirt  # noqa: F401 -- used as a fixture
 
@@ -70,11 +69,6 @@ def offline(tmp_path, monkeypatch):
     env = tofu_env(tmp_path, mirror=mirror)
     for key in ("TF_CLI_CONFIG_FILE", "no_proxy"):
         monkeypatch.setenv(key, env[key])
-
-
-needs_tofu_binary = pytest.mark.skipif(
-    shutil.which("tofu") is None, reason="needs `tofu` on PATH"
-)
 
 
 def latest_run(tmp_path):
@@ -288,6 +282,31 @@ def test_an_interrupted_destroy_still_leaves_a_run_record(
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "failed"
     assert "KeyboardInterrupt" in record["error"]
+
+
+def test_a_plan_that_creates_nothing_is_never_applied(
+    backend, config, tmp_path, monkeypatch
+):
+    """The last check between a mis-rendered tfvars and an apply that reports
+    success having done nothing.
+
+    Distinct from `test_a_second_deploy_creates_nothing_and_launches_no_tofu`,
+    which never reaches tofu at all: here two VMs are genuinely being created,
+    the module is initialised and planned, and the *plan* is the thing that
+    proposes nothing. Replacing the guard with `if False` passed the whole suite.
+    """
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 0})
+    )
+    monkeypatch.setattr(
+        cli.tofu, "apply", lambda *a, **k: pytest.fail("apply must not run")
+    )
+    assert cli.main(["deploy", config]) == 1
+
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "no creates for 2 VM(s)" in record["error"]
 
 
 def test_a_module_that_created_fewer_vms_than_asked_fails_the_deploy(

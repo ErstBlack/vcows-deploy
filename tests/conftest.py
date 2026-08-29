@@ -4,6 +4,15 @@
 file because three of them now drive the binary: the module gate, the driver gate
 and the CLI gate.
 
+**A gate that quietly passes because it did not run is worse than no gate**, and in
+aggregate that is what a bare `pytest -q` does: 25 skips, exit 0, with nothing
+saying the module was never looked at. `VCOWS_GATES` is the opt-in that turns a
+named gate's skip into a failure -- `VCOWS_GATES=tofu`, or `all` for every one of
+them. Named rather than only `all` because the gates differ in what they need: a
+missing `tofu` is a fixable local omission, while `rig` and `image` need hardware
+and a build, and a run proving the module was checked should not have to fail on
+those too.
+
 The config below is the canonical one: two VMs covering both firmware branches
 (libvirt-selected and explicitly pinned) and both MAC branches (derived and
 overridden), on the `default` network with statics from the .60-.70 range that is
@@ -24,18 +33,66 @@ MIRROR = REPO / ".tools" / "tofu-mirror"
 
 TOFU = shutil.which("tofu")
 
+#: Gates the operator demanded. Comma-separated names, or `all`.
+GATES = {g for g in os.environ.get("VCOWS_GATES", "").split(",") if g}
+
+
+def demanded(name: str) -> bool:
+    return bool(GATES & {name, "all"})
+
+
+def gate(name: str, available: bool, reason: str):
+    """A skip, or -- when this gate was demanded -- a failure carrying the reason.
+
+    The failure is raised from `pytest_runtest_setup` rather than by letting the
+    test run into whatever error the missing dependency produces: a rig test
+    without `VCOWS_RIG_URI` would otherwise fail somewhere inside libvirt, which
+    says nothing about the gate.
+    """
+    if available:
+        return pytest.mark.skipif(False, reason=reason)
+    return (
+        pytest.mark.gate_missing(reason)
+        if demanded(name)
+        else pytest.mark.skip(reason=reason)
+    )
+
+
+def require(name: str, available: bool, reason: str) -> None:
+    """`gate` for the places a mark cannot reach: a fixture body, a module import."""
+    if available:
+        return
+    if demanded(name):
+        pytest.fail(reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers", "gate_missing(reason): a demanded gate whose dependency is absent"
+    )
+
+
+def pytest_runtest_setup(item) -> None:
+    for mark in item.iter_markers("gate_missing"):
+        pytest.fail(mark.args[0], pytrace=False)
+
+
 #: For tests that apply the *libvirt* module, which needs the pinned provider.
-needs_tofu = pytest.mark.skipif(
-    TOFU is None or not MIRROR.is_dir(),
-    reason=(
-        "needs `tofu` on PATH and a provider mirror at .tools/tofu-mirror; "
-        "see the Stage 2 prerequisites in the plan"
-    ),
+NEEDS_TOFU = (
+    "needs `tofu` on PATH and a provider mirror at .tools/tofu-mirror; "
+    "see the Stage 2 prerequisites in the plan"
 )
+needs_tofu = gate("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
 
 #: For tests whose module uses only builtin providers, where `init` installs
 #: nothing and contacts nothing -- verified against 1.12.6 with an empty mirror.
-needs_tofu_binary = pytest.mark.skipif(TOFU is None, reason="needs `tofu` on PATH")
+needs_tofu_binary = gate("tofu", TOFU is not None, "needs `tofu` on PATH")
+
+
+#: The CLI config the image ships, and the mirror path baked into it.
+SHIPPED_TOFURC = REPO / "container" / "tofurc"
+IMAGE_MIRROR = "/opt/tofu-mirror"
 
 
 def tofu_env(workdir: Path, mirror: Path = MIRROR) -> dict:
@@ -44,19 +101,21 @@ def tofu_env(workdir: Path, mirror: Path = MIRROR) -> dict:
     `/etc/tofurc` is not a path OpenTofu reads, and under a rootless container a
     UID absent from /etc/passwd gets HOME=/, so even a correct ~/.tofurc is
     missed. TF_CLI_CONFIG_FILE is the only reliable lever (findings.md R6).
+
+    **This is the shipped file with one path substituted, not a second config.**
+    The two had opposite fallback behaviour while they were separate: the test one
+    carried a `direct` block, so an unmirrored provider was fetched from the
+    registry and the suite went green, while the image has no `direct` block by
+    design and fails immediately at a site. Reading the real file means the
+    default suite exercises the air-gap config, and there is one fewer document to
+    keep true.
     """
+    shipped = SHIPPED_TOFURC.read_text()
+    # Without this the substitution silently does nothing and every gate below
+    # points at a mirror that is not there, which reads as a provider problem.
+    assert IMAGE_MIRROR in shipped, f"{SHIPPED_TOFURC} no longer names {IMAGE_MIRROR}"
     rc = workdir / "tofurc"
-    rc.write_text(
-        f"provider_installation {{\n"
-        f"  filesystem_mirror {{\n"
-        f'    path    = "{mirror}"\n'
-        f'    include = ["registry.opentofu.org/dmacvicar/libvirt"]\n'
-        f"  }}\n"
-        f"  direct {{\n"
-        f'    exclude = ["registry.opentofu.org/dmacvicar/libvirt"]\n'
-        f"  }}\n"
-        f"}}\n"
-    )
+    rc.write_text(shipped.replace(IMAGE_MIRROR, str(mirror)))
     return {
         **os.environ,
         "TF_CLI_CONFIG_FILE": str(rc),
