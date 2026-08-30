@@ -244,17 +244,47 @@ the real module with no network at all.
 ## The image
 
 Built from `quay.io/rockylinux/rockylinux:10`, pinned by digest, ~444 MB on disk
-and ~152 MB as a delivered `podman save | gzip` tarball. Most of that is payload
-rather than base: the OpenTofu binary is 115 MB and the provider another 26 MB.
-Smaller bases were measured and both pass the same gate — `10-minimal` delivers
-at 134 MB, losing `vi`, `less`, `tar`, `ping` and `dnf`; a `10-ubi-micro` builder
-build delivers at 118 MB and additionally has no `rpm`, so the image cannot report
-its own contents at a site. Switching later is one `ARG` and a package-manager
-name.
+and 151 MB compressed for delivery (measured: 150,784,598 bytes). Most of that is
+payload rather than base: the OpenTofu binary is 115 MB and the provider another
+26 MB. Smaller bases were measured and both pass the same gate — `10-minimal`
+delivers at 134 MB, losing `vi`, `less`, `tar`, `ping` and `dnf`; a
+`10-ubi-micro` builder build delivers at 118 MB and additionally has no `rpm`, so
+the image cannot report its own contents at a site. Switching later is one `ARG`
+and a package-manager name.
 
 The provider plugin cache is warmed at build time, so `tofu init` symlinks into
 `/opt/tofu/plugin-cache` instead of unpacking a 26 MB copy into every run
 directory.
+
+## Delivering it
+
+```bash
+just image     # build
+just scan      # trivy against docs/cve-baseline.json, plus an SBOM
+just bundle    # assemble .cache/delivery/
+```
+
+`just bundle` is what produces the artifact that goes on the medium. It writes
+the compressed image, the SBOM and trivy report describing *that* image, a
+`SHA256SUMS` over all three, and `image.tar.sha256` — the digest of the
+uncompressed archive inside the gzip, so a site can check before or after
+decompressing. The file is named for the version and commit read out of the
+image itself rather than out of the working tree, so a bundle cannot claim a
+commit it does not contain.
+
+At the site:
+
+```bash
+sha256sum -c SHA256SUMS
+gunzip -c vcows-deploy-*.tar.gz | podman load
+```
+
+**The bundle is not signed.** `SHA256SUMS` catches corruption and a mismatched
+pairing; it does not catch substitution. There was a cosign step and it was
+removed rather than repaired, because it signed the uncompressed archive while
+this section promised a compressed one — two byte streams both called "the
+delivery tarball", which at a site reads as tampering rather than as a packaging
+bug. `docs/ci.md` records why, and what reinstating it needs.
 
 ## Licensing
 

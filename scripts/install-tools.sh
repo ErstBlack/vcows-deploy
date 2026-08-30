@@ -27,7 +27,6 @@ JUST_VERSION=1.46.0
 HADOLINT_VERSION=2.15.1
 TRIVY_VERSION=0.74.0
 SYFT_VERSION=1.51.1
-COSIGN_VERSION=3.1.3
 
 # tool:version -> sha256 of the artifact named in fetch() below.
 digest() {
@@ -37,7 +36,6 @@ digest() {
         hadolint:2.15.1)  echo c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 ;;
         trivy:0.74.0)     echo 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a ;;
         syft:1.51.1)      echo 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3 ;;
-        cosign:3.1.3)     echo 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
         tofu:1.12.6)      echo 5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8 ;;
         *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
     esac
@@ -50,7 +48,6 @@ url() {
         hadolint)   echo "https://github.com/hadolint/hadolint/releases/download/v${2}/hadolint-linux-x86_64" ;;
         trivy)      echo "https://github.com/aquasecurity/trivy/releases/download/v${2}/trivy_${2}_Linux-64bit.tar.gz" ;;
         syft)       echo "https://github.com/anchore/syft/releases/download/v${2}/syft_${2}_linux_amd64.tar.gz" ;;
-        cosign)     echo "https://github.com/sigstore/cosign/releases/download/v${2}/cosign-linux-amd64" ;;
         # The .zip rather than the .rpm the image installs: one artifact that
         # works on any runner, with no package manager and no second digest to
         # keep in step with TOFU_RPM_SHA256.
@@ -142,7 +139,6 @@ main() {
     install_one hadolint "$HADOLINT_VERSION"
     install_one trivy    "$TRIVY_VERSION"
     install_one syft     "$SYFT_VERSION"
-    install_one cosign   "$COSIGN_VERSION"
     expose_on_path
     log "done"
 }

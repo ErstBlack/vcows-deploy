@@ -122,21 +122,66 @@ rebuild-and-scan runs, check whether `dmacvicar/terraform-provider-libvirt` has
 released past 0.9.8, and if it has, walk the provider bump through
 `just verify-provider` and the schema diff.
 
-## Signing the delivery
+## The delivery bundle
 
-`just sign` signs the archive `just scan` writes; `just verify-signature` checks
-it the way a site would, with a local public key and no network.
+`just bundle` assembles what actually ships, from what `just scan` already wrote.
+It is the step that was missing: the README described a `podman save | gzip`
+tarball that no script produced, while the only concrete artifact was the
+uncompressed docker-archive `just scan` writes for trivy and syft to seek.
 
-Two things about cosign 3 that an older write-up will not mention. `sign-blob` no
-longer emits a bare detached signature — it wants `--bundle`, because a signature
-alone is not a complete artifact any more. And `--tlog-upload=false` is refused
-against the default signing config; you need a config that names no transparency
-log, which `cosign signing-config create` builds with no network. Without both,
-signing reaches for the public Rekor log and verification reaches for TUF metadata
-at `tuf-repo-cdn.sigstore.dev`, and an air-gapped site gets neither.
+    just image        # build
+    just scan         # trivy against the baseline, plus an SBOM
+    just bundle       # -> .cache/delivery/
 
-The private key stays in `.cache/`, which is gitignored, and is protected by the
-build host rather than a passphrase. The public key ships beside the tarball.
+The bundle holds the compressed image, the SBOM and the trivy report that
+describe *that* image, and a `SHA256SUMS` over all three plus the digest of the
+uncompressed archive inside the gzip — so a site can check before or after
+decompressing. On receipt:
+
+    sha256sum -c SHA256SUMS
+    gunzip -c vcows-deploy-*.tar.gz | podman load
+
+Compression is `gzip -9 -n`. `-n` drops the stored filename and mtime, so the
+same archive always compresses to the same bytes and the digest identifies the
+content rather than the moment it was packed.
+
+pigz was tried first and rejected on measurement, which is worth recording
+because it is 15x faster and the reason not to use it is invisible until it
+bites. Over 12 runs on one host with identical input, `pigz -9 -n` produced two
+distinct outputs — 150516700 and 150516701 bytes, one byte apart, both
+decompressing to identical content. It is a deflate block-framing difference
+that depends on how the parallel block assembly interleaves, and it turned up
+about once in a dozen runs: often enough to reach a real delivery, rare enough
+that when it does it looks like corruption rather than a known property. An
+artifact whose identity is its digest cannot be produced by something that
+changes the digest without changing the content. gzip is single-threaded and
+emits one deflate stream, so the seam does not exist. The cost is 82s against
+5.5s on a 444 MB archive, once per delivery.
+
+**Nothing here is signed.** `SHA256SUMS` catches corruption and a mismatched
+pairing, not substitution — the bundle has integrity, not authenticity.
+
+### Why signing was removed
+
+There was a `just sign` built on cosign 3, and it worked: verified end to end
+under `unshare -rn` against a local key, with no network. It was removed rather
+than kept because it signed `.cache/scan/image.tar` while the README promised a
+gzip tarball, so the signed bytes and the delivered bytes were two different
+streams both called "the delivery tarball". A site handed both sees a signature
+mismatch, which reads as tampering rather than as a packaging bug. No pipeline on
+either platform ever called it, so it only ever ran on one developer's box.
+
+It comes back once the artifact above is the thing being signed. That work does
+not have to rediscover anything: `docs/tooling-2026-08-30.md` section 4.2 has the
+cosign 3 API, and `docs/review-2026-08-30/finders/G-build-pipeline.md:47-66` has
+the verified air-gapped reproduction. The short version, because it cost a
+session to find. `sign-blob` requires `--bundle`, since a bare detached signature
+is no longer a complete artifact. `--tlog-upload=false` is refused against the
+default signing config, so you need one from `cosign signing-config create` that
+names no transparency log. Verification needs `--insecure-ignore-tlog`. Without
+all three, signing reaches for the public Rekor log and verification reaches for
+TUF metadata at `tuf-repo-cdn.sigstore.dev`, and an air-gapped site gets neither.
+Do not add `--offline`; it was deprecated as a no-op in v3.0.3.
 
 ## Migrating to GitLab
 

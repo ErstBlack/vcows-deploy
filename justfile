@@ -80,13 +80,11 @@ test-image *ARGS:
 scan:
     ./scripts/image-scan.sh
 
-# Sign the delivery tarball `just scan` wrote. Private key stays in .cache/.
-sign:
-    ./scripts/sign.sh
-
-# Verify that signature the way an air-gapped site would: local key, no network.
-verify-signature:
-    ./scripts/sign.sh --verify
+# Assemble the delivery bundle from what `just scan` wrote: the compressed
+# image, the SBOM and trivy report beside it, and SHA256SUMS over all of them.
+# Integrity only -- nothing here is signed. See docs/ci.md.
+bundle:
+    ./scripts/bundle.sh
 
 # Mutation testing. **Does not currently complete** -- mutmut's clean baseline
 # fails with two copies of `orchestrator` loaded at once; see pyproject.toml. Left
