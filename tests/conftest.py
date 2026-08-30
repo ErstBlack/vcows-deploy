@@ -81,7 +81,8 @@ def pytest_runtest_setup(item) -> None:
 #: For tests that apply the *libvirt* module, which needs the pinned provider.
 NEEDS_TOFU = (
     "needs `tofu` on PATH and a provider mirror at .tools/tofu-mirror; "
-    "see the Stage 2 prerequisites in the plan"
+    "run `just mirror` to build one, or `scripts/install-tools.sh` first "
+    "if `tofu` itself is missing"
 )
 needs_tofu = gate("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
 

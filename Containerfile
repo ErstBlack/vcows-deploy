@@ -26,8 +26,9 @@
 # `tests/` cannot reach the image, and flagging the build for one would make the
 # suffix mean nothing.
 #
-# The provider mirror must exist at .tools/tofu-mirror first; see the Stage 2
-# prerequisites. It is the one thing under .tools/ the build context admits.
+# The provider mirror must exist at .tools/tofu-mirror first; `just mirror`
+# builds it, and `just image` runs this build for you. It is the one thing
+# under .tools/ the build context admits.
 #
 # **Base image: the standard one, for now.** All three were built and put through
 # the same gate. Delivered (podman save | gzip): rockylinux:10 **152 MB**,

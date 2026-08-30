@@ -272,19 +272,50 @@ manifest. The OpenTofu provider's licence and its provenance are vendored at
 ## Development
 
 ```bash
-uv venv --python /usr/bin/python3 --system-site-packages
-uv pip install -e . --group dev
-pytest
+./scripts/os-deps.sh        # python3-libvirt, xorriso, shellcheck
+./scripts/install-tools.sh  # pinned uv, tofu, just, hadolint, trivy, syft
+just dev-env
+just check
 ```
+
+Optionally `.venv/bin/pre-commit install`, which runs the cheap half of
+`just lint` before each commit.
+
+`just` on its own lists every recipe. Both CI pipelines call the same ones and
+nothing else, which is what `docs/ci.md` is about.
 
 `--system-site-packages` is not optional: `python3-libvirt` comes from the RPM
 (PyPI ships an sdist only), and without the flag the binding is invisible inside
-the venv while `python3 -c 'import libvirt'` keeps working outside it.
+the venv while `python3 -c 'import libvirt'` keeps working outside it. It is also
+not a rig-only dependency — `tests/fake_libvirt.py` imports it at module scope to
+build genuine `libvirt.libvirtError` instances, so most of the suite needs it.
 
-Three test gates are skipped unless you opt in, each with an explicit reason:
+`xorriso` is the other one people miss. `tests/test_seed_iso.py` shells out to it
+to read back what `pycdlib` wrote, on the principle that a builder verified only
+by itself is not verified. It is ungated, so without it that test fails rather
+than skips.
+
+### Test gates
+
+Some tests need something this machine may not have. Each is skipped with an
+explicit reason rather than quietly passing:
 
 | | |
 |---|---|
 | `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real hypervisor. |
-| `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. |
-| `.tools/tofu-mirror` present | Runs the OpenTofu module gates. |
+| `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. Needs podman; buildah cannot substitute. |
+| `.tools/tofu-mirror` present | Runs the OpenTofu module gates. `just mirror` builds it. |
+| `python3-libvirt` importable | Pins our literal flag and error constants against the real ABI. |
+| `pycdlib` importable | Builds the seed ISO. |
+
+**A gate that passes because it did not run is worse than no gate.**
+`VCOWS_GATES` turns a named gate's skip into a failure carrying its reason:
+
+```bash
+VCOWS_GATES=tofu just test        # or: rig, image, libvirt, pycdlib, or all
+```
+
+It is comma-separated, case-sensitive, and does **not** strip whitespace —
+`tofu,image` is right and `tofu, image` silently demands only `tofu`.
+`tests/test_gates.py` asserts that every skip in the suite goes through this
+mechanism, so a bare `pytest.skip` added later cannot hide from it.
