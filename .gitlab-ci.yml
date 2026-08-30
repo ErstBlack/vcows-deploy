@@ -106,6 +106,15 @@ image:
     - just image
     - just test-image
     - just scan
+    - just bundle
+  # What makes the rest of this job worth running: `just scan` otherwise writes
+  # trivy.json, the SBOM and the archive into the runner's .cache/ and the runner
+  # deletes them. Mirrors the upload-artifact step in .github/workflows/.
+  artifacts:
+    name: "delivery-$CI_COMMIT_SHA"
+    paths:
+      - .cache/delivery/
+    expire_in: 90 days
 
 # Monthly, via a pipeline schedule with REBUILD_SCAN=1. Rebuilding asks what
 # Rocky published since; rescanning a stored archive would only ask what the
@@ -121,4 +130,13 @@ rebuild-scan:
     - just mirror
     - just image
     - just scan
+    - just bundle
+  # What makes the rest of this job worth running: `just scan` otherwise writes
+  # trivy.json, the SBOM and the archive into the runner's .cache/ and the runner
+  # deletes them. Mirrors the upload-artifact step in .github/workflows/.
+  artifacts:
+    name: "delivery-$CI_COMMIT_SHA"
+    paths:
+      - .cache/delivery/
+    expire_in: 90 days
 
