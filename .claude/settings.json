@@ -23,5 +23,12 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(./scripts/image-scan.sh --write-baseline:*)",
+      "Bash(scripts/image-scan.sh --write-baseline:*)",
+      "Bash(bash scripts/image-scan.sh --write-baseline:*)"
+    ]
   }
 }
