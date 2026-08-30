@@ -90,16 +90,25 @@ main() {
     gate "ruff format"       "$ruff" format --check "$REPO"
     # Two ignores, and only one of them is a false positive.
     #
-    # DL4006 (:94, :108) wants pipefail before a piped RUN. Both pipes are
-    # `echo "$SHA  file" | sha256sum -c -`, and echo cannot fail. False positive.
+    # Each names the instruction it covers, not the line. A line number in this
+    # file pointing into that one goes stale on every edit above the target, and
+    # hadolint already prints the line: these read :82, :94, :108 and :149, and
+    # one 35-line comment added to the Containerfile put all four out by 36
+    # without touching any of the instructions they describe.
     #
-    # DL3041 (:82) is **not** a false positive: `dnf -y install` really is
-    # unpinned, and that is why two builds of the same commit differ. The
-    # project's answer is archival rather than pinning -- manifest.json records
-    # the exact version and licence of all ~161 packages that shipped -- with the
-    # monthly rebuild-and-scan as the control that notices when the drift starts
-    # mattering. Pinning six names here would not make the closure reproducible
-    # and would break on the first Rocky update. Ignored knowingly, not silently.
+    # DL4006 wants pipefail before a piped RUN. Both pipes verify a download --
+    # the tofu RPM and the provider zip -- and both are
+    # `echo "$SHA  file" | sha256sum -c -`, where echo cannot fail. False
+    # positive.
+    #
+    # DL3041, on the `dnf -y install` of the runtime closure, is **not** a false
+    # positive: it really is unpinned, and that is why two builds of the same
+    # commit differ. The project's answer is archival rather than pinning --
+    # manifest.json records the exact version and licence of all ~161 packages
+    # that shipped -- with the monthly rebuild-and-scan as the control that
+    # notices when the drift starts mattering. Pinning six names here would not
+    # make the closure reproducible and would break on the first Rocky update.
+    # Ignored knowingly, not silently.
     gate "hadolint"          hadolint --ignore DL4006 --ignore DL3041 "$REPO/Containerfile"
     gate "tofu fmt"          tofu fmt -check -recursive "$REPO"
     # -x follows `source lib.sh`, so a variable used only by a caller is not
