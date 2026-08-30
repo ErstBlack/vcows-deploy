@@ -267,6 +267,74 @@ def test_a_failed_apply_still_leaves_a_run_record(
     assert "TofuError" in capsys.readouterr().err
 
 
+def test_a_deploy_that_worked_is_not_failed_by_the_version_it_records(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """`tofu version` is provenance, asked for after the apply succeeded and
+    `inventory.json` is already on disk. Letting it raise reached `_guard`, which
+    wrote `outcome: failed` over a deploy that created every VM it was asked to --
+    beside an inventory saying otherwise."""
+
+    def boom(*a, **k):
+        raise cli.tofu.TofuError("tofu version failed (exit 1)")
+
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
+    )
+    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu,
+        "outputs",
+        lambda w: {"vms": {"value": {"app01": {"name": "app01"}, "app02": {}}}},
+    )
+    monkeypatch.setattr(cli.tofu, "version", boom)
+
+    assert cli.main(["deploy", config]) == 0
+    run = latest_run(tmp_path)
+    record = json.loads((run / "run.json").read_text())
+    assert record["outcome"] == "ok"
+    assert record["tofu"] is None
+    assert record["created"] == ["app01", "app02"]
+    assert (run / "inventory.json").is_file()
+    assert "cannot record the tofu version" in capsys.readouterr().err
+
+
+def test_a_failed_apply_records_the_warnings_that_came_before_it(
+    backend, config, tmp_path, monkeypatch
+):
+    """`Result.warnings` exists so the run directory can keep them -- "the copy
+    that outlives the terminal" -- and the failed run is where that copy matters
+    most. Collecting them once after all three steps meant the runs that raised
+    recorded none of them."""
+    warned = cli.tofu.Result(
+        0, diagnostics=(cli.tofu.Diagnostic("warning", "deprecated argument"),)
+    )
+
+    def boom(*a, **k):
+        raise cli.tofu.TofuError("tofu apply failed (exit 1)")
+
+    monkeypatch.setattr(cli.tofu, "init", lambda w: warned)
+    monkeypatch.setattr(
+        cli.tofu,
+        "plan",
+        lambda w, o: cli.tofu.Result(
+            0,
+            changes={"add": 2},
+            diagnostics=(cli.tofu.Diagnostic("warning", "unused variable"),),
+        ),
+    )
+    monkeypatch.setattr(cli.tofu, "apply", boom)
+
+    assert cli.main(["deploy", config]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert record["tofu_warnings"] == [
+        "warning: deprecated argument",
+        "warning: unused variable",
+    ]
+
+
 def test_an_interrupted_destroy_still_leaves_a_run_record(
     backend, config, tmp_path, monkeypatch
 ):
@@ -415,6 +483,23 @@ def test_a_non_empty_run_dir_is_refused_before_anything_connects(
     assert (used / "run.json").read_text() == "{}\n", "nothing was overwritten"
 
 
+def test_a_run_dir_that_is_a_file_is_refused_in_a_sentence(
+    backend, config, tmp_path, capsys
+):
+    """`exist_ok=True` suppresses `FileExistsError` for a directory and nothing
+    else, so this used to reach `main`'s catch-all as `error: FileExistsError:
+    [Errno 17] File exists` -- the output `UsageError` was added to replace."""
+    notadir = tmp_path / "notadir"
+    notadir.write_text("this is a file\n")
+
+    assert cli.main(["destroy", config, "--yes", "--run-dir", str(notadir)]) == 1
+    assert backend.sessions == [], "the refusal must land before a connection"
+    err = capsys.readouterr().err
+    assert "FileExistsError" not in err
+    assert "is a file, not a directory" in err and str(notadir) in err
+    assert notadir.read_text() == "this is a file\n"
+
+
 def test_an_empty_run_dir_still_works(backend, config, tmp_path):
     """The bind-mounted mountpoint. `podman run -v ./runs/lab-a:/run-dir` presents
     an empty directory that already exists, and that has to keep working."""
@@ -475,6 +560,67 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
     assert record["destroyed"] == ["app01"]
     assert record["skipped"] == ["/pool/app01-seed.iso", "/pool/app01.qcow2"]
     assert any("could not refresh pool" in p for p in record["problems"])
+
+
+def test_a_destroy_that_raises_still_records_what_it_removed(
+    backend, config, tmp_path, monkeypatch
+):
+    """The teardown with a fatal problem is the one with the most to record and
+    the one that reaches `_guard` as an exception rather than a return value, so
+    the structured record below it never ran: `run.json` carried `outcome:
+    failed` and a message, with no `destroyed` and no `skipped`. That is the run
+    an air-gapped site ships back after a teardown it now has to finish by hand.
+    """
+    from orchestrator.backends.base import Outcome, Problem, Severity
+
+    class Failed(Exception):
+        """A backend's own error carrying the whole outcome, the way the libvirt
+        backend's `DestroyError` does. The attribute is all core reads."""
+
+        def __init__(self, outcome: Outcome):
+            self.outcome = outcome
+            super().__init__("could not delete volume")
+
+    def raises(*a, **k):
+        raise Failed(
+            Outcome(
+                destroyed=["app01"],
+                skipped=["/pool/app01-seed.iso"],
+                problems=[
+                    Problem(Severity.ERROR, "could not delete volume", "storage")
+                ],
+            )
+        )
+
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(backend, "destroy", raises)
+
+    assert cli.main(["destroy", config, "--yes"]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "could not delete volume" in record["error"]
+    assert record["destroyed"] == ["app01"]
+    assert record["skipped"] == ["/pool/app01-seed.iso"]
+    assert any("could not delete volume" in p for p in record["problems"])
+
+
+def test_a_destroy_that_raises_without_an_outcome_still_records_the_failure(
+    backend, config, tmp_path, monkeypatch
+):
+    """`getattr`, not the libvirt backend's own error type. A backend whose
+    exception carries nothing records nothing extra rather than breaking."""
+
+    def boom(*a, **k):
+        raise RuntimeError("the connection dropped")
+
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(backend, "destroy", boom)
+
+    assert cli.main(["destroy", config, "--yes"]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert "the connection dropped" in record["error"]
+    assert "destroyed" not in record
 
 
 def test_destroy_needs_an_answer_when_there_is_nobody_to_ask(

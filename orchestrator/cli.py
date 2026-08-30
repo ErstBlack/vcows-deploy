@@ -28,6 +28,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import traceback
 from collections.abc import Callable
@@ -121,6 +122,16 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     path = (
         Path(override) if override else Path("runs") / cfg["deployment"] / _timestamp()
     )
+    # `exist_ok` covers an existing *directory* and nothing else, so a `--run-dir`
+    # naming a regular file reaches `main`'s catch-all as the raw `FileExistsError`
+    # `UsageError` above exists to replace. Classified here, before the mkdir,
+    # because after it there is nothing left to classify.
+    if path.exists() and not path.is_dir():
+        raise UsageError(
+            f"{path} is a file, not a directory. Every run writes its own "
+            f"directory. Pass a --run-dir that does not exist yet, or one that "
+            f"is an empty directory."
+        )
     path.mkdir(parents=True, exist_ok=True)
     path = path.resolve()
     if any(path.iterdir()):
@@ -290,6 +301,28 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return _guard(run, lambda: _deploy(run, config_problems))
 
 
+def _note_warnings(run: _Run, result: tofu.Result) -> None:
+    """Add one step's warnings to the record, now rather than at the end."""
+    run.extra["tofu_warnings"] += [str(d) for d in result.warnings]
+
+
+def _tofu_version(workdir: Path) -> dict | None:
+    """What actually ran, or ``None`` -- never an exception over a good deploy.
+
+    This is provenance, and it is asked for *after* the apply succeeded and
+    ``inventory.json`` is on disk. Letting it raise -- `tofu version` exits
+    non-zero, takes longer than ``SHORT_TIMEOUT``, or prints something that will
+    not parse -- reaches ``_guard``, which then writes ``outcome: "failed"`` over
+    a deploy that created every VM it was asked to. Tolerated the way
+    ``_print_manifest`` tolerates a manifest that will not parse.
+    """
+    try:
+        return tofu.version(workdir)
+    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
+        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
+        return None
+
+
 def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     cfg = run.cfg
     backend = REGISTRY[cfg["backend"]]
@@ -301,6 +334,9 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     # including the failure one. A refusal's reason belonged only to stderr.
     run.decisions = decisions
     run.extra["problems"] = [str(p) for p in problems]
+    # Same rule, same reason: the list exists from here on so that whichever
+    # record gets written carries whatever had been learned by then.
+    run.extra["tofu_warnings"] = []
 
     # Nothing has been touched yet, and this is the last point where that is true.
     if any(d.action is Action.REFUSE for d in decisions) or any(
@@ -332,8 +368,16 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         _stage_module(module_dir(backend), workdir)
         _write_json(workdir / "main.auto.tfvars.json", tfvars)
 
+        # OpenTofu printed these live -- `_run` inherits stdout -- so they are not
+        # re-printed. What they were missing is the run directory an air-gapped
+        # site ships back, where nothing recorded them at all. Accumulated after
+        # each step rather than after all three: a plan that warns and an apply
+        # that raises is exactly the run whose warnings are worth keeping, and
+        # collecting them at the end means that run records none of them.
         inited = tofu.init(workdir)
+        _note_warnings(run, inited)
         planned = tofu.plan(workdir, workdir / "plan.bin")
+        _note_warnings(run, planned)
         if not planned.changes:
             # No change summary at all is not the same fact as a plan that
             # creates nothing. `_read_stream` returns `{}` for a stream that is
@@ -350,14 +394,8 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
                 f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
             )
         applied = tofu.apply(workdir, workdir / "plan.bin")
+        _note_warnings(run, applied)
         raw = tofu.outputs(workdir)
-
-    # OpenTofu printed these live -- `_run` inherits stdout -- so they are not
-    # re-printed. What they were missing is the run directory an air-gapped site
-    # ships back, where nothing recorded them at all.
-    run.extra["tofu_warnings"] = [
-        str(d) for r in (inited, planned, applied) for d in r.warnings
-    ]
 
     inventory = backend.parse_outputs(raw)
     if len(inventory.vms) != len(creating):
@@ -375,7 +413,7 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         run,
         "ok",
         created=sorted(creating),
-        tofu=tofu.version(workdir),
+        tofu=_tofu_version(workdir),
     )
     print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
     return 0
@@ -487,7 +525,21 @@ def _destroy(
             _record(run, "cancelled")
             return 1
 
-        out = backend.destroy(cfg, session, targets)
+        try:
+            out = backend.destroy(cfg, session, targets)
+        except Exception as exc:
+            # The teardown with a fatal problem is the run with the most to
+            # record, and it is the one that reaches `_guard` as an exception
+            # rather than a return value -- so the `destroyed`/`skipped` record
+            # below never runs for it. `getattr` rather than catching the
+            # backend's own error type: core stays backend-agnostic, and a
+            # backend that carries no outcome simply records nothing extra.
+            partial = getattr(exc, "outcome", None)
+            if partial is not None:
+                run.extra["destroyed"] = sorted(partial.destroyed)
+                run.extra["skipped"] = sorted(partial.skipped)
+                run.extra["problems"] += [str(p) for p in partial.problems]
+            raise
 
     # What it did, not what it was asked to do. A teardown that undefines a domain
     # and leaves both its volumes on disk is the failure findings.md §1 rejects

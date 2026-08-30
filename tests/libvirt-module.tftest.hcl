@@ -33,6 +33,48 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     error_message = "the domain is not named what the tfvars asked for"
   }
 
+  // The domain name above is the one destroy does *not* use -- discovery is by
+  // marker and UUID. These two are: `_deletable` matches every candidate disk
+  // against `{overlay_name(marker.name), seed_name(marker.name)}` before it will
+  // unlink anything (destroy.py:456-461). A module naming the overlay `app01`
+  // rather than `app01.qcow2` deploys clean and then makes every teardown refuse
+  // every disk, with nothing left but hand-deleting on the hypervisor.
+  assert {
+    condition = alltrue([
+      for k, v in var.vms :
+      libvirt_volume.overlay[k].name == v.overlay_name &&
+      libvirt_volume.seed[k].name == v.seed_name
+    ])
+    error_message = "the volumes are not named what the tfvars asked for: destroy matches disks on exactly these two names and would refuse every one"
+  }
+
+  // -- the config values that reach the domain ------------------------------
+  // Over `var.vms` rather than app01 alone, so the second VM is read by more
+  // than the four assertions that name it. Each of these survives being replaced
+  // with a constant in main.tf: `pool` puts every volume somewhere the config
+  // never named and preflight never checked, and `memory_unit = "KiB"` is a
+  // one-token edit that gives every domain 4 MiB and stops it starting.
+  assert {
+    condition = alltrue([
+      for k, v in var.vms :
+      libvirt_domain.vm[k].vcpu == v.vcpus &&
+      libvirt_domain.vm[k].memory == v.memory_mib &&
+      libvirt_domain.vm[k].memory_unit == "MiB" &&
+      libvirt_domain.vm[k].os.type_machine == v.machine &&
+      libvirt_domain.vm[k].os.type == "hvm" &&
+      libvirt_domain.vm[k].os.type_arch == "x86_64"
+    ])
+    error_message = "a domain does not carry the sizing, machine type or arch its tfvars asked for"
+  }
+  assert {
+    condition = alltrue([
+      for k, v in var.vms :
+      libvirt_volume.overlay[k].pool == var.pool &&
+      libvirt_volume.seed[k].pool == var.pool
+    ])
+    error_message = "a volume lands in a pool the config never named and preflight never checked"
+  }
+
   // -- the overlay ----------------------------------------------------------
   assert {
     condition     = libvirt_volume.overlay["app01"].backing_store.path == libvirt_volume.base[0].path
@@ -167,6 +209,14 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   assert {
     condition     = libvirt_domain.vm["app01"].devices.disks[0].driver.discard == "unmap"
     error_message = "the overlay disk passes no discard: guest deletes never return blocks and the overlay only grows"
+  }
+  // The cdrom's driver type is asserted below and the overlay volume's own format
+  // above; these two have to agree. Declaring the root disk `raw` hands the guest
+  // the qcow2 header as its first sector, so every VM in the deployment fails to
+  // boot after a run that reported success.
+  assert {
+    condition     = libvirt_domain.vm["app01"].devices.disks[0].driver.type == "qcow2"
+    error_message = "the overlay is presented to the guest as raw: the qcow2 header becomes sector 0 and nothing boots"
   }
   assert {
     condition     = length(libvirt_domain.vm["app01"].devices.rngs) == 1 && libvirt_domain.vm["app01"].devices.rngs[0].model == "virtio"
