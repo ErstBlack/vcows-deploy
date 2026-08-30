@@ -97,6 +97,19 @@ class DestroyError(Exception):
         super().__init__("\n".join(lines))
 
 
+def _fail(out: Outcome, name: str, what: str, exc: Any) -> bool:
+    """Record a fatal ``could not <what>`` against ``name`` and return ``False``.
+
+    Every libvirt call in this module fails closed the same way, so the return
+    value is the caller's answer: ``return _fail(...)``. The two sites that end
+    in ``return`` or ``continue`` instead discard it.
+    """
+    out.problems.append(
+        Problem.error(f"could not {what}: {exc.get_error_message()}", where=name)
+    )
+    return False
+
+
 def _stop(dom: Any, name: str, out: Outcome) -> bool:
     """Force the domain off. True if it is now safe to undefine.
 
@@ -116,10 +129,7 @@ def _stop(dom: Any, name: str, out: Outcome) -> bool:
         # else -- OPERATION_FAILED, INTERNAL_ERROR -- is a real failure.
         if exc.get_error_code() == ERR_OPERATION_INVALID and _is_off(dom):
             return True
-        out.problems.append(
-            Problem.error(f"could not stop: {exc.get_error_message()}", where=name)
-        )
-        return False
+        return _fail(out, name, "stop", exc)
     return True
 
 
@@ -154,12 +164,7 @@ def _undefine(dom: Any, name: str, mask: int, out: Outcome) -> bool:
         return True
     except libvirt.libvirtError as exc:
         if exc.get_error_code() != ERR_INVALID_ARG or mask == FLOOR:
-            out.problems.append(
-                Problem.error(
-                    f"could not undefine: {exc.get_error_message()}", where=name
-                )
-            )
-            return False
+            return _fail(out, name, "undefine", exc)
 
     dropped = mask & ~FLOOR
     out.problems.append(
@@ -171,10 +176,7 @@ def _undefine(dom: Any, name: str, mask: int, out: Outcome) -> bool:
     try:
         dom.undefineFlags(FLOOR)
     except libvirt.libvirtError as exc:
-        out.problems.append(
-            Problem.error(f"could not undefine: {exc.get_error_message()}", where=name)
-        )
-        return False
+        return _fail(out, name, "undefine", exc)
     return True
 
 
@@ -208,11 +210,7 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
             # any of these paths is fatal there.
             out.skipped.append(path)
             return
-        out.problems.append(
-            Problem.error(
-                f"could not delete {path}: {exc.get_error_message()}", where=name
-            )
-        )
+        _fail(out, name, f"delete {path}", exc)
         return
     out.destroyed.append(path)
 
@@ -499,12 +497,7 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
                 # We have been told nothing about this domain, so we know nothing
                 # about what it owns. Deleting its recorded disks on the strength
                 # of a failed lookup is the one thing this branch must not do.
-                out.problems.append(
-                    Problem.error(
-                        f"could not look up: {exc.get_error_message()}",
-                        where=target.name,
-                    )
-                )
+                _fail(out, target.name, "look up", exc)
                 continue
             # Already gone. Its disks may not be, so they are still resolved
             # below -- from the preflight snapshot, which is why `_deletable`
