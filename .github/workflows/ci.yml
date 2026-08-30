@@ -1,0 +1,71 @@
+# Every step is a `just` recipe or one of the two bootstrap scripts that must run
+# before `just` exists on a fresh runner. scripts/lint.sh asserts that, so this
+# file can be deleted at the GitLab migration without taking any logic with it.
+# .gitlab-ci.yml runs the same recipes.
+#
+# The image job lives in image.yml because it needs a path filter, which GitHub
+# expresses per workflow rather than per job. No third-party actions: the pinned
+# tool downloads in scripts/install-tools.sh verify their own digests, which is
+# the standard the Containerfile already holds itself to.
+name: ci
+
+on:
+  pull_request: {}
+  push:
+    branches: [master]
+
+  # On demand, for a branch with no PR open yet. `push` is scoped to master
+  # so a branch push does not run twice once a PR exists.
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      - run: just check
+
+  tofu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
+      # Keyed on main.tf, which declares the pin, and NOT on
+      # docs/provider-<v>.lock.hcl, whose filename carries the version: a bump
+      # renames that file, hashFiles returns '' for no match, and the key
+      # collapses to a constant -- a stale-mirror hit on exactly the run where
+      # the mirror changed. No restore-keys, for the same reason: a prefix
+      # fallback is how an old mirror gets restored into a new pipeline.
+      - uses: actions/cache@v4
+        with:
+          path: .tools/tofu-mirror
+          key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      # A restored mirror is untrusted input -- GitLab's cache overwrites its key
+      # every run -- so it is re-verified against the Containerfile's digest
+      # rather than assumed.
+      - run: just ensure-mirror
+      - run: just verify-provider
+      - run: just test-tofu

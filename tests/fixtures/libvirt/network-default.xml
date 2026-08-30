@@ -1,0 +1,21 @@
+<network connections='4'>
+  <name>default</name>
+  <uuid>2c49bcc1-608d-43d3-9ca9-411fe6ae21d3</uuid>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <bridge name='virbr0' stp='on' delay='0'/>
+  <mac address='52:54:00:e1:ec:e1'/>
+  <ip address='192.168.122.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.122.2' end='192.168.122.254'/>
+      <host mac='52:54:00:c7:01:01' name='rocky8-cto-01' ip='192.168.122.101'/>
+      <host mac='52:54:00:c7:01:02' name='rocky8-cto-02' ip='192.168.122.102'/>
+      <host mac='52:54:00:c7:01:03' name='rocky8-cto-03' ip='192.168.122.103'/>
+      <host mac='52:54:00:c7:01:04' name='rocky8-cto-04' ip='192.168.122.104'/>
+      <host mac='52:54:00:c7:01:05' name='rocky8-cto-05' ip='192.168.122.105'/>
+    </dhcp>
+  </ip>
+</network>

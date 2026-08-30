@@ -1,0 +1,277 @@
+./scripts/image-build.sh
+building localhost/vcows-deploy:0.1.0.0
+STEP 1/30: FROM quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+STEP 2/30: ARG BASE_IMAGE
+--> Using cache 70ad390762f5026f2297be5a3d8b426367dac9e0159acb2da962bc48cee63deb
+--> 70ad390762f5
+STEP 3/30: ARG BASE_DIGEST
+--> Using cache 6a9c26bcb6865d5888a6e6c5f1d0e57e04d89c6f4df2bbe7491f22c53b05eb14
+--> 6a9c26bcb686
+STEP 4/30: ARG VCOWS_VERSION=0.1.0.0
+--> Using cache bf9f01854c54030481445847c0647a28eec339c1c28e58452bf195ebce4b6f5c
+--> bf9f01854c54
+STEP 5/30: ARG GIT_SHA=unknown
+--> Using cache 87239556953b5489bbc9e6ca0bbdd751913b3b30997669a681818c7b2f7e3401
+--> 87239556953b
+STEP 6/30: ARG BUILD_DATE=unknown
+--> Using cache c01ce0ed1cabf2eff4ba5246432790b3791b94fece054a7655e8258a9cfaf301
+--> c01ce0ed1cab
+STEP 7/30: ARG TOFU_VERSION=1.12.6
+--> Using cache 1e5f2565d6233d35fa12fd4fb43974b66c425ce6b298ed782987ba7c78f380e5
+--> 1e5f2565d623
+STEP 8/30: ARG TOFU_RPM_SHA256=547fe4544d3091ede04478f143fbb17bb0e010999237d904bf8950ad7542848f
+--> Using cache b58f7b428a97fb6adf2ca1dea35d9d1e82a2f6f1bdaf18c5a9f64d7e57e2b322
+--> b58f7b428a97
+STEP 9/30: ARG PROVIDER_VERSION=0.9.8
+--> Using cache 7bd77c2ba1ca9fb5282014ae719e13850c50d5c267f648414deafadb8934fe09
+--> 7bd77c2ba1ca
+STEP 10/30: ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
+--> Using cache 99b1a0c229e0fd3082a30cf29b9b07bfce98e7c7db218f0044274e61974635e4
+--> 99b1a0c229e0
+STEP 11/30: ARG IMAGE_LICENSES="MPL-2.0 AND Apache-2.0 AND GPL-2.0-only AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-3-Clause AND Python-2.0.1"
+--> Using cache 006f8517ee8fa19f0b8f3c6230fed5c22bf93efb99a1fe64e83cd7861a0ecf7d
+--> 006f8517ee8f
+STEP 12/30: RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release  && dnf -y install --nodocs --setopt=install_weak_deps=0       glibc-minimal-langpack       python3-libvirt       python3-pyyaml       python3-jsonschema       python3-pycdlib       openssh-clients  && dnf -y remove epel-release  && dnf clean all  && rm -rf /var/cache/dnf /var/cache/libdnf5 /etc/yum.repos.d/epel*.repo
+Rocky Linux 10 - BaseOS                          26 MB/s |  21 MB     00:00    
+Rocky Linux 10 - AppStream                      5.9 MB/s | 2.6 MB     00:00    
+Rocky Linux 10 - Extras                          15 kB/s | 5.8 kB     00:00    
+Dependencies resolved.
+================================================================================
+ Package              Architecture   Version               Repository      Size
+================================================================================
+Installing:
+ epel-release         noarch         10-7.el10_1           extras          19 k
+
+Transaction Summary
+================================================================================
+Install  1 Package
+
+Total download size: 19 k
+Installed size: 25 k
+Downloading Packages:
+epel-release-10-7.el10_1.noarch.rpm             145 kB/s |  19 kB     00:00    
+--------------------------------------------------------------------------------
+Total                                            78 kB/s |  19 kB     00:00     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Installing       : epel-release-10-7.el10_1.noarch                        1/1 
+  Running scriptlet: epel-release-10-7.el10_1.noarch                        1/1 
+Many EPEL packages require the CodeReady Builder (CRB) repository.
+It is recommended that you run /usr/bin/crb enable to enable the CRB repository.
+
+
+Installed:
+  epel-release-10-7.el10_1.noarch                                               
+
+Complete!
+Extra Packages for Enterprise Linux 10 - x86_64 4.9 MB/s | 6.6 MB     00:01    
+Last metadata expiration check: 0:00:03 ago on Sun Aug 30 03:26:24 2026.
+Package glibc-minimal-langpack-2.39-121.el10_2.x86_64 is already installed.
+Dependencies resolved.
+=======================================================================================
+ Package                             Arch    Version                   Repo        Size
+=======================================================================================
+Installing:
+ openssh-clients                     x86_64  9.9p1-25.el10_2.rocky.0.1 baseos     762 k
+ python3-jsonschema                  noarch  4.19.1-7.el10             baseos     207 k
+ python3-libvirt                     x86_64  11.10.0-2.el10            appstream  364 k
+ python3-pycdlib                     noarch  1.16.0-2.el10_2           epel       311 k
+ python3-pyyaml                      x86_64  6.0.1-19.el10             baseos     237 k
+Upgrading:
+ glibc                               x86_64  2.39-128.el10_2           baseos     2.1 M
+ glibc-common                        x86_64  2.39-128.el10_2           baseos     311 k
+ glibc-minimal-langpack              x86_64  2.39-128.el10_2           baseos      28 k
+Installing dependencies:
+ cyrus-sasl-gssapi                   x86_64  2.1.28-29.el10            baseos      27 k
+ libcbor                             x86_64  0.11.0-3.el10             baseos      33 k
+ libedit                             x86_64  3.1-52.20230828cvs.el10   baseos     105 k
+ libfido2                            x86_64  1.14.0-7.el10             baseos      97 k
+ libnl3                              x86_64  3.11.0-1.el10             baseos     357 k
+ libssh                              x86_64  0.12.0-3.el10_2           baseos     277 k
+ libssh-config                       noarch  0.12.0-3.el10_2           baseos     8.5 k
+ libtirpc                            x86_64  1.3.5-1.el10              baseos      94 k
+ libvirt-libs                        x86_64  11.10.0-12.4.el10_2       appstream  5.4 M
+ numactl-libs                        x86_64  2.0.19-3.el10             baseos      31 k
+ openssh                             x86_64  9.9p1-25.el10_2.rocky.0.1 baseos     350 k
+ python3-attrs                       noarch  23.2.0-7.el10             baseos     127 k
+ python3-jsonschema-specifications   noarch  2023.11.2-6.el10          baseos      29 k
+ python3-referencing                 noarch  0.31.1-6.el10             baseos      84 k
+ python3-rpds-py                     x86_64  0.17.1-6.el10             baseos     306 k
+
+Transaction Summary
+=======================================================================================
+Install  20 Packages
+Upgrade   3 Packages
+
+Total download size: 12 M
+Downloading Packages:
+(1/23): libcbor-0.11.0-3.el10.x86_64.rpm        489 kB/s |  33 kB     00:00    
+(2/23): cyrus-sasl-gssapi-2.1.28-29.el10.x86_64 368 kB/s |  27 kB     00:00    
+(3/23): libedit-3.1-52.20230828cvs.el10.x86_64. 1.9 MB/s | 105 kB     00:00    
+(4/23): libfido2-1.14.0-7.el10.x86_64.rpm       1.0 MB/s |  97 kB     00:00    
+(5/23): libnl3-3.11.0-1.el10.x86_64.rpm         4.9 MB/s | 357 kB     00:00    
+(6/23): libssh-config-0.12.0-3.el10_2.noarch.rp 349 kB/s | 8.5 kB     00:00    
+(7/23): libssh-0.12.0-3.el10_2.x86_64.rpm       3.9 MB/s | 277 kB     00:00    
+(8/23): libtirpc-1.3.5-1.el10.x86_64.rpm        2.7 MB/s |  94 kB     00:00    
+(9/23): python3-pycdlib-1.16.0-2.el10_2.noarch. 1.1 MB/s | 311 kB     00:00    
+(10/23): numactl-libs-2.0.19-3.el10.x86_64.rpm  950 kB/s |  31 kB     00:00    
+(11/23): openssh-9.9p1-25.el10_2.rocky.0.1.x86_ 8.7 MB/s | 350 kB     00:00    
+(12/23): python3-attrs-23.2.0-7.el10.noarch.rpm 3.5 MB/s | 127 kB     00:00    
+(13/23): python3-jsonschema-4.19.1-7.el10.noarc 6.7 MB/s | 207 kB     00:00    
+(14/23): python3-jsonschema-specifications-2023 1.1 MB/s |  29 kB     00:00    
+(15/23): python3-pyyaml-6.0.1-19.el10.x86_64.rp 6.8 MB/s | 237 kB     00:00    
+(16/23): python3-referencing-0.31.1-6.el10.noar 2.2 MB/s |  84 kB     00:00    
+(17/23): python3-rpds-py-0.17.1-6.el10.x86_64.r 8.1 MB/s | 306 kB     00:00    
+(18/23): python3-libvirt-11.10.0-2.el10.x86_64. 8.6 MB/s | 364 kB     00:00    
+(19/23): openssh-clients-9.9p1-25.el10_2.rocky. 3.3 MB/s | 762 kB     00:00    
+(20/23): libvirt-libs-11.10.0-12.4.el10_2.x86_6  27 MB/s | 5.4 MB     00:00    
+(21/23): glibc-2.39-128.el10_2.x86_64.rpm        14 MB/s | 2.1 MB     00:00    
+(22/23): glibc-common-2.39-128.el10_2.x86_64.rp 2.9 MB/s | 311 kB     00:00    
+(23/23): glibc-minimal-langpack-2.39-128.el10_2 905 kB/s |  28 kB     00:00    
+--------------------------------------------------------------------------------
+Total                                            12 MB/s |  12 MB     00:00     
+Extra Packages for Enterprise Linux 10 - x86_64 1.6 MB/s | 1.6 kB     00:00    
+Importing GPG key 0xE37ED158:
+ Userid     : "Fedora (epel10) <epel@fedoraproject.org>"
+ Fingerprint: 7D8D 15CB FC4E 6268 8591 FB26 33D9 8517 E37E D158
+ From       : /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-10
+Key imported successfully
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Upgrading        : glibc-common-2.39-128.el10_2.x86_64                   1/26 
+  Upgrading        : glibc-minimal-langpack-2.39-128.el10_2.x86_64         2/26 
+  Running scriptlet: glibc-2.39-128.el10_2.x86_64                          3/26 
+  Upgrading        : glibc-2.39-128.el10_2.x86_64                          3/26 
+  Running scriptlet: glibc-2.39-128.el10_2.x86_64                          3/26 
+  Installing       : python3-rpds-py-0.17.1-6.el10.x86_64                  4/26 
+  Installing       : python3-attrs-23.2.0-7.el10.noarch                    5/26 
+  Installing       : python3-referencing-0.31.1-6.el10.noarch              6/26 
+  Installing       : python3-jsonschema-specifications-2023.11.2-6.el10    7/26 
+  Installing       : cyrus-sasl-gssapi-2.1.28-29.el10.x86_64               8/26 
+  Installing       : libcbor-0.11.0-3.el10.x86_64                          9/26 
+  Installing       : libfido2-1.14.0-7.el10.x86_64                        10/26 
+  Installing       : libedit-3.1-52.20230828cvs.el10.x86_64               11/26 
+  Installing       : libnl3-3.11.0-1.el10.x86_64                          12/26 
+  Installing       : libtirpc-1.3.5-1.el10.x86_64                         13/26 
+  Installing       : numactl-libs-2.0.19-3.el10.x86_64                    14/26 
+  Installing       : openssh-9.9p1-25.el10_2.rocky.0.1.x86_64             15/26 
+  Installing       : libssh-config-0.12.0-3.el10_2.noarch                 16/26 
+  Installing       : libssh-0.12.0-3.el10_2.x86_64                        17/26 
+  Installing       : libvirt-libs-11.10.0-12.4.el10_2.x86_64              18/26 
+  Installing       : python3-libvirt-11.10.0-2.el10.x86_64                19/26 
+  Installing       : openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64     20/26 
+  Running scriptlet: openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64     20/26 
+  Installing       : python3-jsonschema-4.19.1-7.el10.noarch              21/26 
+  Installing       : python3-pyyaml-6.0.1-19.el10.x86_64                  22/26 
+  Installing       : python3-pycdlib-1.16.0-2.el10_2.noarch               23/26 
+  Cleanup          : glibc-2.39-121.el10_2.x86_64                         24/26 
+  Cleanup          : glibc-minimal-langpack-2.39-121.el10_2.x86_64        25/26 
+  Cleanup          : glibc-common-2.39-121.el10_2.x86_64                  26/26 
+  Running scriptlet: glibc-common-2.39-121.el10_2.x86_64                  26/26 
+
+Upgraded:
+  glibc-2.39-128.el10_2.x86_64                                                  
+  glibc-common-2.39-128.el10_2.x86_64                                           
+  glibc-minimal-langpack-2.39-128.el10_2.x86_64                                 
+Installed:
+  cyrus-sasl-gssapi-2.1.28-29.el10.x86_64                                       
+  libcbor-0.11.0-3.el10.x86_64                                                  
+  libedit-3.1-52.20230828cvs.el10.x86_64                                        
+  libfido2-1.14.0-7.el10.x86_64                                                 
+  libnl3-3.11.0-1.el10.x86_64                                                   
+  libssh-0.12.0-3.el10_2.x86_64                                                 
+  libssh-config-0.12.0-3.el10_2.noarch                                          
+  libtirpc-1.3.5-1.el10.x86_64                                                  
+  libvirt-libs-11.10.0-12.4.el10_2.x86_64                                       
+  numactl-libs-2.0.19-3.el10.x86_64                                             
+  openssh-9.9p1-25.el10_2.rocky.0.1.x86_64                                      
+  openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64                              
+  python3-attrs-23.2.0-7.el10.noarch                                            
+  python3-jsonschema-4.19.1-7.el10.noarch                                       
+  python3-jsonschema-specifications-2023.11.2-6.el10.noarch                     
+  python3-libvirt-11.10.0-2.el10.x86_64                                         
+  python3-pycdlib-1.16.0-2.el10_2.noarch                                        
+  python3-pyyaml-6.0.1-19.el10.x86_64                                           
+  python3-referencing-0.31.1-6.el10.noarch                                      
+  python3-rpds-py-0.17.1-6.el10.x86_64                                          
+
+Complete!
+Dependencies resolved.
+================================================================================
+ Package              Architecture   Version              Repository       Size
+================================================================================
+Removing:
+ epel-release         noarch         10-7.el10_1          @extras          25 k
+
+Transaction Summary
+================================================================================
+Remove  1 Package
+
+Freed space: 25 k
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Erasing          : epel-release-10-7.el10_1.noarch                        1/1 
+
+Removed:
+  epel-release-10-7.el10_1.noarch                                               
+
+Complete!
+25 files removed
+--> d34120b7c658
+STEP 13/30: RUN curl -fsSLo /tmp/tofu.rpm       "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_amd64.rpm"  && echo "${TOFU_RPM_SHA256}  /tmp/tofu.rpm" | sha256sum -c -  && rpm -i /tmp/tofu.rpm  && rm -f /tmp/tofu.rpm
+/tmp/tofu.rpm: OK
+warning: /tmp/tofu.rpm: Header V4 RSA/SHA256 Signature, key ID e5fd9f80: NOKEY
+--> 0fe82af7ef48
+STEP 14/30: COPY .tools/tofu-mirror /opt/tofu-mirror
+--> c1295331a778
+STEP 15/30: COPY container/tofurc /opt/tofu/tofurc
+--> d118acf4f1fd
+STEP 16/30: RUN echo "${PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_${PROVIDER_VERSION}_linux_amd64.zip"   | sha256sum -c -
+/opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_0.9.8_linux_amd64.zip: OK
+--> 623f53337912
+STEP 17/30: COPY licenses /opt/vcows/licenses
+--> 209dd1fd75c7
+STEP 18/30: COPY orchestrator /opt/vcows/orchestrator
+--> 70cd4cfc195a
+STEP 19/30: COPY docs/provider-0.9.8.lock.hcl      /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl
+--> e0ac8df664cf
+STEP 20/30: RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n'       > /usr/local/bin/vcows  && chmod 0755 /usr/local/bin/vcows
+--> 18962168985a
+STEP 21/30: COPY container/entrypoint.py /usr/local/bin/vcows-entrypoint
+--> 6ccd53302454
+STEP 22/30: RUN chmod 0755 /usr/local/bin/vcows-entrypoint
+--> 12498334d722
+STEP 23/30: ENV PYTHONPATH=/opt/vcows     PYTHONDONTWRITEBYTECODE=1     VCOWS_MANIFEST=/opt/vcows/manifest.json     CHECKPOINT_DISABLE=1     TF_CLI_CONFIG_FILE=/opt/tofu/tofurc     TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache
+--> df93404f5845
+STEP 24/30: RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm  && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf        /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/  && (cd /tmp/warm && tofu init -input=false -no-color > /dev/null)  && rm -rf /tmp/warm
+--> d120ccbd77c4
+STEP 25/30: COPY container/manifest.py /tmp/manifest.py
+--> d81b7ad18d79
+STEP 26/30: RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}"     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}"     PROVIDER_SHA256="${PROVIDER_SHA256}"     PROVIDER_LOCK=/opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl     python3 /tmp/manifest.py > /opt/vcows/manifest.json  && rm -f /tmp/manifest.py
+--> 4bc2ae37b354
+STEP 27/30: LABEL org.opencontainers.image.title="vcows-deploy"       org.opencontainers.image.description="Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh"       org.opencontainers.image.version="${VCOWS_VERSION}"       org.opencontainers.image.revision="${GIT_SHA}"       org.opencontainers.image.created="${BUILD_DATE}"       org.opencontainers.image.licenses="${IMAGE_LICENSES}"       org.opencontainers.image.vendor="vcows"       org.opencontainers.image.authors="vcows"       org.opencontainers.image.source="https://github.com/ErstBlack/vcows-deploy"       org.opencontainers.image.base.name="${BASE_IMAGE}"       org.opencontainers.image.base.digest="${BASE_DIGEST}"       name="vcows-deploy"       version="${VCOWS_VERSION}"       summary="Deploy golden qcow2 images as VMs to KVM/libvirt"       vendor="vcows"       license="${IMAGE_LICENSES}"
+--> 35176592a7f3
+STEP 28/30: WORKDIR /
+--> ee28a0748d54
+STEP 29/30: ENTRYPOINT ["/usr/local/bin/vcows-entrypoint"]
+--> 91032a0aa6a5
+STEP 30/30: CMD ["--help"]
+COMMIT localhost/vcows-deploy:0.1.0.0
+--> 282f3b3a6341
+Successfully tagged localhost/vcows-deploy:0.1.0.0
+282f3b3a63413fcab8a95ca98aa76f5b240638e7d776cbbc56cff0d20ea0b41d
+built localhost/vcows-deploy:0.1.0.0
+run 'just test-image' to exercise the offline gate
+EXIT=0

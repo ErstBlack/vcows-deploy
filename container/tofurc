@@ -1,0 +1,18 @@
+// OpenTofu CLI configuration, baked into the image at /opt/tofu/tofurc and read
+// because ENV TF_CLI_CONFIG_FILE points at it explicitly.
+//
+// /etc/tofurc is not a path OpenTofu reads. On Linux it reads $HOME/.tofurc,
+// $XDG_CONFIG_HOME/opentofu/tofurc, $HOME/.terraformrc, or TF_CLI_CONFIG_FILE --
+// and under rootless podman a UID with no /etc/passwd entry gets HOME=/, so even
+// a correctly placed ~/.tofurc is missed. The env var is the only reliable lever.
+
+provider_installation {
+  filesystem_mirror {
+    path    = "/opt/tofu-mirror"
+    include = ["registry.opentofu.org/*/*"]
+  }
+
+  // No `direct` block, deliberately. At an air-gapped site there is no fallback
+  // worth having: a provider missing from the mirror should fail immediately and
+  // say so, rather than resolve DNS for registry.opentofu.org and hang.
+}

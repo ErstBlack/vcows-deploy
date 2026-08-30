@@ -1,0 +1,26 @@
+<volume type='file'>
+  <name>Rocky-9-GenericCloud-Base.latest.x86_64.qcow2</name>
+  <key>/var/lib/libvirt/images/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2</key>
+  <capacity unit='bytes'>10737418240</capacity>
+  <allocation unit='bytes'>645988352</allocation>
+  <physical unit='bytes'>645988352</physical>
+  <target>
+    <path>/var/lib/libvirt/images/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2</path>
+    <format type='qcow2'/>
+    <permissions>
+      <mode>0644</mode>
+      <owner>107</owner>
+      <group>107</group>
+      <label>system_u:object_r:virt_content_t:s0</label>
+    </permissions>
+    <timestamps>
+      <atime>1787971573.495458192</atime>
+      <mtime>1779739173</mtime>
+      <ctime>1787881840.989644999</ctime>
+      <btime>0</btime>
+    </timestamps>
+    <compat>1.1</compat>
+    <clusterSize unit='B'>65536</clusterSize>
+    <features/>
+  </target>
+</volume>

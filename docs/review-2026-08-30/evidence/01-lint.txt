@@ -1,0 +1,12 @@
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+79 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+EXIT=0

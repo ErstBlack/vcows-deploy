@@ -1,0 +1,12 @@
+# The build context. `.tools/` is excluded and then re-admitted for the provider
+# mirror, which is the one thing under it the image genuinely needs; everything
+# else there is a rebuildable dev convenience.
+.git/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+runs/
+.cache/
+.tools/*
+!.tools/tofu-mirror

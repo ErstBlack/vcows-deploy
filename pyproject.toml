@@ -1,0 +1,160 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vcows-deploy"
+version = "0.1.0.0"
+description = "Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh"
+requires-python = ">=3.12"
+
+# Declared for tooling and for the build manifest. **The image installs none of
+# this via pip.** Every runtime dependency exists as an RPM, so the container
+# installs them from a local repo mirror and carries no pip, no virtualenv and no
+# vendored wheels -- one air-gap mechanism instead of two:
+#
+#   jsonschema  -> python3-jsonschema  (appstream)
+#   PyYAML      -> python3-pyyaml      (appstream)
+#   pycdlib     -> python3-pycdlib     (epel; 1.16.0 verified against the A1 API)
+#   libvirt     -> python3-libvirt     (appstream)
+#
+# `libvirt-python` is absent from this list on purpose: PyPI publishes sdist
+# only, so pip would need gcc and network access. Because there is no virtualenv
+# in the image, the --system-site-packages trap that would otherwise hide the RPM
+# binding cannot arise there.
+#
+# A *dev* environment hits it twice, so create it exactly like this:
+#
+#     uv venv --python /usr/bin/python3 --system-site-packages
+#
+# Without --system-site-packages the RPM binding is invisible. And without the
+# explicit interpreter, uv installs its own managed CPython (3.13 at the time of
+# writing), whose site-packages contains no RPMs at all -- so the flag appears to
+# work while `import libvirt` still fails. `uv sync` cannot express either, which
+# is why this project uses `uv venv` + `uv pip install` rather than a lockfile.
+dependencies = [
+    "jsonschema>=4.19",
+    "PyYAML>=6.0",
+    "pycdlib>=1.16",
+]
+
+[project.scripts]
+vcows = "orchestrator.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6",
+    "mutmut>=3.7.0",
+    "pre-commit>=4",
+    "pytest>=8",
+    "pytest-cov>=6",
+    "ruff>=0.16",
+    "ty>=0.0.75",
+    # PyYAML ships no inline types and jsonschema/pycdlib are both PEP 561, so
+    # this is the one stub gap worth closing. `libvirt.py` is the permanent
+    # ceiling -- the RPM binding is untyped and has no stub package anywhere.
+    "types-PyYAML>=6",
+]
+
+[tool.setuptools.packages.find]
+include = ["orchestrator*"]
+
+[tool.coverage.run]
+branch = true
+source = ["orchestrator"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:"]
+# Measured at 96% with every ungated test running (2026-08-30). The floor is set
+# below that on purpose: the figure depends on which gates ran, and a run without
+# `tofu` on PATH legitimately covers less of tofu.py. A floor that assumed the
+# best case would fail honest runs, which is how a coverage gate gets turned off.
+fail_under = 90
+
+[tool.mutmut]
+# Both packages that ship, not just the one. `container/` is small but it is
+# where the entrypoint writes ~/.ssh/config, which is the code an S1 injection
+# finding was filed against -- exactly the place a surviving mutant matters.
+# It also has to be here for a second reason: mutmut runs the suite from a copied
+# tree, and tests/test_entrypoint.py imports `container`, so leaving it out makes
+# collection fail rather than merely skipping it.
+source_paths = ["orchestrator", "container"]
+# mutmut runs the suite from a copied tree containing only source_paths and
+# tests/. `docs/` comes along because the manifest and module tests read the
+# committed provider lock and the pinned provider schema from there -- without it
+# they fail inside every mutant run, and mutmut reports that as "failed to
+# collect stats" rather than as a missing file.
+also_copy = ["docs", "Containerfile"]
+
+# **`mutmut run` does not currently complete on this repo.** It gets past mutant
+# collection with the settings above and then fails its own clean-baseline run:
+#
+#   assert [<Severity.WARNING: 'warning'>] == [<Severity.WARNING: 'warning'>]
+#   At index 0 diff: <Severity.WARNING: 'warning'> != <Severity.WARNING: 'warning'>
+#
+# Two enum members that print identically and compare unequal means two copies of
+# `orchestrator.backends.base` are loaded at once. The traceback names the
+# *original* tests/test_config.py rather than the copy under mutants/, which is
+# the tell: mutmut is running the repo's tests against a mutated tree while the
+# unmutated package is still importable beside it.
+#
+# The obvious suspect -- `uv pip install -e .` keeping the repo copy importable
+# through its .pth finder -- was tested and **is not the cause**: uninstalling the
+# editable package and rerunning fails identically. So this needs someone to work
+# out what mutmut 3.7 actually puts on sys.path, not another guess.
+#
+# Because of this, no CI pipeline calls `just mutants`. A scheduled job that
+# always fails is the same defect as one that always passes, and this repo has a
+# name for that one already.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# A typo'd marker is otherwise a silent no-op, which in a suite whose gates are
+# built out of marks is the same failure as a gate that passes by skipping.
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# Spike scripts are archived evidence, quoted verbatim in docs/spikes.md.
+# Reformatting them would make the file and the doc disagree.
+extend-exclude = ["docs/spikes"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    # The 12 hits today are all reviewed and carry a `# noqa` naming the reason:
+    # six parse libvirt's own XMLDesc output, three are argv-list subprocess
+    # calls, three are internal-invariant asserts. The rule earns its place by
+    # catching the *next* one, not by re-litigating these.
+    "S",        # flake8-bandit
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# SIM300 wants the constant on the right. In a pinning assertion the constant
+# under test is the subject, and `assert VCOWS_NS == <expected>` reads better
+# than the inversion.
+#
+# The four bandit rules are inherent to a test suite rather than deliberate
+# exceptions: S101 is how pytest works (606 of them), S314 parses fixture XML the
+# test itself just wrote, and S603/S607 are the image gate calling `podman` and
+# `tofu` by name on purpose. Ignoring them here keeps `S` meaningful in
+# orchestrator/, which is the code that ships.
+"tests/*" = ["SIM300", "S101", "S314", "S603", "S607"]
+
+[tool.ty.src]
+# Archived spike evidence, not package code (mirrors ruff's extend-exclude).
+exclude = ["docs/spikes"]
+
+[tool.ty.environment]
+python-version = "3.12"
+# The libvirt binding comes from the python3-libvirt RPM and is only visible
+# through a --system-site-packages venv (see the dependencies note above), so
+# point ty at the same interpreter rather than a uv-managed one.
+python = ".venv"

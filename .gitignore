@@ -1,0 +1,41 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Editable-install metadata, rewritten by every `uv run`. `uv.lock` beside it is
+# committed: this is an application, not a library, and every other input to a
+# build here is pinned.
+*.egg-info/
+
+# Run directories: state, inventory, seed ISOs, tofu JSON streams.
+runs/
+
+# OpenTofu working state. The lock file is committed deliberately
+# (docs/provider-0.9.8.lock.hcl); this is the initialised tree.
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Dev-box provider mirror. Rebuildable from docs/provider-0.9.8.lock.hcl;
+# the real one is baked into the image at /opt/tofu-mirror.
+.tools/
+
+# Mutation-testing scratch tree, rebuilt by every `mutmut run`.
+mutants/
+
+# uv's cache, kept in-tree because GitLab can only cache paths under
+# $CI_PROJECT_DIR. scripts/lib.sh points UV_CACHE_DIR here on every platform.
+.cache/
+
+# `tofu providers lock` writes this into whichever directory it runs in. The
+# module's real lock ships from docs/provider-0.9.8.lock.hcl, and a stray one
+# here would make every later image build compute a `-dirty` SHA.
+.terraform.lock.hcl
+
+# Hypothesis's example database, rebuilt as the property tests run.
+.hypothesis/
+
+# pytest-cov's data file, written by `pytest --cov`.
+.coverage

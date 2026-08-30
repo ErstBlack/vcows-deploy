@@ -1,0 +1,3 @@
+.venv/bin/ty check
+All checks passed!
+EXIT=0
