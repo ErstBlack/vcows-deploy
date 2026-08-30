@@ -1,0 +1,53 @@
+# The image gate, on master and on any PR that touches the image's inputs.
+#
+# tests/test_image.py is the only thing exercising the air-gap properties -- the
+# provider resolved from the baked mirror with no `direct` block, the RPM binding
+# visible to the interpreter that actually runs, `init` not rewriting the
+# committed lock, the plugin cache keeping .terraform out of every run directory.
+# Gating it to post-merge would validate a Containerfile change only after review
+# had already passed on it.
+#
+# Its own workflow rather than a job in ci.yml because GitHub applies path
+# filters per workflow, and doing it per job needs a third-party action this
+# project has no reason to trust. GitLab expresses the same thing with
+# `rules:changes` on one job.
+name: image
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'Containerfile'
+      - '.containerignore'
+      - 'container/**'
+      - 'orchestrator/backends/libvirt/tofu/**'
+      - 'docs/provider-*.lock.hcl'
+      - 'licenses/**'
+      - 'scripts/image-*.sh'
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: image-build.sh computes the -dirty suffix from
+      # `git status --porcelain` over the shipped paths.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      - run: just mirror
+      - run: just image
+      # podman is present on ubuntu-latest, and the gate needs a runtime rather
+      # than a builder: buildah builds this Containerfile fine, but `buildah run`
+      # ignores ENTRYPOINT and mutates the working container, and proving
+      # ENTRYPOINT, WORKDIR and per-run isolation is why test_image.py exists.
+      - run: just test-image
+      - run: just scan

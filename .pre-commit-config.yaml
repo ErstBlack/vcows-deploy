@@ -1,0 +1,38 @@
+# Runs the cheap half of `just lint` before a commit rather than after a push.
+#
+# Every hook here is static analysis: none imports orchestrator or libvirt, so
+# pre-commit's isolated per-hook environments never meet the --system-site-packages
+# problem that shapes the rest of this project's tooling. `tofu fmt` runs as
+# `language: system` against the binary scripts/install-tools.sh already provides.
+#
+# Measured before adding: the tree has no trailing whitespace, no missing final
+# newlines, and ruff format reports every file already formatted -- so the fixing
+# hooks are no-ops today and this introduces no churn.
+#
+# Install with: .venv/bin/pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: tofu-fmt
+        name: tofu fmt
+        entry: tofu fmt -check -recursive
+        language: system
+        pass_filenames: false
+        files: '\.tf$'

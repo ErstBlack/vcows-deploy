@@ -1,0 +1,36 @@
+# Work that is worth doing regularly and is wrong as a pull-request gate.
+#
+# Mutation testing is deliberately absent. `just mutants` exists but `mutmut run`
+# does not complete on this repo -- see the note in pyproject.toml -- and a
+# scheduled job that always fails teaches people to ignore a red pipeline just as
+# surely as one that always passes teaches them to trust a green one.
+#
+# It does not block anything. Nothing in a pipeline can fix a CVE in a pinned
+# binary -- only a version bump can -- so a scheduled scan that goes red would be
+# muted inside a month and then be green by neglect, which is the failure mode
+# this repo already has a name for.
+name: scheduled
+
+on:
+  schedule:
+    # Monthly. Rebuilding asks what Rocky published since; rescanning a stored
+    # archive would only ask what the vulnerability database learned. The RPM
+    # layer genuinely drifts, because `dnf -y install` is unpinned -- see the
+    # DL3041 note in scripts/lint.sh.
+    - cron: '0 6 1 * *'
+  workflow_dispatch: {}
+
+jobs:
+  rebuild-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      - run: just mirror
+      - run: just image
+      - run: just scan
+

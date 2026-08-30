@@ -1,0 +1,22 @@
+# Dependabot understands uv natively and drives the real uv CLI, so
+# [dependency-groups] needs no separate parsing path.
+#
+# It is deliberately not pointed at the Containerfile. It handles a
+# BASE_IMAGE/BASE_DIGEST pair well enough, but TOFU_RPM_SHA256 and
+# PROVIDER_SHA256 are digests of downloaded artifacts, and nothing here can
+# recompute those -- a bump that changed the version and left the digest would
+# fail scripts/verify-provider.sh, which is the right outcome but a poor way to
+# find out. Provider and tofu bumps go through the schema-diff runbook by hand.
+#
+# GitLab has no equivalent. The closest is self-hosted Renovate on a schedule,
+# with the same limitation.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
