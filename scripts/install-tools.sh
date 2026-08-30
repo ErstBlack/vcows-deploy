@@ -93,6 +93,27 @@ install_one() {
     [ -x "$TOOLS_BIN/$tool" ] || die "$tool: archive did not contain an executable named $tool"
 }
 
+# Binaries land in .tools/bin so CI can cache one directory, but a later step --
+# or a later workflow step, which is a fresh shell -- has to be able to find them.
+# `lib.sh` prepending TOOLS_BIN only helps processes that source it, which `just`
+# is not. So expose them somewhere already on PATH.
+#
+# Deliberately not $GITHUB_PATH: nothing under scripts/ may read a CI platform's
+# variables, because that is what keeps .github/ deletable. A symlink works the
+# same on a runner, in a container and on a developer box.
+expose_on_path() {
+    local dir=/usr/local/bin sudo="" tool
+    [ -w "$dir" ] || sudo=sudo
+    for tool in "$TOOLS_BIN"/*; do
+        [ -x "$tool" ] || continue
+        $sudo ln -sf "$tool" "$dir/$(basename "$tool")" 2>/dev/null || {
+            log "  note: could not link $(basename "$tool") into $dir;"
+            log "        add $TOOLS_BIN to PATH yourself"
+            return 0
+        }
+    done
+}
+
 main() {
     mkdir -p "$TOOLS_BIN"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -105,6 +126,7 @@ main() {
     install_one hadolint "$HADOLINT_VERSION"
     install_one trivy    "$TRIVY_VERSION"
     install_one syft     "$SYFT_VERSION"
+    expose_on_path
     log "done"
 }
 
