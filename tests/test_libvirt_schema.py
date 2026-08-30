@@ -306,6 +306,20 @@ def test_duplicate_ip_across_vms_is_rejected(cfg):
     assert "already used by" in messages(schema.validate(cfg))
 
 
+def test_a_duplicate_ip_is_reported_even_when_the_gateway_is_unparseable(cfg):
+    """Registering the address needs only the address to have parsed.
+
+    Nesting the registration under the gateway guard costs the operator a round
+    trip -- they fix the gateway, re-run, and only then learn the address
+    collides -- which is what `schema.validate`'s docstring rules out.
+    """
+    cfg["vms"][0]["nics"][0]["gateway"] = "not-an-ip"
+    cfg["vms"][1]["nics"][0]["ip_cidr"] = cfg["vms"][0]["nics"][0]["ip_cidr"]
+    out = messages(schema.validate(cfg))
+    assert "gateway" in out
+    assert "already used by" in out
+
+
 def test_duplicate_mac_across_vms_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["mac"] = cfg["vms"][1]["nics"][0]["mac"]
     assert "already used by" in messages(schema.validate(cfg))

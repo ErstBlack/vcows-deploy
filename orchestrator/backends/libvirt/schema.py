@@ -482,8 +482,13 @@ def _check_nics(
                     )
                 )
         gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
-        if iface is not None and gateway is not None:
-            if gateway not in iface.network:
+        # Only the gateway-outside-network check needs both values. Registering
+        # the address needs `iface` alone: guarding it on the gateway too means a
+        # NIC whose gateway did not parse never claims its address, so the next
+        # VM to reuse that address is not reported until the operator has fixed
+        # the gateway and re-run -- the round trip `validate` exists to avoid.
+        if iface is not None:
+            if gateway is not None and gateway not in iface.network:
                 problems.append(
                     Problem.error(
                         f"gateway {gateway} is outside {iface.network}",
