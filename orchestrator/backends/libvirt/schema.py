@@ -35,7 +35,7 @@ import jsonschema
 
 from ... import qcow2
 from ...marker import VCOWS_NS
-from ..base import Problem
+from ..base import Problem, problems_from
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
 #: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
@@ -364,18 +364,7 @@ def _check_target(target: dict) -> list[Problem]:
 
 def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
     validator = jsonschema.Draft202012Validator(VM_SCHEMA)
-    return [
-        Problem.error(
-            err.message,
-            where=where
-            + "".join(
-                f".{p}" if isinstance(p, str) else f"[{p}]" for p in err.absolute_path
-            ),
-        )
-        for err in sorted(
-            validator.iter_errors(vm), key=lambda e: list(map(str, e.absolute_path))
-        )
-    ]
+    return problems_from(validator.iter_errors(vm), at=where)
 
 
 def _check_firmware(vm: dict, where: str) -> list[Problem]:
@@ -482,8 +471,13 @@ def _check_nics(
                     )
                 )
         gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
-        if iface is not None and gateway is not None:
-            if gateway not in iface.network:
+        # Only the gateway-outside-network check needs both values. Registering
+        # the address needs `iface` alone: guarding it on the gateway too means a
+        # NIC whose gateway did not parse never claims its address, so the next
+        # VM to reuse that address is not reported until the operator has fixed
+        # the gateway and re-run -- the round trip `validate` exists to avoid.
+        if iface is not None:
+            if gateway is not None and gateway not in iface.network:
                 problems.append(
                     Problem.error(
                         f"gateway {gateway} is outside {iface.network}",
