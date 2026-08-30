@@ -17,6 +17,14 @@ on:
     # archive would only ask what the vulnerability database learned. The RPM
     # layer genuinely drifts, because `dnf -y install` is unpinned -- see the
     # DL3041 note in scripts/lint.sh.
+    #
+    # The base layer does not drift, and this job cannot tell you when it should
+    # have. `just image` builds from Containerfile's BASE_DIGEST, so every run
+    # re-pulls the same bytes and rescans them against the same baseline --
+    # which is exactly what makes a stale pin look healthy. `:10` floats across
+    # Rocky minors and only the current minor is maintained, so the check this
+    # job does not perform is the one in the comment above that ARG: compare
+    # `:10`'s digest against the pin by hand, on the recheck date.
     - cron: '0 6 1 * *'
   workflow_dispatch: {}
 
