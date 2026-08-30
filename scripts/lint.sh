@@ -109,7 +109,13 @@ main() {
     gate "tofu fmt"          tofu fmt -check -recursive "$REPO"
     # -x follows `source lib.sh`, so a variable used only by a caller is not
     # reported unused and a genuinely unused one still is.
-    gate "shellcheck"        shellcheck -x -s bash "$REPO"/scripts/*.sh
+    #
+    # .claude/hooks/ is in here because its scripts are shell this repo ships and
+    # CI would otherwise never read them. They are agent configuration rather
+    # than pipeline code, but this project's position is that a claim nothing
+    # checks is a claim that drifts, and that does not stop being true because
+    # the file is small. Both globs always match; no nullglob handling needed.
+    gate "shellcheck"        shellcheck -x -s bash "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
     gate "workflows carry no logic" workflows_carry_no_logic
 
     if [ ${#failed[@]} -gt 0 ]; then
