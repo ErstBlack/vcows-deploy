@@ -35,7 +35,7 @@ import jsonschema
 
 from ... import qcow2
 from ...marker import VCOWS_NS
-from ..base import Problem
+from ..base import Problem, problems_from
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
 #: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
@@ -364,18 +364,7 @@ def _check_target(target: dict) -> list[Problem]:
 
 def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
     validator = jsonschema.Draft202012Validator(VM_SCHEMA)
-    return [
-        Problem.error(
-            err.message,
-            where=where
-            + "".join(
-                f".{p}" if isinstance(p, str) else f"[{p}]" for p in err.absolute_path
-            ),
-        )
-        for err in sorted(
-            validator.iter_errors(vm), key=lambda e: list(map(str, e.absolute_path))
-        )
-    ]
+    return problems_from(validator.iter_errors(vm), at=where)
 
 
 def _check_firmware(vm: dict, where: str) -> list[Problem]:

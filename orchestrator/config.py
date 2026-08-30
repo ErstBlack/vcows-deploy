@@ -29,7 +29,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-from .backends.base import Problem
+from .backends.base import Problem, problems_from
 
 SCHEMA_VERSION = 1
 
@@ -178,15 +178,7 @@ def _blame_the_filename(problem: Problem, path: Path) -> Problem:
 def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     """Structural validation, then the selected backend's own checks."""
     validator = jsonschema.Draft202012Validator(core_schema(registry))
-
-    problems = [
-        Problem.error(
-            err.message, where=".".join(str(p) for p in err.absolute_path) or "<root>"
-        )
-        for err in sorted(
-            validator.iter_errors(cfg), key=lambda e: list(map(str, e.absolute_path))
-        )
-    ]
+    problems = problems_from(validator.iter_errors(cfg), root="<root>")
     if problems:
         # Backend validators assume a structurally sound document. Running them
         # on a broken one piles noise on top of the errors that actually matter.
