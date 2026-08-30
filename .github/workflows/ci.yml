@@ -14,6 +14,10 @@ on:
   push:
     branches: [master]
 
+  # On demand, for a branch with no PR open yet. `push` is scoped to master
+  # so a branch push does not run twice once a PR exists.
+  workflow_dispatch: {}
+
 jobs:
   check:
     runs-on: ubuntu-latest

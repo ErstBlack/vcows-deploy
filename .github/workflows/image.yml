@@ -27,6 +27,9 @@ on:
       - 'licenses/**'
       - 'scripts/image-*.sh'
 
+  # On demand: the image job is otherwise unreachable from a branch.
+  workflow_dispatch: {}
+
 jobs:
   image:
     runs-on: ubuntu-latest
