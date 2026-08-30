@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .tools/bin
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}

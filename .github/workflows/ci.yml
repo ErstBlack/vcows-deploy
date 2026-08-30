@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .tools/bin
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/uv
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
@@ -41,11 +41,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .tools/bin
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/uv
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
@@ -56,7 +56,7 @@ jobs:
       # collapses to a constant -- a stale-mirror hit on exactly the run where
       # the mirror changed. No restore-keys, for the same reason: a prefix
       # fallback is how an old mirror gets restored into a new pipeline.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .tools/tofu-mirror
           key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
