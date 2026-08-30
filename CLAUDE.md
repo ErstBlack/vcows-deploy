@@ -53,10 +53,25 @@ names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, plus `all`.
 It is case-sensitive and does not strip whitespace, so `VCOWS_GATES="tofu, image"`
 silently demands only `tofu`.
 
-## Commits
+## Commits, and how work ships
 
 Imperative, sentence-length subject. The body says what was **measured**, and
-corrects prior wrong claims by name.
+corrects prior wrong claims by name. No `Co-Authored-By` trailer.
+
+Branch off `master`, one commit per issue, `just check` before pushing, one PR,
+squash-merge, and close by number from the commit body (`Closes #NN`). Related
+issues that touch the same file land as one branch rather than piecemeal.
+
+## `.claude/` holds two files with opposite tracking status
+
+`.claude/settings.json` is committed: hooks and `permissions.deny`, reviewable
+like every other gate here. `.claude/settings.local.json` is the machine-local
+`allow` list and is **not** tracked -- it is ignored by `~/.config/git/ignore`,
+not by anything in this repo, so `.gitignore` will not tell you and a clean
+`git status` is not evidence that it is unmodified. `git check-ignore -v` is.
+
+The consequence is that a change confined to the local file leaves no artifact
+to review and cannot close an issue from a commit body.
 
 ## `docs/cve-baseline.json` is a differential gate, not a list to append to
 
