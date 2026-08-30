@@ -28,6 +28,10 @@ BASELINE="$REPO/docs/cve-baseline.json"
 
 save_archive() {
     local tag="$1" out="$2"
+    # podman refuses to write into an existing docker-archive ("doesn't support
+    # modifying existing images"), so a second scan fails unless the previous
+    # archive is cleared first.
+    rm -f "$out"
     if have podman; then
         podman save --format docker-archive -o "$out" "$tag"
     elif have buildah; then
@@ -42,9 +46,8 @@ main() {
     have syft  || die "syft not on PATH -- run scripts/install-tools.sh"
     have jq    || die "jq not on PATH -- run scripts/os-deps.sh"
 
-    local version tag out archive report sbom found new
-    version="$(containerfile_arg VCOWS_VERSION)"
-    tag="${VCOWS_IMAGE_TAG:-localhost/vcows-deploy:${version}}"
+    local tag out archive report sbom found new
+    tag="$(image_tag)"
     out="$REPO/.cache/scan"; mkdir -p "$out"
     archive="$out/image.tar"
     report="$out/trivy.json"

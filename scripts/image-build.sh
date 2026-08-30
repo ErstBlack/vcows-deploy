@@ -19,10 +19,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 main() {
-    local version provider tag builder ship sha dirty
-    version="$(containerfile_arg VCOWS_VERSION)"
+    local provider tag builder ship sha dirty
     provider="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1)"
-    tag="${VCOWS_IMAGE_TAG:-localhost/vcows-deploy:${version}}"
+    tag="$(image_tag)"
 
     [ -d "$MIRROR" ] || die "no .tools/tofu-mirror -- run 'just mirror' first"
 

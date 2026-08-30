@@ -53,6 +53,12 @@ containerfile_arg() {
     printf '%s\n' "$value"
 }
 
+# The tag `just image` builds and `just test-image` exercises. One definition, so
+# the two recipes cannot disagree about which image is under test.
+image_tag() {
+    printf '%s\n' "${VCOWS_IMAGE_TAG:-localhost/vcows-deploy:$(containerfile_arg VCOWS_VERSION)}"
+}
+
 need_venv() {
     [ -x "$PY" ] || die "no venv -- run 'just dev-env' first"
 }

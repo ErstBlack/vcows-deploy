@@ -73,8 +73,8 @@ image:
     ./scripts/image-build.sh
 
 # The offline container gate, demanded rather than skipped. Needs podman.
-test-image:
-    VCOWS_GATES=image .venv/bin/python -m pytest -q -rs
+test-image *ARGS:
+    ./scripts/test-image.sh {{ARGS}}
 
 # Scan the built image: trivy against the CVE baseline, plus an SBOM.
 scan:
