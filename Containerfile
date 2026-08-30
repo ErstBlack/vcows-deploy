@@ -185,7 +185,7 @@ ENV PYTHONPATH=/opt/vcows \
 RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
  && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf \
        /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/ \
- && (cd /tmp/warm && tofu init -input=false -no-color > /dev/null) \
+ && tofu -chdir=/tmp/warm init -input=false -no-color > /dev/null \
  && rm -rf /tmp/warm
 
 # Last, so it describes the finished image. Everything above is already in place

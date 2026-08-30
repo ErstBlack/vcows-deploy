@@ -88,15 +88,10 @@ main() {
     log "lint"
     gate "ruff check"        "$ruff" check "$REPO"
     gate "ruff format"       "$ruff" format --check "$REPO"
-    # Three ignores, and only two of them are false positives.
+    # Two ignores, and only one of them is a false positive.
     #
     # DL4006 (:94, :108) wants pipefail before a piped RUN. Both pipes are
     # `echo "$SHA  file" | sha256sum -c -`, and echo cannot fail. False positive.
-    #
-    # DL3003 (:149) wants WORKDIR instead of cd. That cd is inside one transient
-    # RUN that creates and removes the directory in the same layer, while the
-    # image's real WORKDIR is set deliberately for the runs/ bind mount. False
-    # positive.
     #
     # DL3041 (:82) is **not** a false positive: `dnf -y install` really is
     # unpinned, and that is why two builds of the same commit differ. The
@@ -105,7 +100,7 @@ main() {
     # monthly rebuild-and-scan as the control that notices when the drift starts
     # mattering. Pinning six names here would not make the closure reproducible
     # and would break on the first Rocky update. Ignored knowingly, not silently.
-    gate "hadolint"          hadolint --ignore DL4006 --ignore DL3003 --ignore DL3041 "$REPO/Containerfile"
+    gate "hadolint"          hadolint --ignore DL4006 --ignore DL3041 "$REPO/Containerfile"
     gate "tofu fmt"          tofu fmt -check -recursive "$REPO"
     # -x follows `source lib.sh`, so a variable used only by a caller is not
     # reported unused and a genuinely unused one still is.
