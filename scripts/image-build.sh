@@ -9,18 +9,17 @@
 # not contain the `container/entrypoint.py` it shipped, which is exactly the
 # question the manifest exists to answer.
 #
-# The dirty check covers only the paths the Containerfile COPYs. A change under
-# docs/ or tests/ cannot reach the image, and flagging the build for one would
-# make the suffix mean nothing. The lock file's name carries the provider
-# version, so it is derived rather than hardcoded -- a version bump that left it
-# spelled 0.9.8 here would quietly stop watching the file that ships.
+# The dirty check covers the paths that reach the image and nothing else: a
+# change under docs/ or tests/ cannot get in, and flagging the build for one
+# would make the suffix mean nothing. It lives in `source_revision` in lib.sh
+# rather than here, because the delivery bundle names the same commit and the
+# two must not be able to disagree.
 
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 main() {
-    local provider tag builder ship sha dirty
-    provider="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1)"
+    local tag builder sha
     tag="$(image_tag)"
 
     [ -d "$MIRROR" ] || die "no .tools/tofu-mirror -- run 'just mirror' first"
@@ -36,17 +35,11 @@ main() {
     else die "neither podman nor buildah on PATH"
     fi
 
-    ship=(orchestrator container licenses "docs/provider-${provider}.lock.hcl")
-    sha="$(git -C "$REPO" rev-parse HEAD)"
-    dirty=""
-    if [ -n "$(git -C "$REPO" status --porcelain -- "${ship[@]}")" ]; then
-        dirty="-dirty"
-        log "warning: shipped paths are modified; recording ${sha}-dirty"
-    fi
+    sha="$(source_revision)"
 
     log "building $tag"
     "${builder[@]}" -t "$tag" \
-        --build-arg GIT_SHA="${sha}${dirty}" \
+        --build-arg GIT_SHA="$sha" \
         --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "$REPO"
     log "built $tag"

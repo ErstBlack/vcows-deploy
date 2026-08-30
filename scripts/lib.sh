@@ -55,8 +55,59 @@ containerfile_arg() {
 
 # The tag `just image` builds and `just test-image` exercises. One definition, so
 # the two recipes cannot disagree about which image is under test.
+#
+# The version is assigned before it is used, not interpolated inline. A `die`
+# inside a command substitution exits only the subshell, and when that
+# substitution is an *argument* rather than an assignment the enclosing command
+# still succeeds -- so the inline form returned `localhost/vcows-deploy:` with an
+# empty version and status 0, and containerfile_arg's promise to fail loudly did
+# not hold at its own call site.
 image_tag() {
-    printf '%s\n' "${VCOWS_IMAGE_TAG:-localhost/vcows-deploy:$(containerfile_arg VCOWS_VERSION)}"
+    local version
+    if [ -n "${VCOWS_IMAGE_TAG:-}" ]; then
+        printf '%s\n' "$VCOWS_IMAGE_TAG"
+        return
+    fi
+    version="$(containerfile_arg VCOWS_VERSION)"
+    printf '%s\n' "localhost/vcows-deploy:$version"
+}
+
+# The provider version the module pins. Derived rather than hardcoded: a bump
+# renames docs/provider-<version>.lock.hcl, and a literal 0.9.8 here would
+# quietly stop watching the file that ships.
+provider_version() {
+    local version
+    version="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1)"
+    [ -n "$version" ] || die "no pinned provider version in $MODULE/main.tf"
+    printf '%s\n' "$version"
+}
+
+# The commit the shipped tree is at, with a `-dirty` suffix when anything the
+# image actually carries is modified. One definition, so the manifest the image
+# records and the name of the delivery bundle cannot claim different commits.
+#
+# The set is every path that reaches the image. That is the Containerfile's COPY
+# sources, plus the Containerfile and .containerignore themselves: those two
+# decide the base digest, the OpenTofu RPM and its checksum, the provider digest,
+# the whole dnf install list and every OCI label. Leaving them out let a build
+# from an edited Containerfile record a clean 40-hex SHA for a commit that did
+# not describe the image, which is the exact failure the suffix exists to catch.
+# Both path filters already treat them as image inputs, so this also stops the
+# two mechanisms disagreeing.
+#
+# Paths that cannot reach the image -- docs/, tests/ -- stay out on purpose. A
+# suffix that fires for everything means nothing.
+source_revision() {
+    local provider ship sha
+    provider="$(provider_version)"
+    ship=(orchestrator container licenses Containerfile .containerignore
+          "docs/provider-${provider}.lock.hcl")
+    sha="$(git -C "$REPO" rev-parse HEAD)"
+    if [ -n "$(git -C "$REPO" status --porcelain -- "${ship[@]}")" ]; then
+        log "warning: shipped paths are modified; recording ${sha}-dirty"
+        sha="${sha}-dirty"
+    fi
+    printf '%s\n' "$sha"
 }
 
 need_venv() {
