@@ -168,8 +168,7 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
 # known_hosts, because neither libvirt nor the provider honours those as URI
 # parameters and both run ssh. Container glue: cli.py stays out of anyone's home
 # directory. See container/entrypoint.py for the measurements behind it.
-COPY container/entrypoint.py /usr/local/bin/vcows-entrypoint
-RUN chmod 0755 /usr/local/bin/vcows-entrypoint
+COPY --chmod=0755 container/entrypoint.py /usr/local/bin/vcows-entrypoint
 
 ENV PYTHONPATH=/opt/vcows \
     PYTHONDONTWRITEBYTECODE=1 \
