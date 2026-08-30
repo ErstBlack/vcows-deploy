@@ -116,9 +116,15 @@ addopts = "--strict-markers --strict-config"
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-# Spike scripts are archived evidence, quoted verbatim in docs/spikes.md.
-# Reformatting them would make the file and the doc disagree.
-extend-exclude = ["docs/spikes"]
+# Everything under docs/ is archived evidence rather than package code, and all
+# of it quotes source verbatim: the spike scripts are reproduced in spikes.md,
+# and the review reports cite the code they are findings about. Reformatting any
+# of it would make the file and the code it quotes disagree.
+#
+# ruff formats Python fences inside Markdown, so this covers the reports as well
+# as the .py files -- without it a review report quoting an aligned trailing
+# comment turns `just lint` red, which is how master broke on 4c00463.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = [
@@ -149,8 +155,8 @@ select = [
 "tests/*" = ["SIM300", "S101", "S314", "S603", "S607"]
 
 [tool.ty.src]
-# Archived spike evidence, not package code (mirrors ruff's extend-exclude).
-exclude = ["docs/spikes"]
+# Archived evidence, not package code (mirrors ruff's extend-exclude).
+exclude = ["docs"]
 
 [tool.ty.environment]
 python-version = "3.12"
