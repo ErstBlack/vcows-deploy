@@ -33,7 +33,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from ..base import Existing, Outcome, Problem, Severity
+from ..base import Existing, Outcome, Problem
 from .errors import (
     ERR_INVALID_ARG,
     ERR_NO_DOMAIN,
@@ -97,6 +97,19 @@ class DestroyError(Exception):
         super().__init__("\n".join(lines))
 
 
+def _fail(out: Outcome, name: str, what: str, exc: Any) -> bool:
+    """Record a fatal ``could not <what>`` against ``name`` and return ``False``.
+
+    Every libvirt call in this module fails closed the same way, so the return
+    value is the caller's answer: ``return _fail(...)``. The two sites that end
+    in ``return`` or ``continue`` instead discard it.
+    """
+    out.problems.append(
+        Problem.error(f"could not {what}: {exc.get_error_message()}", where=name)
+    )
+    return False
+
+
 def _stop(dom: Any, name: str, out: Outcome) -> bool:
     """Force the domain off. True if it is now safe to undefine.
 
@@ -116,10 +129,7 @@ def _stop(dom: Any, name: str, out: Outcome) -> bool:
         # else -- OPERATION_FAILED, INTERNAL_ERROR -- is a real failure.
         if exc.get_error_code() == ERR_OPERATION_INVALID and _is_off(dom):
             return True
-        out.problems.append(
-            Problem(Severity.ERROR, f"could not stop: {exc.get_error_message()}", name)
-        )
-        return False
+        return _fail(out, name, "stop", exc)
     return True
 
 
@@ -154,34 +164,19 @@ def _undefine(dom: Any, name: str, mask: int, out: Outcome) -> bool:
         return True
     except libvirt.libvirtError as exc:
         if exc.get_error_code() != ERR_INVALID_ARG or mask == FLOOR:
-            out.problems.append(
-                Problem(
-                    Severity.ERROR,
-                    f"could not undefine: {exc.get_error_message()}",
-                    name,
-                )
-            )
-            return False
+            return _fail(out, name, "undefine", exc)
 
     dropped = mask & ~FLOOR
     out.problems.append(
-        Problem(
-            Severity.WARNING,
+        Problem.warning(
             f"daemon rejected undefine flags 0x{dropped:x}; retrying without them.",
-            name,
+            where=name,
         )
     )
     try:
         dom.undefineFlags(FLOOR)
     except libvirt.libvirtError as exc:
-        out.problems.append(
-            Problem(
-                Severity.ERROR,
-                f"could not undefine: {exc.get_error_message()}",
-                name,
-            )
-        )
-        return False
+        return _fail(out, name, "undefine", exc)
     return True
 
 
@@ -215,13 +210,7 @@ def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
             # any of these paths is fatal there.
             out.skipped.append(path)
             return
-        out.problems.append(
-            Problem(
-                Severity.ERROR,
-                f"could not delete {path}: {exc.get_error_message()}",
-                name,
-            )
-        )
+        _fail(out, name, f"delete {path}", exc)
         return
     out.destroyed.append(path)
 
@@ -282,13 +271,12 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
         pools = conn.listAllStoragePools(0)
     except libvirt.libvirtError as exc:
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"could not list this host's storage pools "
                 f"({exc.get_error_message()}), so none of them was refreshed and a "
                 f"disk that is still on this host may resolve as already gone. "
                 f"Nothing below can be accounted for.",
-                "storage",
+                where="storage",
             )
         )
         return
@@ -305,12 +293,11 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
             active = pool.isActive()
         except libvirt.libvirtError as exc:
             out.problems.append(
-                Problem(
-                    Severity.ERROR,
+                Problem.error(
                     f"storage pool {name!r} could not be interrogated "
                     f"({exc.get_error_message()}), so whether it holds a disk of "
                     f"ours is unknown and it was not refreshed.",
-                    "storage",
+                    where="storage",
                 )
             )
             continue
@@ -319,22 +306,20 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
             held = _pool_holds(pool, wanted)
             if held is None:
                 out.problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"storage pool {name!r} is not active and would not say "
                         f"which directory it holds, so whether a disk of ours is "
                         f"in it cannot be established. Start the pool and re-run.",
-                        "storage",
+                        where="storage",
                     )
                 )
             elif held:
                 out.problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"storage pool {name!r} is not active, so "
                         f"{', '.join(held)} cannot be resolved or deleted and will "
                         f"be left on this host. Start the pool and re-run.",
-                        "storage",
+                        where="storage",
                     )
                 )
             continue
@@ -342,11 +327,10 @@ def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
             pool.refresh(0)
         except libvirt.libvirtError as exc:
             out.problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"could not refresh pool {name!r} "
                     f"({exc.get_error_message()}); disks in it may not resolve.",
-                    "storage",
+                    where="storage",
                 )
             )
 
@@ -389,11 +373,10 @@ def _claimed_elsewhere(
             # deployment's to fix, and refusing every teardown on the host over it
             # is worse than saying which guard was narrowed.
             out.problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"domain {name!r} could not be read ({exc}), so any disk it "
                     f"claims was not checked against the ones being deleted.",
-                    "storage",
+                    where="storage",
                 )
             )
             continue
@@ -414,7 +397,7 @@ def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
         root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
     except (libvirt.libvirtError, ET.ParseError) as exc:
         out.problems.append(
-            Problem(Severity.ERROR, f"could not re-read: {exc}", target.name)
+            Problem.error(f"could not re-read: {exc}", where=target.name)
         )
         return None
 
@@ -422,12 +405,11 @@ def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
     if marker != target.marker:
         out.skipped.append(target.name)
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 "its ownership marker changed between preflight and now "
                 f"({target.marker} -> {marker}); refusing to tear down a domain "
                 f"somebody else has taken over",
-                target.name,
+                where=target.name,
             )
         )
         return None
@@ -445,10 +427,9 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
     if path in claimed:
         out.skipped.append(path)
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"{path} is claimed by another domain on this host; leaving it",
-                target.name,
+                where=target.name,
             )
         )
         return False
@@ -461,12 +442,11 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
     if PurePosixPath(path).name not in owned:
         out.skipped.append(path)
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"{path} is not one of the names this VM owns "
                 f"({', '.join(sorted(owned)) or 'none -- it carries no marker'}); "
                 f"leaving it",
-                target.name,
+                where=target.name,
             )
         )
         return False
@@ -487,12 +467,11 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         mask = undefine_mask(session.getLibVersion())
     except libvirt.libvirtError as exc:
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"could not ask this host its libvirt version "
                 f"({exc.get_error_message()}), so the undefine flags cannot be "
                 f"chosen; nothing was torn down",
-                "storage",
+                where="storage",
             )
         )
         raise DestroyError(out) from exc
@@ -501,12 +480,11 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
     claimed = _claimed_elsewhere(session, out, targets)
     if claimed is None:
         out.problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 "could not list this host's domains, so a recorded disk path "
                 "cannot be checked against what else claims it; nothing was "
                 "torn down",
-                "storage",
+                where="storage",
             )
         )
         raise DestroyError(out)
@@ -519,13 +497,7 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
                 # We have been told nothing about this domain, so we know nothing
                 # about what it owns. Deleting its recorded disks on the strength
                 # of a failed lookup is the one thing this branch must not do.
-                out.problems.append(
-                    Problem(
-                        Severity.ERROR,
-                        f"could not look up: {exc.get_error_message()}",
-                        target.name,
-                    )
-                )
+                _fail(out, target.name, "look up", exc)
                 continue
             # Already gone. Its disks may not be, so they are still resolved
             # below -- from the preflight snapshot, which is why `_deletable`
