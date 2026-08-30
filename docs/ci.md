@@ -101,6 +101,43 @@ of every job — so `just ensure-mirror` re-checks the zip against the
 digest is the only out-of-band pin; checking against the mirror's own index would
 be circular.
 
+## Scanning, and what the baseline means
+
+`just scan` fails only on findings absent from `docs/cve-baseline.json`. Red means
+*new*. An absolute gate would be red from the first run and muted within a month,
+and this repository already has a name for a check that is green by neglect.
+
+The baseline carries a per-binary rationale, not a bare list. The load-bearing one:
+terraform-provider-libvirt 0.9.8 embeds `golang.org/x/crypto` v0.46.0 and no
+released version fixes it, so those nine HIGH findings are accepted on
+reachability — the provider is configured with `qemu+sshcmd`, whose dialer execs
+the OpenSSH binary and never enters `x/crypto/ssh`, and the CVEs are server-side
+or verifier-side flaws that a client never reaches.
+
+**The re-check trigger is a new provider release**, and nothing automates it:
+Dependabot watches `uv.lock` and the workflows, not a Go module pinned in a
+`Containerfile` ARG, and inventing a bespoke poller for one dependency is worse
+than a step in a runbook. So it is a step in a runbook — when the monthly
+rebuild-and-scan runs, check whether `dmacvicar/terraform-provider-libvirt` has
+released past 0.9.8, and if it has, walk the provider bump through
+`just verify-provider` and the schema diff.
+
+## Signing the delivery
+
+`just sign` signs the archive `just scan` writes; `just verify-signature` checks
+it the way a site would, with a local public key and no network.
+
+Two things about cosign 3 that an older write-up will not mention. `sign-blob` no
+longer emits a bare detached signature — it wants `--bundle`, because a signature
+alone is not a complete artifact any more. And `--tlog-upload=false` is refused
+against the default signing config; you need a config that names no transparency
+log, which `cosign signing-config create` builds with no network. Without both,
+signing reaches for the public Rekor log and verification reaches for TUF metadata
+at `tuf-repo-cdn.sigstore.dev`, and an air-gapped site gets neither.
+
+The private key stays in `.cache/`, which is gitignored, and is protected by the
+build host rather than a passphrase. The public key ships beside the tarball.
+
 ## Migrating to GitLab
 
 1. Point the GitLab runners at the repository and give them the `linux` and

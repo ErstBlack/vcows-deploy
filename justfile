@@ -80,6 +80,14 @@ test-image *ARGS:
 scan:
     ./scripts/image-scan.sh
 
+# Sign the delivery tarball `just scan` wrote. Private key stays in .cache/.
+sign:
+    ./scripts/sign.sh
+
+# Verify that signature the way an air-gapped site would: local key, no network.
+verify-signature:
+    ./scripts/sign.sh --verify
+
 # Mutation testing. **Does not currently complete** -- mutmut's clean baseline
 # fails with two copies of `orchestrator` loaded at once; see pyproject.toml. Left
 # here because the config is right and the remaining problem is mutmut's sys.path,

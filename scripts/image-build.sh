@@ -50,7 +50,7 @@ main() {
         --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "$REPO"
     log "built $tag"
-    log "run 'VCOWS_IMAGE=$tag just test-image' to exercise the offline gate"
+    log "run 'just test-image' to exercise the offline gate"
 }
 
 main "$@"
