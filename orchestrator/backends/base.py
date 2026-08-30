@@ -280,7 +280,7 @@ def decide(
 
         ours = held[0] if held else None
         if ours is not None:
-            assert ours.marker is not None  # by construction of `holders`
+            assert ours.marker is not None  # noqa: S101  by construction of `holders`
             if ours.marker.deployment == deployment:
                 decisions.append(
                     Decision(

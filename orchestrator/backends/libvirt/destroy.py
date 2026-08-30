@@ -242,7 +242,7 @@ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
     import libvirt
 
     try:
-        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")
+        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
     except (libvirt.libvirtError, ET.ParseError):
         return None
     if not path:
@@ -380,7 +380,7 @@ def _claimed_elsewhere(
             name = dom.name()
             if dom.UUIDString() in ours:
                 continue
-            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
         except (libvirt.libvirtError, ET.ParseError) as exc:
             # A domain that vanished mid-scan claims nothing, and that is the
             # common case -- but one that could not be read may claim a disk this
@@ -411,7 +411,7 @@ def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
     import libvirt
 
     try:
-        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
     except (libvirt.libvirtError, ET.ParseError) as exc:
         out.problems.append(
             Problem(Severity.ERROR, f"could not re-read: {exc}", target.name)

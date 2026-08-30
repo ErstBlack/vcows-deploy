@@ -39,8 +39,13 @@ LOCK_HASH = re.compile(r'"(h1:[^"]+)"')
 
 
 def packages() -> list[dict[str, str]]:
-    out = subprocess.run(
-        ["rpm", "-qa", "--qf", QUERY], capture_output=True, text=True, check=True
+    # Fixed argv, no shell, and it runs inside our own image at build time:
+    # the PATH these resolve against is the image's, not a user's.
+    out = subprocess.run(  # noqa: S603
+        ["rpm", "-qa", "--qf", QUERY],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     found = []
     for line in out.splitlines():
@@ -101,7 +106,10 @@ def provider() -> dict:
 
 def tofu_version() -> dict:
     out = subprocess.run(
-        ["tofu", "version", "-json"], capture_output=True, text=True, check=True
+        ["tofu", "version", "-json"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     return json.loads(out)
 

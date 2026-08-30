@@ -97,7 +97,7 @@ def module_dir(backend: Backend) -> Path:
     submodule's directory, and ``_stage_module`` then reports an empty one.
     """
     package = sys.modules[type(backend).__module__]
-    assert package.__file__ is not None  # every backend is a file on disk
+    assert package.__file__ is not None  # noqa: S101  every backend is a file on disk
     return Path(package.__file__).parent / "tofu"
 
 
@@ -470,7 +470,7 @@ def _destroy(
             print(f"  {problem}", file=sys.stderr)
         run.extra["problems"] = [str(p) for p in advisory]
         for e in others:
-            assert e.marker is not None  # `others` comes from `marked`
+            assert e.marker is not None  # noqa: S101  `others` comes from `marked`
             print(
                 f"  {e.name:<20} skip    belongs to deployment "
                 f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}"

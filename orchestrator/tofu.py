@@ -171,7 +171,7 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
 
     # Not `start_new_session`: Ctrl-C must reach tofu so it shuts down the way it
     # would if the operator had run it themselves.
-    proc = subprocess.Popen(argv, env=_env())
+    proc = subprocess.Popen(argv, env=_env())  # noqa: S603  argv list, no shell=True, tofu from our own PATH
     try:
         proc.wait(timeout=SHORT_TIMEOUT if cmd == "init" else None)
     except KeyboardInterrupt:
@@ -238,7 +238,7 @@ def apply(workdir: Path, planfile: Path) -> Result:
 def outputs(workdir: Path) -> dict:
     """``tofu output -json``, captured rather than inherited: it is short, it is
     the handoff, and it is the one place we want the bytes rather than the view."""
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
         [_binary(), f"-chdir={workdir.resolve()}", "output", "-json"],
         env=_env(),
         capture_output=True,
@@ -262,7 +262,7 @@ def version(workdir: Path | None = None) -> dict:
     is empty unless this is asked inside an initialised directory, which is why
     ``workdir`` is here at all.
     """
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
         [
             _binary(),
             *([f"-chdir={workdir.resolve()}"] if workdir else []),

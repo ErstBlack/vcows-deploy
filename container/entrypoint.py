@@ -197,7 +197,10 @@ def install(argv: list[str]) -> None:
 
 def main() -> None:
     install(sys.argv[1:])
-    os.execv(VCOWS, ["vcows", *sys.argv[1:]])
+    # S606 flags shell-less execution, which is the safe half of the pair:
+    # execv with an argv list cannot be shell-injected, and replacing the
+    # process is what an entrypoint is for.
+    os.execv(VCOWS, ["vcows", *sys.argv[1:]])  # noqa: S606
 
 
 if __name__ == "__main__":
