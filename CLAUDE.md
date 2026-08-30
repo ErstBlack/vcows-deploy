@@ -85,6 +85,13 @@ regenerates a fresh object carrying only `image`, `generated`, `note` and
 `accepted`, discarding every `why` and `recheck` in the file. Accepting a new
 finding is a hand-edit. Do not reach for the flag to make a scan pass.
 
+`.claude/settings.json` denies that command, but the matcher is a **prefix, not a
+pattern** -- measured: a leading `*` matches nothing, and `X:*` breaks on an
+argument boundary rather than a character one. So the rule covers the spellings
+used from the repo root and nothing else. An absolute path, or a new `just`
+recipe wrapping the flag, routes around it silently. It is a guardrail against
+the obvious helpful action, not a boundary.
+
 ## Four pins nothing can automate
 
 * `BASE_DIGEST` — `Containerfile:45`

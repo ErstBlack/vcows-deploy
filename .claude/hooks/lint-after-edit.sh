@@ -7,6 +7,16 @@
 # has its stderr written to the debug log and nowhere else, so a failure reported
 # that way is a failure nobody sees. Hence: not a gate, but exit 2 anyway.
 #
+# **It does not see edits made through Bash.** The matcher is Edit|Write|MultiEdit,
+# so a file rewritten by `sed -i`, a heredoc or a python one-liner reaches no gate
+# at all until someone runs `just check`. That is the shape conftest.py:7 already
+# names -- a gate that quietly passes because it did not run -- and it is a real
+# hole, not a rounding error: an agent told to prefer Bash for file edits bypasses
+# this hook entirely. Widening the matcher does not fix it on its own, because a
+# Bash event carries .tool_input.command and no .tool_input.file_path, so the
+# path filter below would exit 0 on every one. Closing it needs a way to decide
+# which Bash calls touched source, which is more machinery than this hook has.
+#
 # Cost is the reason this runs at all. Measured on master at 491d465:
 # ./scripts/lint.sh is 3.0s for all six gates and `ty check` is 0.33s. `just
 # check` was considered and rejected -- the suite is ~24s and shells out to the
