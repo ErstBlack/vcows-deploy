@@ -1,0 +1,12 @@
+.venv/bin/python -m pytest -q -rs 
+........................................................................ [ 17%]
+..................ssssssssss............................................ [ 35%]
+..........................................................ssssssssssssss [ 53%]
+s....................................................................... [ 71%]
+........................................................................ [ 89%]
+............................................                             [100%]
+=========================== short test summary info ============================
+SKIPPED [10] tests/test_image.py: set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and install podman to run the container gate; build it with `just image`. buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and per-run isolation, and `buildah run` provides none of the three
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+379 passed, 25 skipped in 26.10s
+EXIT=0
