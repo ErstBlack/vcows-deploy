@@ -314,6 +314,16 @@ def test_the_build_manifest_records_what_shipped():
     assert vendors["python3-libvirt"] == "Rocky Enterprise Software Foundation"
     assert manifest["source_rpms"], "the sidecar list is the point of recording these"
     assert len(manifest["source_rpms"]) < len(manifest["packages"])
+    # Both assertions above stayed true while the list's first entry was the
+    # literal string `(none)`: `rpm -qa` returns two `gpg-pubkey` rows carrying
+    # no `%{SOURCERPM}`, and rpm renders an absent tag as that truthy string.
+    # D22's reposync runs against this list, so a name that is not an SRPM is
+    # the research task the list exists to remove. Asserting the shape rather
+    # than the one sentinel catches the next one too.
+    assert all(s.endswith(".src.rpm") for s in manifest["source_rpms"]), (
+        "not source RPM filenames: "
+        f"{sorted(s for s in manifest['source_rpms'] if not s.endswith('.src.rpm'))}"
+    )
 
 
 def test_the_provider_licence_travels_with_the_provider():

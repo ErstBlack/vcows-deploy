@@ -165,21 +165,45 @@ def install(argv: list[str]) -> None:
 
     ssh_dir = where / ".ssh"
     destination = ssh_dir / "config"
-    if destination.exists():
-        # Somebody mounted their own. Theirs wins -- and it is said out loud,
-        # because the alternative is debugging a credential the config named and
-        # nothing ever installed.
-        print(
-            f"vcows: {destination} already exists; leaving it alone. This run's "
-            f"ssh_keyfile and known_hosts were not installed.",
-            file=sys.stderr,
-        )
-        return
 
+    # `os.open` with `O_EXCL` and the mode on the call, rather than `exists()`
+    # then `write_text` then `chmod`. Two things were wrong with that shape.
+    #
+    # `write_text` creates at `0o666 & ~umask`, and the image's umask is 0022 --
+    # measured, `podman run --rm --entrypoint sh IMAGE -c umask`. So the file
+    # naming the operator's private key path was 0644 until the `chmod` on the
+    # next line. `orchestrator/cli.py:670`'s `os.umask(0o077)` cannot close that:
+    # `main` below `execv`s into vcows *after* this write, so it is set strictly
+    # too late, and nothing else in the image sets one. The mode argument here is
+    # honoured at creation, and 0022 does not touch owner bits, so the file is
+    # 0600 from the syscall that makes it.
+    #
+    # `exists()` and `write_text` are also two syscalls around a call that
+    # *truncates*, so a config arriving between them was silently clobbered --
+    # exactly what the "theirs wins" branch below exists to prevent. `O_EXCL`
+    # makes that one atomic operation.
+    #
+    # The two messages stay separable because `FileExistsError` is its own
+    # `OSError` subclass and is caught first. The `mkdir` is deliberately outside
+    # that inner catch: with `exist_ok=True` its only `FileExistsError` is
+    # `~/.ssh` existing as a regular file, which is not "somebody mounted their
+    # own config" and must not claim to be.
     try:
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        destination.write_text(body)
-        destination.chmod(0o600)
+        try:
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Somebody mounted their own. Theirs wins -- and it is said out loud,
+            # because the alternative is debugging a credential the config named
+            # and nothing ever installed.
+            print(
+                f"vcows: {destination} already exists; leaving it alone. This "
+                f"run's ssh_keyfile and known_hosts were not installed.",
+                file=sys.stderr,
+            )
+            return
+        with os.fdopen(fd, "w") as handle:
+            handle.write(body)
     except OSError as exc:
         # Name the consequence, as the "already exists" branch above does. The
         # next thing the operator sees is `Host key verification failed` out of

@@ -11,6 +11,9 @@ Ungated and offline: nothing here imports libvirt or touches a hypervisor.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from container import entrypoint
@@ -127,6 +130,60 @@ def test_a_mounted_ssh_config_wins_and_says_so(tmp_path, fake_home, capsys):
 
     entrypoint.install([str(config_file(tmp_path))])
     assert (ssh / "config").read_text() == "Host *\n  IdentityFile /mine\n"
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_the_mode_comes_from_the_create_not_a_later_chmod(
+    tmp_path, fake_home, monkeypatch
+):
+    """0600 has to be true of the file from the syscall that makes it.
+
+    ``write_text`` creates at ``0o666 & ~umask``. The image's umask is 0022 --
+    measured, ``podman run --rm --entrypoint sh IMAGE -c umask`` -- so the file
+    naming the operator's private key path was 0644 until the ``chmod`` on the
+    next line. ``orchestrator/cli.py``'s ``os.umask(0o077)`` cannot help: the
+    entrypoint ``execv``s into vcows *after* this write.
+
+    The sibling test above asserts 0600 and passed throughout the window, because
+    it reads the mode after ``install`` returns. Banning ``chmod`` is what tells
+    the two shapes apart: the old one could not reach 0600 without it.
+    """
+
+    def no_chmod(*args, **kwargs):
+        raise AssertionError("0600 must come from the create, not a later chmod")
+
+    monkeypatch.setattr(Path, "chmod", no_chmod)
+    monkeypatch.setattr(os, "chmod", no_chmod)
+
+    previous = os.umask(0o022)
+    try:
+        entrypoint.install([str(config_file(tmp_path))])
+    finally:
+        os.umask(previous)
+
+    assert (fake_home / ".ssh" / "config").stat().st_mode & 0o777 == 0o600
+
+
+def test_a_config_arriving_after_the_check_is_not_truncated(
+    tmp_path, fake_home, monkeypatch, capsys
+):
+    """The other half: ``exists()`` and the write were two syscalls around a call
+    that *truncates*, so a config landing between them was silently clobbered --
+    the one outcome the "theirs wins" branch exists to prevent.
+
+    Reporting ``exists`` as False with the file really there is that race made
+    deterministic. ``O_EXCL`` decides it in one operation, so the monkeypatch is
+    inert against the current shape and fatal against the old one.
+    """
+    ssh = fake_home / ".ssh"
+    ssh.mkdir(mode=0o700)
+    theirs = "Host *\n  IdentityFile /mine\n"
+    (ssh / "config").write_text(theirs)
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+
+    entrypoint.install([str(config_file(tmp_path))])
+
+    assert (ssh / "config").read_text() == theirs
     assert "already exists" in capsys.readouterr().err
 
 

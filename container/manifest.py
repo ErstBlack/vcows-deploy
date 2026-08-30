@@ -27,6 +27,20 @@ from pathlib import Path
 # runs against.
 QUERY = "%{NAME}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\t%{SOURCERPM}\t%{VENDOR}\n"
 
+#: rpm renders a tag the package does not carry as the literal string
+#: ``(none)``, which is truthy. The rows that hit this are the ``gpg-pubkey``
+#: pseudo-packages: ``Containerfile:83`` imports the EPEL key and ``:91`` removes
+#: ``epel-release`` without removing the key from the rpmdb, so two of them are
+#: in every image. Measured on rpm 4.19.1.1: the conditional query format
+#: ``%|SOURCERPM?{%{SOURCERPM}}:{}|`` does **not** help -- the tag tests as
+#: present and still renders ``(none)`` -- so the sentinel has to be dropped
+#: here. ``%{VENDOR}`` renders it too, and is deliberately left alone: `tofu`
+#: carries no vendor because it is a GitHub release RPM, and the manifest
+#: recording what rpm actually said about each package is the point of
+#: ``packages``. Only ``source_rpms`` below is a derived list that a reposync
+#: consumes, so only it is filtered.
+NO_TAG = "(none)"
+
 #: A full commit, optionally marked dirty. `.containerignore` excludes `.git/`,
 #: so the image cannot see its own tree state and this arrives as a build arg --
 #: which means a stale or hand-typed value is always possible.
@@ -132,7 +146,9 @@ def main() -> int:
         # built. Approximate on purpose: the exact pair moves with every base
         # image and every `dnf` change, and this file is the thing that reports
         # it, so a number written here is the one that goes stale.
-        "source_rpms": sorted({p["source_rpm"] for p in installed if p["source_rpm"]}),
+        "source_rpms": sorted(
+            {p["source_rpm"] for p in installed if p["source_rpm"] not in ("", NO_TAG)}
+        ),
     }
     json.dump(manifest, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
