@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 
@@ -33,11 +34,21 @@ from tests.conftest import REPO, gate
 
 IMAGE = os.environ.get("VCOWS_IMAGE")
 
+# podman is part of the predicate, not an assumption. buildah builds this
+# Containerfile unchanged and can even run containers, so a buildah-only runner
+# would set VCOWS_IMAGE, report the gate available, and then die with
+# `FileNotFoundError: podman` inside every test -- which reads as a broken suite
+# rather than a missing dependency. It is not a substitute either way: `buildah
+# run` does not honour the image ENTRYPOINT and mutates the working container
+# between calls, and ENTRYPOINT, WORKDIR and per-run isolation are three of the
+# things this file exists to prove.
 pytestmark = gate(
     "image",
-    IMAGE is not None,
-    "set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) "
-    "to run the container gate; build it with `podman build -t ... .`",
+    IMAGE is not None and shutil.which("podman") is not None,
+    "set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and "
+    "install podman to run the container gate; build it with `just image`. "
+    "buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and "
+    "per-run isolation, and `buildah run` provides none of the three",
 )
 
 GOLDEN = REPO / "tests" / "golden" / "libvirt.tfvars.json"

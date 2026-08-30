@@ -10,6 +10,7 @@ whether a partial failure is reported or swallowed.
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -18,6 +19,7 @@ from orchestrator.backends.base import Existing, Severity
 from orchestrator.backends.libvirt import destroy as d
 from orchestrator.backends.libvirt.preflight import disks_of, marker_of
 from orchestrator.marker import Marker
+from tests.conftest import require
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FULL = d.FLOOR | d.UNDEFINE_CHECKPOINTS_METADATA | d.UNDEFINE_TPM
@@ -29,7 +31,15 @@ FULL = d.FLOOR | d.UNDEFINE_CHECKPOINTS_METADATA | d.UNDEFINE_TPM
 def test_flag_values_match_the_installed_binding():
     """They are written as literals so the mask builder is pure and testable with
     no libvirt. That only stays safe if something pins them to the real ABI."""
-    libvirt = pytest.importorskip("libvirt")
+    # See test_libvirt_errors.py: `require` rather than `importorskip`, so the
+    # gate can be demanded instead of quietly skipping a drifted constant.
+    require(
+        "libvirt",
+        find_spec("libvirt") is not None,
+        "needs the python3-libvirt RPM; this pins our literals against the real ABI",
+    )
+    import libvirt
+
     assert d.UNDEFINE_MANAGED_SAVE == libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE
     assert (
         d.UNDEFINE_SNAPSHOTS_METADATA == libvirt.VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA

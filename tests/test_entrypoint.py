@@ -130,7 +130,7 @@ def test_a_mounted_ssh_config_wins_and_says_so(tmp_path, fake_home, capsys):
     assert "already exists" in capsys.readouterr().err
 
 
-def test_an_unwritable_home_says_what_it_costs(tmp_path, fake_home, capsys):
+def test_an_unwritable_home_says_what_it_costs(tmp_path, monkeypatch, capsys):
     """The branch a foreign UID actually hits, and it had no test.
 
     Under `--user 4242` podman synthesises a passwd entry whose home is `/`, and
@@ -139,15 +139,21 @@ def test_an_unwritable_home_says_what_it_costs(tmp_path, fake_home, capsys):
     ssh, which points at nothing. Pinned on the consequence rather than the
     wording, matching the sibling branch above.
     """
-    fake_home.chmod(0o500)
-    try:
-        entrypoint.install([str(config_file(tmp_path))])
-        assert not (fake_home / ".ssh").exists()
-        err = capsys.readouterr().err
-        assert "could not write" in err
-        assert "were not installed" in err
-    finally:
-        fake_home.chmod(0o700)
+    # The home is blocked by making a path component a regular file, rather than
+    # by chmod. Both land in the same `except OSError` in install() -- the real
+    # trigger is EACCES on `/`, this is ENOTDIR -- but chmod does not stop root,
+    # and a container job that runs as root is exactly where this test would
+    # otherwise pass by not being a test. (Found by running the suite in a bare
+    # ubuntu:24.04, which is how the GitLab runners will look.)
+    blocked = tmp_path / "blocker" / "home"
+    (tmp_path / "blocker").write_text("not a directory")
+    monkeypatch.setattr(entrypoint, "home", lambda: blocked)
+
+    entrypoint.install([str(config_file(tmp_path))])
+    assert not (blocked / ".ssh").exists()
+    err = capsys.readouterr().err
+    assert "could not write" in err
+    assert "were not installed" in err
 
 
 def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsys):

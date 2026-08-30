@@ -7,13 +7,23 @@ literal nobody checks is a literal that can be wrong for a release.
 
 from __future__ import annotations
 
-import pytest
+from importlib.util import find_spec
 
 from orchestrator.backends.libvirt import errors as e
+from tests.conftest import require
 
 
 def test_error_codes_match_the_installed_binding():
-    libvirt = pytest.importorskip("libvirt")
+    # Through `require` rather than `importorskip`, so `VCOWS_GATES=libvirt`
+    # can demand it. A silent skip here is a constant drifting unnoticed,
+    # which is the whole thing this test exists to prevent.
+    require(
+        "libvirt",
+        find_spec("libvirt") is not None,
+        "needs the python3-libvirt RPM; this pins our literals against the real ABI",
+    )
+    import libvirt
+
     assert e.ERR_NO_SUPPORT == libvirt.VIR_ERR_NO_SUPPORT
     assert e.ERR_INVALID_ARG == libvirt.VIR_ERR_INVALID_ARG
     assert e.ERR_NO_DOMAIN == libvirt.VIR_ERR_NO_DOMAIN
