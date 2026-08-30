@@ -29,6 +29,14 @@ mutants/
 # $CI_PROJECT_DIR. scripts/lib.sh points UV_CACHE_DIR here on every platform.
 .cache/
 
+# Agent-harness worktrees. Claude Code checks a second working copy out here,
+# and a full copy of the tree inside the tree breaks two things: `ty check`
+# reads it as first-party code and reports every relative import in it as
+# unresolved (34 diagnostics, measured), and .claude/hooks/static-gate.sh
+# enumerates untracked files to build its signature. Ignored rather than
+# removed -- git marks these worktrees locked, so they are in use.
+.claude/worktrees/
+
 # `tofu providers lock` writes this into whichever directory it runs in. The
 # module's real lock ships from docs/provider-0.9.8.lock.hcl, and a stray one
 # here would make every later image build compute a `-dirty` SHA.

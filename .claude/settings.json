@@ -1,12 +1,11 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "Stop": [
       {
-        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/lint-after-edit.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh",
             "timeout": 60
           }
         ]

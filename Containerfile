@@ -41,6 +41,41 @@
 # `ARG` and a package-manager name -- revisit when the size matters more than the
 # tooling does.
 
+# **Not UBI, and the reason is not compatibility.** Measured against
+# registry.access.redhat.com/ubi10/ubi: `python3-libvirt`, `python3-pycdlib` and
+# `libvirt-client` are all absent from BaseOS, AppStream and CodeReady
+# (`dnf list` -> "No matching Packages to list"); `python3-pyyaml`,
+# `python3-jsonschema`, `openssh-clients` and `glibc-minimal-langpack` are
+# present. The binding this whole tool is built on is the one UBI does not ship,
+# so the question needs no RHEL-vintage or RPC-compatibility argument. Settled;
+# do not re-derive it.
+#
+# **`:10` floats across minors, so the digest needs a periodic look.** The tag
+# is not a stable pointer: it resolved to 10.0 (published 2025-06-06), then 10.1
+# (2025-11-16), and now 10.2 (2026-05-26) -- roughly a five-to-six month cadence,
+# with no 10.3 published as of 2026-08-30. Pinning by digest freezes whichever
+# minor `:10` named when somebody last looked, and Rocky maintains only the
+# current minor. Checked 2026-08-30: `:10` resolves to exactly the digest below,
+# so this pin is current, on the current minor, and nothing needs doing.
+#
+# The monthly scheduled.yml rebuild cannot notice when that stops being true --
+# it builds from this ARG, so it re-pulls the same layer and re-scans it against
+# the same baseline, which is what makes it look healthy. **Recheck by 2026-12**,
+# when 10.3 is due, and on any month the rebuild is being looked at anyway:
+#
+#     skopeo inspect --no-tags docker://quay.io/rockylinux/rockylinux:10
+#
+# and compare `.Digest` against BASE_DIGEST. A mismatch means `:10` has moved to
+# a new minor and this pin is now on an unmaintained one; re-pin, then rebuild,
+# rescan and re-triage docs/cve-baseline.json by hand.
+#
+# Renovate was considered for exactly this pair and rejected. It is the one pin
+# here it could actually track -- a customManagers regex with
+# datasourceTemplate: docker -- but adopting it means a second update bot across
+# both CI platforms, self-hosted on GitLab, for a value that moves twice a year,
+# in a repo whose dependabot.yml already documents why it stays away from this
+# file. The recheck date above is smaller and matches how docs/cve-baseline.json
+# already carries `recheck` per group.
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10
 ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 
