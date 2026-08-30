@@ -41,12 +41,33 @@ save_archive() {
     fi
 }
 
+# A differential gate can only compare what it was handed. If trivy analysed
+# nothing -- a database that failed to download, a report schema that moved, a jq
+# path that stopped matching -- then `found` is empty, `comm -13` is empty, and
+# this script logs "no findings outside the baseline" and exits 0. That is green
+# by neglect arriving through the front door, and it is the one failure mode a
+# subset check cannot see. So assert the scan happened before trusting silence.
+#
+# The floors are structural, not vulnerability counts: an image with genuinely
+# zero CVEs must still pass. What cannot legitimately happen is a report with no
+# results section at all, or an SBOM with no packages for an image that carries
+# several hundred. Measured at the current pins: 3 Results, 456 packages.
+scan_floor() {
+    local report="$1" sbom="$2" results packages
+    results="$(jq '(.Results // []) | length' "$report")"
+    [ "$results" -gt 0 ] ||
+        die "trivy wrote no .Results -- the scan analysed nothing. Check the vulnerability database and the report schema before trusting an empty finding set."
+    packages="$(jq '(.packages // []) | length' "$sbom")"
+    [ "$packages" -gt 0 ] ||
+        die "syft found no packages -- an empty SBOM for an image built from a full base is a broken scan, not a clean one."
+}
+
 main() {
     have trivy || die "trivy not on PATH -- run scripts/install-tools.sh"
     have syft  || die "syft not on PATH -- run scripts/install-tools.sh"
     have jq    || die "jq not on PATH -- run scripts/os-deps.sh"
 
-    local tag out archive report sbom found new
+    local tag out archive report sbom found new gone accepted missing
     tag="$(image_tag)"
     out="$REPO/.cache/scan"; mkdir -p "$out"
     archive="$out/image.tar"
@@ -61,6 +82,10 @@ main() {
     syft scan "docker-archive:$archive" -q -o spdx-json="$sbom"
     log "  report $report"
     log "  sbom   $sbom"
+
+    # Before the baseline is consulted, and before --write-baseline can record an
+    # empty set as "accepted", which would bake the broken scan in.
+    scan_floor "$report" "$sbom"
 
     found="$(jq -r '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | .[]' "$report")"
 
@@ -87,6 +112,24 @@ main() {
         log "findings not in docs/cve-baseline.json:"
         printf '%s\n' "$new" | sed 's/^/  /' >&2
         die "$(printf '%s' "$new" | grep -c .) new finding(s)"
+    fi
+
+    # The other direction. One or two accepted ids disappearing is ordinary --
+    # a pin bump fixed them, and the baseline should be trimmed. *All* of them
+    # disappearing at once is not a clean image; it is a scan that did not read
+    # this image, and scan_floor's structural checks cannot catch it because the
+    # report is well-formed and simply about something else.
+    gone="$(comm -23 \
+        <(jq -r '.accepted[]' "$BASELINE" | sort) \
+        <(printf '%s\n' "$found" | sort))"
+    accepted="$(jq '.accepted | length' "$BASELINE")"
+    missing="$(printf '%s' "$gone" | grep -c . || true)"
+    if [ "$accepted" -gt 0 ] && [ "$missing" -eq "$accepted" ]; then
+        die "none of the $accepted accepted findings are present -- the scan did not read this image"
+    fi
+    if [ -n "$gone" ]; then
+        log "baseline entries no longer found ($missing of $accepted; stale, or fixed by a pin bump):"
+        printf '%s\n' "$gone" | sed 's/^/  /' >&2
     fi
     log "no findings outside the baseline"
 }
