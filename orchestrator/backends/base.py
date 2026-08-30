@@ -46,6 +46,18 @@ class Problem:
     message: str
     where: str = ""
 
+    # ``Severity.ERROR`` alone on the first line is what wrapped nearly every
+    # construction to three. The explicit three-argument form stays valid and
+    # stays in use: ``config._blame_the_filename`` propagates an existing
+    # severity rather than choosing one, so it cannot go through either of these.
+    @classmethod
+    def error(cls, message: str, where: str = "") -> Problem:
+        return cls(Severity.ERROR, message, where)
+
+    @classmethod
+    def warning(cls, message: str, where: str = "") -> Problem:
+        return cls(Severity.WARNING, message, where)
+
     @property
     def fatal(self) -> bool:
         return self.severity is Severity.ERROR
@@ -257,8 +269,7 @@ def decide(
     for logical, held in sorted(holders.items()):
         if len(held) > 1:
             problems.append(
-                Problem(
-                    Severity.ERROR,
+                Problem.error(
                     f"{len(held)} VMs carry the marker for logical name "
                     f"{logical!r}: {_named(held)}. vcows cannot tell which one it "
                     f"owns, and will not decide it by enumeration order.",
@@ -328,8 +339,7 @@ def decide(
     for e in existing:
         if e.marker is not None and e.marker.name not in wanted_set:
             problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"marked VM {e.marker.name!r} exists but is not in this config; "
                     f"leaving it alone. Removing a VM from the config does not "
                     f"delete it -- that needs a deliberate destroy.",

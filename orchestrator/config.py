@@ -29,7 +29,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-from .backends.base import Problem, Severity
+from .backends.base import Problem
 
 SCHEMA_VERSION = 1
 
@@ -127,16 +127,15 @@ def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem
     try:
         raw = yaml.safe_load(path.read_text())
     except OSError as exc:
-        raise ConfigError([Problem(Severity.ERROR, str(exc), where=str(path))]) from exc
+        raise ConfigError([Problem.error(str(exc), where=str(path))]) from exc
     except yaml.YAMLError as exc:
         raise ConfigError(
-            [Problem(Severity.ERROR, f"invalid YAML: {exc}", where=str(path))]
+            [Problem.error(f"invalid YAML: {exc}", where=str(path))]
         ) from exc
     if not isinstance(raw, dict):
         raise ConfigError(
             [
-                Problem(
-                    Severity.ERROR,
+                Problem.error(
                     f"config must be a mapping, got {type(raw).__name__}",
                     where=str(path),
                 )
@@ -181,10 +180,8 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     validator = jsonschema.Draft202012Validator(core_schema(registry))
 
     problems = [
-        Problem(
-            Severity.ERROR,
-            err.message,
-            where=".".join(str(p) for p in err.absolute_path) or "<root>",
+        Problem.error(
+            err.message, where=".".join(str(p) for p in err.absolute_path) or "<root>"
         )
         for err in sorted(
             validator.iter_errors(cfg), key=lambda e: list(map(str, e.absolute_path))
@@ -201,9 +198,7 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     for vm in cfg["vms"]:
         name = vm["name"]
         if name in seen:
-            problems.append(
-                Problem(Severity.ERROR, f"duplicate VM name {name!r}", where="vms")
-            )
+            problems.append(Problem.error(f"duplicate VM name {name!r}", where="vms"))
         seen.add(name)
 
     return problems

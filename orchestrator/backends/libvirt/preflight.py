@@ -41,7 +41,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
-from ..base import Discovered, Existing, Problem, Severity
+from ..base import Discovered, Existing, Problem
 from .errors import (
     ERR_NO_NETWORK,
     ERR_NO_STORAGE_POOL,
@@ -163,8 +163,7 @@ def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
             root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
         except (libvirt.libvirtError, ET.ParseError) as exc:
             problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"domain {name!r} could not be read ({exc}), so its MACs and "
                     f"its disks were not checked against this config.",
                     where="target.libvirt",
@@ -240,8 +239,7 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
             # failed run; a confident wrong instruction is not reported at all.
             raise
         return None, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"storage pool {name!r} does not exist on this host. vcows never "
                 f"creates a pool -- create it on the hypervisor and re-run.",
                 where="target.libvirt.pool",
@@ -250,8 +248,7 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
 
     if not pool.isActive():
         return None, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"storage pool {name!r} exists but is not active.",
                 where="target.libvirt.pool",
             )
@@ -267,8 +264,7 @@ def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
         # that cannot refresh still reports every path it could not account for.
         # The pool is returned regardless: one pass reports every problem it can.
         return pool, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"could not refresh pool {name!r} ({exc.get_error_message()}). "
                 f"Volumes written out of band may be invisible, which can make a "
                 f"present golden image look absent.",
@@ -299,8 +295,7 @@ def walk(pool: Any) -> tuple[dict[str, dict[str, Any]], list[Problem]]:
             # A volume that vanished between listing and describing, or whose XML
             # we cannot read, is not a reason to abandon the walk.
             problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"volume {name!r} could not be read ({exc}), so it was not "
                     f"considered as the golden image and is not counted as an "
                     f"orphan.",
@@ -337,8 +332,7 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
     resolved = {"name": name, "create": False, "path": found["path"] or ""}
     if not resolved["path"]:
         return resolved, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"volume {name!r} is in pool {cfg['target']['libvirt']['pool']!r} "
                 f"but reports no path, so overlays cannot back onto it.",
                 where="image.base_volume_name",
@@ -349,8 +343,7 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
         local = os.stat(source).st_size
     except OSError as exc:
         return resolved, [
-            Problem(
-                Severity.WARNING,
+            Problem.warning(
                 f"golden image {source!r} is not readable ({exc.strerror}), so the "
                 f"copy already on the host cannot be verified against it.",
                 where="image.source_qcow2",
@@ -360,8 +353,7 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
     physical = found["physical"]
     if physical is None:
         return resolved, [
-            Problem(
-                Severity.WARNING,
+            Problem.warning(
                 f"volume {name!r} reports no physical size, so it cannot be checked "
                 f"against {source!r}. Expected for a non-file pool.",
                 where="image.base_volume_name",
@@ -377,8 +369,7 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
             1 for v in volumes.values() if v.get("backing") == resolved["path"]
         )
         return resolved, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"volume {name!r} is {physical} bytes on the host but {local} bytes "
                 f"locally. That is either a truncated upload or a different image "
                 f"under the same name; either way every overlay would back onto it. "
@@ -424,8 +415,7 @@ def orphan_volumes(
             path = found.get("path")
             if path is None:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"volume {volume!r} exists but reports no path, so no "
                         f"domain on this host can be matched against it and vcows "
                         f"cannot tell whether anything still uses it. Establish "
@@ -435,8 +425,7 @@ def orphan_volumes(
                 )
             elif path not in claimed:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"volume {volume!r} exists but no domain on this host "
                         f"references it. A create interrupted before its domain "
                         f"was defined leaves exactly this, and so may a volume "
@@ -473,8 +462,7 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
             # As with the pool: absence is one code, not every code.
             raise
         return {}, [
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"network {name!r} does not exist on this host.",
                 where=f"nics[].network={name}",
             )
@@ -497,8 +485,7 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
         # claim set is exactly what `address_conflicts` calls free.
         if exc.get_error_code() not in (ERR_NO_SUPPORT, ERR_OPERATION_INVALID):
             problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"the DHCP leases on network {name!r} could not be read "
                     f"({exc.get_error_message()}), so an address a live lease "
                     f"holds may be reported as free. Reservations were read.",
@@ -529,8 +516,7 @@ def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Prob
                 address = nic["ip_cidr"].split("/")[0]
                 if reason := claims[network].get(address):
                     problems.append(
-                        Problem(
-                            Severity.ERROR,
+                        Problem.error(
                             f"{address} is already {reason}.",
                             where=f"{vm['name']}.nics[{index}].ip_cidr",
                         )
@@ -539,8 +525,7 @@ def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Prob
             mac = mac_of(vm, index, cfg["deployment"]).lower()
             if owner := by_mac.get(mac):
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"MAC {mac} is already configured on domain {owner!r}.",
                         where=f"{vm['name']}.nics[{index}]",
                     )

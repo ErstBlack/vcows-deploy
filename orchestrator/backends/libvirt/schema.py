@@ -35,7 +35,7 @@ import jsonschema
 
 from ... import qcow2
 from ...marker import VCOWS_NS
-from ..base import Problem, Severity
+from ..base import Problem
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
 #: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
@@ -269,8 +269,7 @@ def _check_volume_names(cfg: dict) -> list[Problem]:
 
     base = cfg["image"]["base_volume_name"]
     return [
-        Problem(
-            Severity.ERROR,
+        Problem.error(
             f"{base!r} is also the name vcows derives for {vm['name']}'s "
             f"{kind}, and both would be created in one pool.",
             where="image.base_volume_name",
@@ -293,8 +292,7 @@ def _check_target(target: dict) -> list[Problem]:
     problems: list[Problem] = []
     if parts.scheme != "qemu+ssh":
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"scheme must be 'qemu+ssh', got {parts.scheme or '<none>'!r}. "
                 f"v0.1 connects over SSH only; a local socket is later work.",
                 where=where,
@@ -302,14 +300,12 @@ def _check_target(target: dict) -> list[Problem]:
         )
     if not parts.hostname:
         problems.append(
-            Problem(Severity.ERROR, f"no host in {uri!r}", where=where),
+            Problem.error(f"no host in {uri!r}", where=where),
         )
     if parts.path != "/system":
         problems.append(
-            Problem(
-                Severity.ERROR,
-                f"path must be '/system', got {parts.path or '<none>'!r}",
-                where=where,
+            Problem.error(
+                f"path must be '/system', got {parts.path or '<none>'!r}", where=where
             )
         )
     if parts.query:
@@ -320,8 +316,7 @@ def _check_target(target: dict) -> list[Problem]:
         # `~/.ssh/config` instead. So an operator query string is not overriding
         # vcows -- it is the only thing on the connection nothing else checks.
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"URI must carry no query string, got {parts.query!r}. Neither "
                 f"client reads credentials from it -- both run ssh, so "
                 f"ssh_keyfile and known_hosts travel via ~/.ssh/config, which "
@@ -337,8 +332,7 @@ def _check_target(target: dict) -> list[Problem]:
         # clears the query but leaves the netloc alone, so a password is
         # rendered into the tfvars and sits in the run directory in plaintext.
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 "URI must carry no password. Neither client would use it -- both "
                 "run ssh, so credentials travel via ~/.ssh/config, which the "
                 "container entrypoint writes from ssh_keyfile and known_hosts. "
@@ -348,7 +342,7 @@ def _check_target(target: dict) -> list[Problem]:
         )
     if parts.fragment:
         problems.append(
-            Problem(Severity.ERROR, f"unexpected fragment {parts.fragment!r}", where)
+            Problem.error(f"unexpected fragment {parts.fragment!r}", where=where)
         )
 
     for field in ("ssh_keyfile", "known_hosts"):
@@ -358,8 +352,7 @@ def _check_target(target: dict) -> list[Problem]:
         # normally the container, where they are bind-mounted at run time.
         if path is not None and not Path(path).is_file():
             problems.append(
-                Problem(
-                    Severity.WARNING,
+                Problem.warning(
                     f"{path} does not exist here. It is read on the machine "
                     f"running the deploy, not on the target, so this matters "
                     f"only if that is this one.",
@@ -372,8 +365,7 @@ def _check_target(target: dict) -> list[Problem]:
 def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
     validator = jsonschema.Draft202012Validator(VM_SCHEMA)
     return [
-        Problem(
-            Severity.ERROR,
+        Problem.error(
             err.message,
             where=where
             + "".join(
@@ -397,8 +389,7 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
         for key in ("loader", "loader_format", "nvram_template"):
             if key in vm:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"{key!r} is a UEFI setting and cannot appear with "
                         f"firmware: bios",
                         where=f"{where}.{key}",
@@ -411,8 +402,7 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
             ("loader", "nvram_template") if loader else ("nvram_template", "loader")
         )
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"{present!r} was set without {missing!r}. A UEFI domain needs "
                 f"both, or neither -- with neither, libvirt selects the firmware "
                 f"itself from the host's descriptors.",
@@ -421,8 +411,7 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
         )
     if "loader_format" in vm and loader is None:
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 "'loader_format' describes 'loader', which is not set",
                 where=f"{where}.loader_format",
             )
@@ -433,8 +422,7 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
         # passes `format = null`. A qcow2 loader then gets an `.fd` varstore,
         # which is the mismatch the first acceptance run already paid for.
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 "'loader' was set without 'loader_format'. It is not optional: "
                 "the varstore path is built from it, and an absent value is "
                 "taken as 'raw'. Fedora's OVMF is qcow2, RHEL's is raw.",
@@ -455,8 +443,7 @@ def _check_nics(
     primaries = [i for i, n in enumerate(vm["nics"]) if n.get("primary")]
     if len(primaries) > 1:
         problems.append(
-            Problem(
-                Severity.ERROR,
+            Problem.error(
                 f"{len(primaries)} NICs claim primary: true (indices {primaries}); "
                 f"at most one may. Omit it entirely and the first NIC is primary.",
                 where=f"{where}.nics",
@@ -468,8 +455,7 @@ def _check_nics(
         attachments = [k for k in ("bridge", "network") if k in nic]
         if len(attachments) != 1:
             problems.append(
-                Problem(
-                    Severity.ERROR,
+                Problem.error(
                     "exactly one of 'bridge' or 'network' is required, found "
                     + (
                         f"both ({', '.join(attachments)})" if attachments else "neither"
@@ -489,8 +475,7 @@ def _check_nics(
             }
             if iface.ip in reserved:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"{iface.ip} is {reserved[iface.ip]} of "
                         f"{iface.network}, not a host address in it",
                         where=f"{at}.ip_cidr",
@@ -500,8 +485,7 @@ def _check_nics(
         if iface is not None and gateway is not None:
             if gateway not in iface.network:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"gateway {gateway} is outside {iface.network}",
                         where=f"{at}.gateway",
                     )
@@ -509,8 +493,7 @@ def _check_nics(
             owner = seen_ips.setdefault(str(iface.ip), at)
             if owner != at:
                 problems.append(
-                    Problem(
-                        Severity.ERROR,
+                    Problem.error(
                         f"address {iface.ip} is already used by {owner}",
                         where=f"{at}.ip_cidr",
                     )
@@ -522,9 +505,7 @@ def _check_nics(
         owner = seen_macs.setdefault(mac, at)
         if owner != at:
             problems.append(
-                Problem(
-                    Severity.ERROR, f"MAC {mac} is already used by {owner}", where=at
-                )
+                Problem.error(f"MAC {mac} is already used by {owner}", where=at)
             )
     return problems
 
@@ -534,17 +515,15 @@ def _parse_interface(
 ) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface | None:
     if "/" not in raw:
         problems.append(
-            Problem(
-                Severity.ERROR,
-                f"{raw!r} needs a prefix length, e.g. '192.168.122.60/24'",
-                where=where,
+            Problem.error(
+                f"{raw!r} needs a prefix length, e.g. '192.168.122.60/24'", where=where
             )
         )
         return None
     try:
         return ipaddress.ip_interface(raw)
     except ValueError as exc:
-        problems.append(Problem(Severity.ERROR, str(exc), where=where))
+        problems.append(Problem.error(str(exc), where=where))
         return None
 
 
@@ -554,7 +533,7 @@ def _parse_address(
     try:
         return ipaddress.ip_address(raw)
     except ValueError as exc:
-        problems.append(Problem(Severity.ERROR, str(exc), where=where))
+        problems.append(Problem.error(str(exc), where=where))
         return None
 
 
@@ -571,8 +550,7 @@ def _check_disk_capacity(cfg: dict) -> list[Problem]:
         virtual = qcow2.virtual_size(source)
     except OSError as exc:
         return [
-            Problem(
-                Severity.WARNING,
+            Problem.warning(
                 f"cannot read {source} to check disk_gb against it ({exc.strerror}); "
                 f"a VM whose disk_gb is below the image's virtual size will fail "
                 f"at create time",
@@ -580,15 +558,14 @@ def _check_disk_capacity(cfg: dict) -> list[Problem]:
             )
         ]
     except qcow2.NotAQcow2 as exc:
-        return [Problem(Severity.ERROR, str(exc), where="image.source_qcow2")]
+        return [Problem.error(str(exc), where="image.source_qcow2")]
 
     problems = []
     for i, vm in enumerate(cfg["vms"]):
         want = vm.get("disk_gb")
         if isinstance(want, int) and want * 1024**3 < virtual:
             problems.append(
-                Problem(
-                    Severity.ERROR,
+                Problem.error(
                     f"disk_gb is {want} but {source} has a virtual size "
                     f"of {virtual / 1024**3:.1f} GiB; an overlay cannot be "
                     f"smaller than the image it backs onto",
