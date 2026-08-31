@@ -23,10 +23,16 @@ nothing, because nothing lives there.
 
 | Job | When | What |
 |---|---|---|
-| `check` | every push and PR/MR | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, ty, pytest |
-| `tofu` | every push and PR/MR | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
+| `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, ty, pytest |
+| `tofu` | PRs/MRs and master pushes | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
 | `image` | master, tags, and PR/MRs touching the image's inputs | build, `just test-image`, `just scan` |
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
+
+The `When` column describes GitHub, where `push` is scoped to `branches: [master]`
+(`.github/workflows/ci.yml:12-19`) -- so a feature branch with no PR open runs
+neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
+trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
+`rules:`, so there both also run on every push.
 
 There is no mutation-testing job. `just mutants` exists and its configuration is
 correct, but `mutmut run` does not complete here (see `pyproject.toml`), and a
@@ -48,7 +54,7 @@ correct and `tofu, image` silently demands only `tofu`.
 |---|---|---|
 | `tofu` | demanded | the mirror is rebuilt or restored first |
 | `image` | demanded, in the image job | needs a built image and podman |
-| `pycdlib` | satisfied | it is in the dev group |
+| `pycdlib` | satisfied | a runtime dependency, installed by `uv pip install -e .` |
 | `rig` | **never** | needs a reachable hypervisor |
 
 `VCOWS_GATES=all` is never set. The rig gate needs hardware no hosted runner has;
@@ -187,8 +193,8 @@ Do not add `--offline`; it was deprecated as a no-op in v3.0.3.
 
 1. Point the GitLab runners at the repository and give them the `linux` and
    `podman` tags.
-2. Create two pipeline schedules: monthly with `REBUILD_SCAN=1`, weekly with
-   `MUTANTS=1`.
+2. Create one pipeline schedule: monthly with `REBUILD_SCAN=1`. That is the
+   only schedule variable any job reads.
 3. Replace Dependabot with self-hosted Renovate, or accept a manual
    `uv lock --upgrade` on a rhythm. Neither can recompute the artifact digests in
    the `Containerfile`; those go through the schema-diff runbook by hand.

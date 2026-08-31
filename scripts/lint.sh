@@ -4,7 +4,7 @@
 #   scripts/lint.sh          check
 #   scripts/lint.sh --fix    apply what ruff can fix, then check the rest
 #
-# **Runs all five and reports all five.** `just`'s recipe dependencies are
+# **Runs all six and reports all six.** `just`'s recipe dependencies are
 # fail-fast, which is right for a pipeline and wrong for a developer: someone who
 # has just touched Python, a shell script and the Containerfile wants three
 # verdicts, not the first one. So this accumulates rather than &&-chaining, and

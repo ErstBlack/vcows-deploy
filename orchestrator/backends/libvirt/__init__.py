@@ -1,8 +1,10 @@
-"""The libvirt backend: seven methods, bound together.
+"""The libvirt backend: eight methods, bound together.
 
 Four of them delegate to the free functions in ``schema.py``, ``render.py`` and
 ``prepare.py``, which import nothing hypervisor-specific. The three that hold a
-connection live in ``preflight.py`` and ``destroy.py``.
+connection live in ``preflight.py`` and ``destroy.py``. ``parse_outputs`` is in
+neither group: it is the one method with a body of its own, for the reason its
+own docstring gives.
 
 **No libvirt import at module level, here or in any module this one imports at
 import time.** ``orchestrator/backends/__init__.py`` names this class, so importing
