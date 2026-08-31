@@ -1,6 +1,6 @@
 ---
 name: provider-bump
-description: Use when bumping terraform-provider-libvirt past 0.9.8, when `just verify-provider` fails, or when a provider version, SHA256 or h1: hash disagrees across files. Covers the four places, the schema diff, the mirror rebuild and the CI cache-key trap.
+description: "Use when bumping terraform-provider-libvirt past 0.9.8, when `just verify-provider` fails, or when a provider version, SHA256 or h1: hash disagrees across files. Covers the four places, the schema diff, the mirror rebuild and the CI cache-key trap."
 ---
 
 # Bumping the libvirt provider
