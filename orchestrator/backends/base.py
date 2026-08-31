@@ -208,11 +208,14 @@ class Outcome:
     skipped: list[str] = field(default_factory=list)
     """Objects this run did not remove. Not an error, and not nothing either.
 
-    A domain already gone is a crash-window resume; a volume that would not
-    resolve is a leak. Neither carries a fatal ``Problem`` -- a skip never stops a
-    teardown, so the rest of the targets are still attempted -- and both make the
-    exit code non-zero, because something vcows was asked to remove is still
-    there.
+    A domain already gone is not a crash-window resume -- an undefined domain is
+    in no ``listAllDomains``, so preflight yields no target for it at all. It is a
+    domain that vanished between preflight and teardown, whose disks are still
+    worth collecting (``libvirt/destroy.py``'s vanished branch). A volume that
+    would not resolve is a leak. Neither carries a fatal ``Problem`` -- a skip
+    never stops a teardown, so the rest of the targets are still attempted -- and
+    both make the exit code non-zero, because something vcows was asked to remove
+    is still there.
     """
 
     problems: list[Problem] = field(default_factory=list)
