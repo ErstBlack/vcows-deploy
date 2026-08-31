@@ -205,27 +205,28 @@ def _problem(problem: Problem) -> None:
     """One problem row, logged at the level it says it is.
 
     The level replaces the severity word ``Problem.__str__`` carries, so a line
-    reads ``WARNING ...:   [target.libvirt]: ...`` rather than restating it.
+    reads ``WARNING ... [target.libvirt] ...`` rather than restating it.
     ``__str__`` itself is left alone: `run.json` records `str(p)`, and the record
     should not change shape because the log got tidier.
 
     Routing on the problem's own severity is also a fix. Every one of these
     previously went out at WARNING, fatal ones included.
+
+    ``where`` is frequently empty -- a `Problem` about the run rather than about
+    a field -- so it is omitted rather than rendered as an empty bracket. The
+    earlier version emitted a dangling ``: `` for those.
     """
-    where = f" [{problem.where}]" if problem.where else ""
-    log.log(
-        logging.ERROR if problem.fatal else logging.WARNING,
-        " %s: %s",
-        where,
-        problem.message,
+    message = (
+        f"[{problem.where}] {problem.message}" if problem.where else problem.message
     )
+    log.log(logging.ERROR if problem.fatal else logging.WARNING, "%s", message)
 
 
 def _row(name: str, verb: str, detail: str) -> str:
     """One report line. `_report` and the destroy loop cannot share a *function*
     -- one prints `Decision`s and the other `Existing`s, which findings.md §3
     keeps as separate carriers -- so they share the shape instead."""
-    return f"  {name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}"
+    return f"{name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}"
 
 
 def _report(decisions: list[Decision], problems: list[Problem]) -> None:
@@ -595,7 +596,7 @@ def _destroy(
         advisory = config_problems + list(discovered.problems)
         if advisory:
             log.warning(
-                "  these were computed for a deploy; none of them changes this teardown"
+                "these were computed for a deploy; none of them changes this teardown"
             )
         for problem in advisory:
             _problem(problem)
@@ -660,7 +661,7 @@ def _destroy(
     # `tofu destroy` for, and it is indistinguishable from success unless this
     # loop runs.
     for name in out.skipped:
-        log.info("  %s skipped, not removed by this run", f"{name:<20}")
+        log.info("%s skipped, not removed by this run", f"{name:<20}")
     for problem in out.problems:
         _problem(problem)
 
@@ -828,7 +829,7 @@ def main(argv: list[str] | None = None) -> int:
         # a shared hierarchy, so there is nothing narrower to catch and importing
         # one would break the seam. `str()` on the libvirt backend's DestroyError
         # already carries every per-object failure.
-        log.error("error: %s: %s", type(exc).__name__, exc)
+        log.error("%s: %s", type(exc).__name__, exc)
         if os.environ.get("VCOWS_TRACEBACK"):
             # The message above is what an operator needs; this is what a bug
             # report needs, and an air-gapped site cannot just re-run it here.

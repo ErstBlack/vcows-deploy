@@ -218,10 +218,12 @@ def test_every_line_carries_a_level_and_a_logger(capsys):
     logging.getLogger("orchestrator.cli").warning("something degraded")
     line = capsys.readouterr().err.strip()
     assert "WARNING" in line
-    assert "orchestrator.cli" in line
+    # The module, not the dotted path: 38 characters of shared prefix on every
+    # line is what `_Short` exists to remove.
+    assert "cli" in line and "orchestrator.cli" not in line
     assert line.endswith("something degraded")
-    # ISO-8601 UTC, matching the run directory's name.
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z ", line), line
+    # ISO-8601 UTC with milliseconds -- a preflight puts four lines in one second.
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z ", line), line
 
 
 def test_the_timestamp_is_utc():
@@ -313,7 +315,7 @@ def test_the_import_time_ceiling_warning_is_a_proper_log_line(monkeypatch, capsy
         err = capsys.readouterr().err
         assert "VCOWS_MAX_VCPUS='lots'" in err
         assert "WARNING" in err, "reached lastResort instead of our handler"
-        assert "backends.libvirt.schema" in err
+        assert "schema" in err
     finally:
         monkeypatch.delenv("VCOWS_MAX_VCPUS")
         importlib.reload(schema)
@@ -360,3 +362,64 @@ def test_a_pool_that_answers_without_a_target_path_is_logged(caplog):
     with caplog.at_level(logging.DEBUG, logger=destroy.__name__):
         assert destroy._pool_holds(Pool(), {"/pool/app01.qcow2"}) is None
     assert "no <target><path>" in caplog.text
+
+
+# -- what the messages themselves say --------------------------------------
+
+
+def test_a_problem_without_a_where_renders_as_just_its_message(caplog):
+    """Most problems are about the run rather than about a field. The absent
+    `where` must be omitted, not rendered -- the first version bracketed it and
+    produced a leading `" : "`.
+
+    Asserted on the record's exact message rather than on a substring of the
+    line: the first version of this test checked for `":  "` and passed against
+    the very defect it was written for, which renders `" : "`.
+    """
+    from orchestrator.backends.base import Problem, Severity
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
+        cli._problem(Problem(Severity.WARNING, "the pool went away"))
+    (record,) = caplog.records
+    assert record.getMessage() == "the pool went away"
+
+
+def test_a_problem_with_a_where_names_it_first(caplog):
+    from orchestrator.backends.base import Problem, Severity
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
+        cli._problem(Problem(Severity.ERROR, "duplicate IP", "vms[0].nics[0]"))
+    (record,) = caplog.records
+    assert record.getMessage() == "[vms[0].nics[0]] duplicate IP"
+
+
+def test_a_tofu_error_diagnostic_is_logged_at_error(capsys):
+    """The errors from a failed `apply` are the most important lines in the log.
+    #136 put every diagnostic at INFO, so they sat at the same level as the
+    command line that produced them and said "error" in their text to say so."""
+    tofu._log_diagnostic(
+        "apply",
+        tofu.Diagnostic("error", "Volume Creation Failed", "", "libvirt_volume.x"),
+    )
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "apply [libvirt_volume.x]: Volume Creation Failed" in err
+
+
+def test_an_unrecognised_diagnostic_severity_is_visible_not_dropped(capsys):
+    """A severity string OpenTofu has not used before should be visible without
+    being alarming -- a warning, rather than dropped or promoted to error."""
+    tofu._log_diagnostic("plan", tofu.Diagnostic("notice", "Something new", "", ""))
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_a_multi_line_detail_reads_as_continuation(capsys):
+    """Unindented, the second line starts at column 0 and is indistinguishable
+    from the next record -- which is what makes a wall of these unreadable."""
+    tofu._log_diagnostic(
+        "apply", tofu.Diagnostic("error", "headline", "first line\nsecond line", "")
+    )
+    body = capsys.readouterr().err.splitlines()
+    assert body[0].endswith("headline")
+    assert body[1] == "    first line"
+    assert body[2] == "    second line"

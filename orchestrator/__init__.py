@@ -36,21 +36,34 @@ VERSION = "0.1.0.0"
 #: with no trailing newline so the cursor stays where the operator types -- being
 #: the only unprefixed output there is, it is trivially separable from the log.
 #:
-#: `%(levelname)-7s` is padded so columns line up across levels, which is what
-#: keeps `cli._row`'s report table aligned once every row carries a prefix.
-LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+#: Both `%(levelname)-7s` and `%(short)-10s` are padded, so the message column
+#: starts at the same offset on every line whatever the level or the module. That
+#: is what keeps `cli._row`'s table aligned once every row carries a prefix, and
+#: what makes a wall of these scannable at all.
+#:
+#: `short` is the module rather than the dotted path -- `preflight`, not
+#: `orchestrator.backends.libvirt.preflight`, which is 38 characters of the same
+#: prefix on every line. `_Short` below supplies it.
+#:
+#: Milliseconds because a preflight puts four lines in the same second, and an
+#: operator correlating against hypervisor logs needs the ordering to be visible
+#: rather than inferred from line order.
+LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)-7s %(short)-10s %(message)s"
 
-#: UTC, matching the run directory's name. `asctime` is localtime unless the
-#: converter below says otherwise, and a site in another timezone would read a
-#: stamp that disagrees with the directory it is describing.
-LOG_DATEFMT = "%Y-%m-%dT%H:%M:%SZ"
+#: UTC, matching the run directory's name -- the trailing `Z` is in LOG_FORMAT,
+#: after the milliseconds. `asctime` is localtime unless the converter below says
+#: otherwise, and a site in another timezone would read a stamp that disagrees
+#: with the directory it is describing.
+LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 #: Not WARNING: the purpose is traceability *after* delivery, and `destroy`
 #: cannot be re-run to recover what was not captured the first time. WARNING is
 #: a usable quiet mode -- it drops the report and keeps the problems.
 LOG_LEVEL_DEFAULT = "INFO"
 
-log = logging.getLogger(__name__)
+#: Named `vcows` rather than by `__name__`: `orchestrator` is the one module
+#: name wider than the `short` column, and this logger exists for one message.
+log = logging.getLogger("vcows")
 
 
 def _log_level() -> str:
@@ -67,6 +80,19 @@ def _log_level() -> str:
         # be the level's own decision rather than something it reports through.
         return LOG_LEVEL_DEFAULT
     return raw.upper()
+
+
+class _Short(logging.Filter):
+    """Supply ``%(short)s``: the module, without the package path above it.
+
+    Every line in this process comes from the same package, so the dotted prefix
+    is 20-odd characters of noise repeated on each one -- and, being variable
+    width, it moves the message column around and defeats the padding.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.short = record.name.rsplit(".", 1)[-1]
+        return True
 
 
 class _Stderr(logging.StreamHandler):
@@ -100,6 +126,7 @@ def configure_logging() -> None:
     """
     logging.Formatter.converter = time.gmtime
     handler = _Stderr()
+    handler.addFilter(_Short())
     handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
     root = logging.getLogger()
     root.handlers.clear()

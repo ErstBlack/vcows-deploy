@@ -14,9 +14,9 @@ reports the ones that do; it never modifies, and it never removes. Removing a VM
 from the config makes `preflight` say
 
 ```
-2026-08-31T22:44:12Z WARNING orchestrator.cli:   [app03]: marked VM 'app03' exists but is
-not in this config; leaving it alone. Removing a VM from the config does not
-delete it -- that needs a deliberate destroy.
+2026-08-31T22:44:12.881Z WARNING cli        [app03] marked VM 'app03' exists but is not
+in this config; leaving it alone. Removing a VM from the config does not delete
+it -- that needs a deliberate destroy.
 ```
 
 Tearing something down is `vcows destroy`, and nothing else.
@@ -90,14 +90,14 @@ empty, so nothing stops it — only the `0700` is refused, and that is deliberat
 a warning. The run goes ahead and dies on the first thing it writes:
 
 ```
-2026-08-31T22:44:12Z WARNING orchestrator.cli: cannot make /runs 0700; it stays 0755.
-    This run's seed ISOs carry user_data verbatim, and anyone who can read that
-    directory can read them.
-2026-08-31T22:44:12Z ERROR   orchestrator.cli: this run left no record --
-    /runs/run.json could not be written (Permission denied). The failure below is
-    reported on this stream only.
-2026-08-31T22:44:12Z ERROR   orchestrator.cli: error: PermissionError: [Errno 13]
-    Permission denied: '/runs/run.json'
+2026-08-31T22:44:12.104Z WARNING cli        cannot make /runs 0700; it stays 0755. This
+run's seed ISOs carry user_data verbatim, and anyone who can read that directory
+can read them.
+2026-08-31T22:44:12.106Z ERROR   cli        this run left no record -- /runs/run.json
+could not be written (Permission denied). The failure below is reported on this
+stream only.
+2026-08-31T22:44:12.107Z ERROR   cli        PermissionError: [Errno 13] Permission
+denied: '/runs/run.json'
 ```
 
 No `run.json` and no `manifest.json` are written. **`deploy` and `destroy` are
@@ -283,12 +283,20 @@ find runs/ -mindepth 2 -maxdepth 2 -type d -mtime +30 -exec rm -rf {} +
 no mount is required.
 
 ```
-2026-08-31T22:44:12Z INFO    orchestrator.backends.libvirt.preflight: connecting to qemu+ssh://vcows@hv1/system
-2026-08-31T22:44:12Z INFO    orchestrator.cli:   app-frontend-01      create  does not exist
-2026-08-31T22:44:12Z INFO    orchestrator.cli:   db01                 create  does not exist
-2026-08-31T22:44:12Z WARNING orchestrator.cli:   [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it
-2026-08-31T22:44:13Z INFO    orchestrator.cli: created 2 VM(s); run directory runs/lab-a/20260831T224412Z
+2026-08-31T22:44:12.104Z INFO    preflight  connecting to qemu+ssh://vcows@hv1/system
+2026-08-31T22:44:12.881Z INFO    cli        app-frontend-01      create  does not exist
+2026-08-31T22:44:12.881Z INFO    cli        db01                 create  does not exist
+2026-08-31T22:44:12.882Z WARNING cli        [image.source_qcow2] cannot read /images/golden.qcow2 to check disk_gb against it
+2026-08-31T22:44:13.415Z ERROR   tofu       apply [libvirt_volume.overlay["app01"]]: Volume Creation Failed
+    storage volume 'app01.qcow2' exists already
+2026-08-31T22:44:13.502Z INFO    cli        created 2 VM(s); run directory runs/lab-a/20260831T224412Z
 ```
+
+Four fixed-width columns: **when**, **how bad**, **which module**, and the
+message. Timestamps are UTC with milliseconds, because a preflight puts several
+lines in the same second. A message that runs to more than one line -- an
+OpenTofu diagnostic's *why* -- is indented under its own line, so a continuation
+never reads as a new record.
 
 The level is what distinguishes the kinds of line, where the stream used to:
 
@@ -297,7 +305,11 @@ The level is what distinguishes the kinds of line, where the stream used to:
 | `DEBUG` | why something was not knowable: libvirt lookup misses, an unreadable pool, a config the entrypoint declined to read |
 | `INFO` | the report — decision rows, counts, verdicts, the run directory, the `tofu` command line, OpenTofu's diagnostics |
 | `WARNING` | degraded but continuing: a config `Problem`, an advisory, a run directory that could not be made `0700` |
-| `ERROR` | refusals and anything that ends the run |
+| `ERROR` | refusals, fatal problems, and OpenTofu's own errors |
+
+A `Problem` and an OpenTofu diagnostic are each logged at **their own** severity,
+so a failed `apply` puts its errors at `ERROR` rather than burying them among the
+report.
 
 `VCOWS_LOG_LEVEL` sets the level and is read from the container's environment,
 like `VCOWS_MAX_*` above. **The default is `INFO`**, so a delivered run records

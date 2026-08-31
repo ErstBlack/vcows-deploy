@@ -162,6 +162,40 @@ def _read_stream(path: Path) -> tuple[tuple[Diagnostic, ...], dict[str, int]]:
     return tuple(diagnostics), changes
 
 
+#: Diagnostics are indented under their own line so a multi-line ``detail`` reads
+#: as continuation rather than as a new record. Without it the second line starts
+#: at column 0 and is indistinguishable from the next log entry.
+_DETAIL_INDENT = "    "
+
+
+def _log_diagnostic(cmd: str, d: Diagnostic) -> None:
+    """One OpenTofu diagnostic, at the severity OpenTofu gave it.
+
+    #136 put `detail` here -- it is the multi-line "why" that ``__str__`` drops
+    and that nothing else persists. What #136 got wrong was the level: every
+    diagnostic went out at INFO, so the errors from a failed ``apply``, which are
+    the most important lines in the whole log, sat at the same level as the
+    command line that produced them and carried the word "error" in their text
+    to say so.
+
+    ``severity`` is OpenTofu's own string. Anything unrecognised is a warning
+    rather than dropped or promoted: a future value we have not seen should be
+    visible without being alarming.
+    """
+    level = {"error": logging.ERROR, "warning": logging.WARNING}.get(
+        d.severity, logging.WARNING
+    )
+    where = f" [{d.address}]" if d.address else ""
+    detail = ""
+    if d.detail:
+        indented = "\n".join(
+            f"{_DETAIL_INDENT}{line}" for line in d.detail.splitlines()
+        )
+        detail = f"\n{indented}"
+    # No "tofu" in the text: `%(short)s` is already this module.
+    log.log(level, "%s%s: %s%s", cmd, where, d.summary, detail)
+
+
 def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
     """One invocation, with stdout and stderr inherited.
 
@@ -214,12 +248,8 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
         raise
 
     diagnostics, changes = _read_stream(stream)
-    # #136. `str(d)` is the headline both consumers keep; `detail` is OpenTofu's
-    # multi-line "why", which `__str__` drops and which nothing else persists.
-    # Errors and warnings alike -- a failing step's own diagnostics are the ones
-    # worth having, and `TofuError`'s message flattens them to one line.
     for d in diagnostics:
-        log.info("tofu %s: %s%s", cmd, d, f"\n{d.detail}" if d.detail else "")
+        _log_diagnostic(cmd, d)
     result = Result(proc.returncode, diagnostics, changes)
     if proc.returncode != 0:
         errors = "; ".join(str(d) for d in result.errors)
