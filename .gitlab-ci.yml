@@ -31,15 +31,32 @@ default:
   image: ubuntu:24.04
   tags: [linux]
 
-.python_cache: &python_cache
-  - key:
-      prefix: tools
-      files: [scripts/install-tools.sh, Containerfile]
-    paths: [.tools/bin]
-  - key:
-      prefix: uv
-      files: [pyproject.toml, uv.lock]
-    paths: [.cache/uv]
+# One mapping per anchor, deliberately, because a sequence alias spliced into a
+# sequence nests: `cache: [*two_entry_anchor, {third}]` parses to `[[a, b], c]`
+# and not to three entries. That is why the jobs below each compose the entries
+# they want rather than sharing one list. Mappings splice cleanly.
+.tools_cache: &tools_cache
+  key:
+    prefix: tools
+    files: [scripts/install-tools.sh, Containerfile]
+  paths: [.tools/bin]
+
+.uv_cache: &uv_cache
+  key:
+    prefix: uv
+    files: [pyproject.toml, uv.lock]
+  paths: [.cache/uv]
+
+# Keyed on main.tf, which declares the pin, and NOT on
+# docs/provider-<v>.lock.hcl, whose filename carries the version: a bump renames
+# that file, GitLab substitutes a placeholder for a file it cannot find, and the
+# key collapses to a constant -- a stale-mirror hit on exactly the run where the
+# mirror changed. docs/ci.md records the same.
+.mirror_cache: &mirror_cache
+  key:
+    prefix: tofu-mirror
+    files: [orchestrator/backends/libvirt/tofu/main.tf]
+  paths: [.tools/tofu-mirror]
 
 .bootstrap: &bootstrap
   - ./scripts/os-deps.sh
@@ -52,7 +69,7 @@ check:
   # reason are in .github/workflows/ci.yml. They are repeated here because
   # .github/ is meant to be deletable at the migration.
   timeout: 15m
-  cache: *python_cache
+  cache: [*tools_cache, *uv_cache]
   script:
     - *bootstrap
     - just check
@@ -60,24 +77,7 @@ check:
 tofu:
   stage: check
   timeout: 15m
-  cache:
-    - key:
-        prefix: tools
-        files: [scripts/install-tools.sh, Containerfile]
-      paths: [.tools/bin]
-    - key:
-        prefix: uv
-        files: [pyproject.toml, uv.lock]
-      paths: [.cache/uv]
-    # Keyed on main.tf, which declares the pin, and NOT on
-    # docs/provider-<v>.lock.hcl, whose filename carries the version: a bump
-    # renames that file, GitLab substitutes a placeholder for a file it cannot
-    # find, and the key collapses to a constant -- a stale-mirror hit on exactly
-    # the run where the mirror changed.
-    - key:
-        prefix: tofu-mirror
-        files: [orchestrator/backends/libvirt/tofu/main.tf]
-      paths: [.tools/tofu-mirror]
+  cache: [*tools_cache, *uv_cache, *mirror_cache]
   script:
     - *bootstrap
     # GitLab's cache is overwritten at the end of every job, so a restored mirror
@@ -100,17 +100,7 @@ smoke:
   # runner property no tag can express; see docs/ci.md.
   tags: [linux]
   timeout: 30m
-  cache:
-    - key:
-        prefix: tools
-        files: [scripts/install-tools.sh, Containerfile]
-      paths: [.tools/bin]
-    # Keyed on main.tf and not on docs/provider-<v>.lock.hcl, for the reason the
-    # tofu job above gives.
-    - key:
-        prefix: tofu-mirror
-        files: [orchestrator/backends/libvirt/tofu/main.tf]
-      paths: [.tools/tofu-mirror]
+  cache: [*tools_cache, *mirror_cache]
   # Not *bootstrap: that anchor ends in `just dev-env`, and
   # scripts/smoke-libvirt.sh drives tofu and virsh and touches no Python. The two
   # bootstrap scripts stay -- os-deps.sh brings jq for `ensure-mirror` and
@@ -125,11 +115,7 @@ image:
   stage: image
   tags: [podman]
   timeout: 30m
-  cache:
-    - key:
-        prefix: tools
-        files: [scripts/install-tools.sh, Containerfile]
-      paths: [.tools/bin]
+  cache: [*tools_cache]
   # On the default branch, on tags, and on any MR touching the image's inputs.
   # tests/test_image.py is the only thing exercising the air-gap properties, so
   # gating it to post-merge would validate a Containerfile change only after
