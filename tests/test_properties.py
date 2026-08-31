@@ -17,7 +17,7 @@ and a parser's interesting inputs are the ones nobody thought to write down.
 
 from __future__ import annotations
 
-import ipaddress
+import re
 import struct
 
 from hypothesis import given
@@ -25,7 +25,8 @@ from hypothesis import strategies as st
 
 from orchestrator import qcow2
 from orchestrator.backends.base import Problem
-from orchestrator.backends.libvirt.schema import _parse_interface
+from orchestrator.backends.libvirt.schema import NAME_PATTERN, _parse_interface
+from orchestrator.config import DEPLOYMENT_PATTERN
 from orchestrator.marker import Marker
 
 U64 = st.integers(min_value=0, max_value=2**64 - 1)
@@ -59,32 +60,62 @@ def test_marker_survives_a_json_round_trip(name, deployment):
     assert Marker.from_json(marker.to_json()) == marker
 
 
+#: What a validated config can actually hold. Unbounded `st.text` made the
+#: assertion below false rather than strong: `derive_id` joins the two halves
+#: with a bare '/', so ("b/c", "a") and ("c", "a/b") produce one id from two
+#: inputs. Hypothesis draws the two pairs independently and never builds that
+#: pair, so the test passed while claiming something untrue (#16).
+#:
+#: Two strategies rather than one, because these are two constants in two
+#: modules that are currently identical and need not stay so.
+VM_NAME = st.from_regex(NAME_PATTERN, fullmatch=True)
+DEPLOYMENT = st.from_regex(DEPLOYMENT_PATTERN, fullmatch=True)
+
+
 @given(
-    a=st.tuples(st.text(min_size=1, max_size=32), st.text(max_size=32)),
-    b=st.tuples(st.text(min_size=1, max_size=32), st.text(max_size=32)),
+    a=st.tuples(VM_NAME, DEPLOYMENT),
+    b=st.tuples(VM_NAME, DEPLOYMENT),
 )
 def test_derived_ids_separate_deployments(a, b):
     """S3 folded `deployment` into the uuid5 input so two deployments with the
-    same VM name stop colliding. That is a claim about every pair of inputs, not
-    about the pair someone happened to write down."""
+    same VM name stop colliding. That is a claim about every pair of validated
+    identifiers, not about the pair someone happened to write down."""
+    # Injectivity holds because the separator cannot occur in either half, not
+    # because uuid5 is injective. This is the assertion that fails if either
+    # pattern is ever widened to admit '/', which the property test above
+    # cannot catch on its own.
+    assert re.match(NAME_PATTERN, "a/b") is None
+    assert re.match(DEPLOYMENT_PATTERN, "a/b") is None
+
     first, second = Marker.for_vm(*a), Marker.for_vm(*b)
     assert (first.id == second.id) == (a == b)
 
 
 @given(
-    network=st.one_of(
-        st.ip_addresses(v=4).map(lambda a: ipaddress.IPv4Network(a).supernet(24)),
-        st.ip_addresses(v=6).map(lambda a: ipaddress.IPv6Network(a).supernet(8)),
+    spec=st.one_of(
+        st.tuples(st.ip_addresses(v=4), st.integers(min_value=0, max_value=32)),
+        st.tuples(st.ip_addresses(v=6), st.integers(min_value=0, max_value=128)),
     )
 )
-def test_parse_interface_accepts_what_ipaddress_produces(network):
-    """Anything the stdlib will render, the parser will read back identically."""
+def test_parse_interface_accepts_what_ipaddress_produces(spec):
+    """Anything the stdlib will render, the parser will read back identically.
+
+    The address and the prefix length are drawn independently because
+    `_parse_interface` is `ip_interface`, which takes a host address and not
+    only a network one -- and a host address is what an operator writes. The
+    strategy this replaces mapped through `IPv4Network(addr).supernet(24)`,
+    which widens a /32 by 24 bits: every case was a /8, every v6 case a /120,
+    and never once a host address (#16).
+    """
+    address, prefixlen = spec
     problems: list[Problem] = []
-    text = f"{network.network_address}/{network.prefixlen}"
+    text = f"{address}/{prefixlen}"
     parsed = _parse_interface(text, "where", problems)
     assert problems == []
     assert parsed is not None
-    assert parsed.network.prefixlen == network.prefixlen
+    # The whole interface, not just its prefix: the docstring says "read back
+    # identically", and asserting `prefixlen` alone was not a round trip.
+    assert str(parsed) == text
 
 
 @given(raw=st.text(max_size=40).filter(lambda s: "/" not in s))
