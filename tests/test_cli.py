@@ -90,7 +90,7 @@ def ours(name: str, deployment: str = "lab-a") -> Existing:
 
 def test_version_prints_the_single_definition(capsys):
     assert cli.main(["version"]) == 0
-    assert VERSION in capsys.readouterr().out
+    assert VERSION in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -112,14 +112,14 @@ def test_version_survives_every_way_tofu_version_can_fail(monkeypatch, capsys, r
 
     monkeypatch.setattr(cli.tofu, "version", boom)
     assert cli.main(["version"]) == 0
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert VERSION in out, "the build is still reported first"
     assert "tofu: unavailable" in out
 
 
 def test_validate_is_offline(no_libvirt, backend, config, capsys):  # noqa: F811
     assert cli.main(["validate", config]) == 0
-    assert "valid" in capsys.readouterr().out
+    assert "valid" in capsys.readouterr().err
     assert backend.sessions == [], "validate must not open a connection"
 
 
@@ -172,7 +172,7 @@ def test_a_destroy_scopes_the_advisory_problems(backend, tmp_path, monkeypatch, 
 
 def test_preflight_reports_and_opens_a_session(no_libvirt, backend, config, capsys):  # noqa: F811
     assert cli.main(["preflight", config]) == 0
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "app01" in out and "create" in out
     assert backend.sessions[0].closed, "the session must close on the way out"
 
@@ -180,7 +180,7 @@ def test_preflight_reports_and_opens_a_session(no_libvirt, backend, config, caps
 def test_preflight_refuses_an_unmarked_collision(backend, config, capsys):
     backend.world = [Existing(name="app01", id="0", marker=None)]
     assert cli.main(["preflight", config]) == 1
-    assert "will not adopt or overwrite" in capsys.readouterr().out
+    assert "will not adopt or overwrite" in capsys.readouterr().err
 
 
 # -- deploy -----------------------------------------------------------------
@@ -231,7 +231,7 @@ def test_a_second_deploy_creates_nothing_and_launches_no_tofu(
         cli.tofu, "init", lambda *a, **k: pytest.fail("tofu must not run")
     )
     assert cli.main(["deploy", config]) == 0
-    assert "nothing to create" in capsys.readouterr().out
+    assert "nothing to create" in capsys.readouterr().err
     assert not (latest_run(tmp_path) / "tofu").exists()
 
 
@@ -647,7 +647,7 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
 
     session = backend.sessions[-1]
     assert session.destroyed == ["app01"]
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "belongs to deployment 'lab-b'" in out
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["destroyed"] == ["app01"]
@@ -676,9 +676,18 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
 
     assert cli.main(["destroy", config, "--yes"]) == 1
     captured = capsys.readouterr()
-    assert "/pool/app01.qcow2" in captured.out
-    assert "/pool/app01-seed.iso" in captured.out
-    assert "could not refresh pool" in captured.err
+    # Rewritten rather than retargeted when every line became a log line: this
+    # used to pin the stdout/stderr split, and the split is now the *level*.
+    # Retargeting both halves to `.err` would have left it passing while
+    # asserting nothing about which is which.
+    assert captured.out == "", "stdout carries nothing but the interactive prompt"
+    skipped = [ln for ln in captured.err.splitlines() if "/pool/app01" in ln]
+    assert len(skipped) == 2, captured.err
+    assert all(" INFO " in ln for ln in skipped), skipped
+    (refresh,) = [
+        ln for ln in captured.err.splitlines() if "could not refresh pool" in ln
+    ]
+    assert " WARNING " in refresh, refresh
 
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "partial"
@@ -847,7 +856,7 @@ def test_destroy_needs_an_answer_when_there_is_nobody_to_ask(
 def test_destroy_with_nothing_of_ours_is_not_an_error(backend, config, capsys):
     backend.world = [Existing(name="somebody-elses", id="0", marker=None)]
     assert cli.main(["destroy", config, "--yes"]) == 0
-    assert "no VMs marked for deployment 'lab-a'" in capsys.readouterr().out
+    assert "no VMs marked for deployment 'lab-a'" in capsys.readouterr().err
 
 
 # -- the build manifest, and the modes ---------------------------------------

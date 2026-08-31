@@ -307,42 +307,54 @@ returned and reported by `cmd_destroy`, and `Result.warnings` is recorded into
 `run.json` — not re-printed, because `tofu` inherits stdout and has already
 rendered them live.
 
-### The log is not a fifth carrier
+### The log is the only carrier of output
 
-Added for #136, which filed the one thing the rule above does not cover:
-`Diagnostic.detail` is populated on every run, dropped by `__str__`, and
-flattened to one line by both consumers, so the terminal got OpenTofu's
-multi-line *why* and the persisted copy got the headline.
+**Reversed, deliberately, one day after #136 shipped the opposite.** The earlier
+version of this section is worth stating so the change reads as a decision rather
+than a drift: #136 drew the line as *the printout carries the headline, the log
+carries the detail*, and argued the log must not become a fifth carrier beside
+the four above. That framing is gone. Every line vcows writes is now a log line —
+timestamped, level-tagged, on stderr — and `print` is absent from `orchestrator/`
+and `container/` entirely, gated by `test_logging.test_nothing_prints`.
 
-The line drawn is **the printout carries the headline, the log carries the
-detail** — and, operationally, **log only where information is destroyed and no
-carrier survives**. That second half is what keeps this from becoming the fifth
-carrier this section refuses: nothing logs a `Problem`, a `Decision` or an
-`Outcome`, because each of those is already printed where it arrives. Fourteen
-statements in four files; `schema.py`, `prepare.py`, `render.py`, `marker.py`,
-`qcow2.py`, `config.py` and `base.py` got none, and everything in `destroy.py`
-routed through `_fail` got none.
+**What is preserved is the distinction, not the mechanism.** The four result
+carriers above are still four, and each is still reported once where it arrives;
+`_problem` logs a `Problem` at the level its own `Severity` names and nothing
+re-reports it. What changed is that the *level* now does the work the *stream*
+used to: `INFO` is the report, `WARNING` is degraded-but-continuing, `ERROR` ends
+the run, `DEBUG` is the recovery detail #136 added. A reader who wants the old
+stdout/stderr split reads levels instead.
 
-Consequences worth keeping: stdlib `logging` only, no new dependency, no
-handler configuration (which is the plugin-discovery shape banned below). stderr
-only, so `podman logs` is the persistence and the log survives the `--run-dir`
-case where `run.json` is never written. Nothing above INFO, gated by
-`test_logging.test_nothing_is_logged_above_info` — WARNING+ reaches
-`logging.lastResort` and the real stderr in tests that do not go through `main`.
-`run.extra["tofu_warnings"]` stays `list[str]`, which is #89's RX-B6 cleared by
-construction rather than by argument.
+**The convention was weighed, not assumed.** The POSIX CLI convention — stdout is
+the result, stderr is diagnostics — is what `git`, `kubectl` and OpenTofu itself
+follow, and it is what vcows had. The twelve-factor/container convention treats
+all output as one event stream. The second was chosen on the maintainer's call,
+with the trade understood: a single stream is materially simpler to maintain (one
+logger, one handler, one format, no `propagate` or handler-clearing traps), and
+it costs stdout as a separate result channel. Do not re-derive this; if vcows
+ever grows a machine-readable stdout mode, that is the point to revisit it.
 
-**OpenTelemetry was reconsidered here and stays cut.** §5's row below is still
-the decision; one of its grounds has moved and one has been strengthened.
-Moved: the propagation gap it cites (opentofu#3936) is *outbound* — tofu to
-`local-exec`, which vcows does not use. The direction vcows would need is
-inbound, and it works at the pinned 1.12.6: `internal/tracing/init.go` at that
-tag reads `TRACEPARENT` and `TRACESTATE`. Strengthened: `opentelemetry-api`,
-`-sdk` and `-exporter-otlp` have no Rocky 10 or EPEL 10 RPM, which is §5.6's
-`defusedxml` disqualifier verbatim and would mean the second air-gap mechanism
-`pyproject.toml` rejects by name. Nothing is foreclosed — `container/entrypoint.py`
-ends in `os.execv` and `tofu._env()` is `{**os.environ, ...}`, so `OTEL_*`
-already reaches the tofu child untouched if a site ever sets it.
+**Two consequences worth keeping.**
+
+*The one exception is interactive.* `cli._confirm`'s prompt stays on stdout,
+unprefixed, because `input()` writes it without a trailing newline so the cursor
+stays where the operator types. Being the only unprefixed output there is, it is
+trivially separable — which is the reason it is the exception.
+
+*Logging is configured at package import*, in `orchestrator/__init__.py`, not in
+`cli.main`. `backends.libvirt.schema` computes `MAX_VCPUS` and its siblings as
+module-level constants consumed as literals inside `VM_SCHEMA`, and `_ceiling`
+reports a malformed `VCOWS_MAX_*` while doing so — on the import chain, before
+`main` is reached. A logger configured in `main` would miss it and the record
+would fall through to `logging.lastResort`, which writes to stderr unprefixed and
+ignores `VCOWS_LOG_LEVEL`. An import side effect is wrong for a library and right
+for an application package. `test_logging` gates it.
+
+*The handler resolves `sys.stderr` when it writes*, not when it is built —
+`orchestrator._Stderr`, duplicated in `container/entrypoint.py`. A bound
+`StreamHandler` configured at import holds the real stderr and writes past any
+later replacement of the stream; measured at 39 failing tests, because that is
+exactly what pytest's `capsys` does.
 
 ### Explicitly not built
 
@@ -404,7 +416,7 @@ Two rules to settle while drafting: `nics` is a list but the inventory carries o
 | §6.1, §6.4, §7, most of §2's table, §11 rows 2–3 | vSphere and Proxmox. ovftool, open-vmdk, `mkova.sh`, content libraries, govc, the `import` content type, the snippet/SFTP analysis. `image/convert.py` deletes outright. Move to `future-backends.md` so the research survives. |
 | §4 Stage 3, `ansible/`, `exec/ansible.py` | Nobody has asked for post-config. Golden images already contain cloud-init and `user_data` is in the schema. Stage 3 has no stated purpose, no inputs, and no config surface. It drags in ansible-core, ansible-runner, a second air-gap vendoring pipeline, and the GPLv3 half of F15. **The seam is free: write `inventory.json` with no consumer.** |
 | §4 Stages 0 and 4, `hooks/` | No downstream group has asked for a hook, and shipping one freezes an environment contract against zero requirements. An escape valve arriving before real extension points means downstream shells out instead of asking, inside sites you cannot debug. Adding later is backward-compatible; removing is not. Make CLI phases separably invocable instead. |
-| §8, `telemetry.py` | Its purpose was correlating two child processes; there is one. The propagation gap it cites closed upstream (issue #3936, shipped in 1.13.0). Air-gap would mean a collector per site. **Reconsidered for #136 and still cut** — see §3's "The log is not a fifth carrier", which corrects the #3936 ground and adds the RPM measurement. |
+| §8, `telemetry.py` | Its purpose was correlating two child processes; there is one. The propagation gap it cites closed upstream (issue #3936, shipped in 1.13.0). Air-gap would mean a collector per site. **Reconsidered for #136 and still cut** — see §3's "The log is the only carrier of output", which corrects the #3936 ground and adds the RPM measurement. |
 | The `:9` tag | Answered by the Haswell confirmation. Never the one-line diff §3 claims anyway — Rocky 9's platform Python is 3.9, `python3-libvirt` there is built against 3.9 only, and current ansible-core needs 3.12+. |
 | S3/MinIO, `lifecycle: oneshot \| stateful` | State is always written. §10 conflated *shared* state with *a record of what you created*; "one-shot" should have meant unshared, not amnesiac. |
 

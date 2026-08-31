@@ -27,7 +27,6 @@ wrote into it would be overstepping.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import pwd
@@ -47,6 +46,49 @@ VCOWS = "/usr/local/bin/vcows"
 #: broken entrypoint instead of the sentence `vcows` itself would have printed a
 #: moment later.
 log = logging.getLogger("vcows.entrypoint")
+
+
+class _Stderr(logging.StreamHandler):
+    """Resolve ``sys.stderr`` when writing, not when constructed.
+
+    Duplicated from `orchestrator.__init__` rather than imported, for the same
+    reason `log` above is. A plain ``StreamHandler`` binds its stream once, so a
+    handler built here would keep writing to whatever ``sys.stderr`` was at that
+    instant -- which in-process, under pytest, is the previous test's capture.
+    """
+
+    @property
+    def stream(self):  # type: ignore[override]
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value) -> None:
+        """Swallowed: the property above is the only answer."""
+
+
+def _configure_logging() -> None:
+    """The window before the exec. `orchestrator` configures its own at package
+    import, a moment from now.
+
+    An unusable ``VCOWS_LOG_LEVEL`` is left to `orchestrator._log_level`, which
+    reports it in one place rather than two -- so a bad value falls back here
+    silently rather than stopping the entrypoint.
+    """
+    logging.Formatter.converter = time.gmtime
+    level = os.environ.get("VCOWS_LOG_LEVEL", "INFO").upper()
+    if level not in logging.getLevelNamesMapping():
+        level = "INFO"
+    handler = _Stderr()
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%dT%H:%M:%SZ"
+        )
+    )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
 
 #: An absolute path with no whitespace in it. Mirrors ``SSH_PATH_PATTERN`` in
 #: ``orchestrator/backends/libvirt/schema.py``, and is duplicated rather than
@@ -183,15 +225,14 @@ def install(argv: list[str]) -> None:
     try:
         body = ssh_config(keyfile, known_hosts)
     except ValueError as exc:
-        print(f"vcows: {exc}", file=sys.stderr)
+        log.warning("%s", exc)
         return
 
     where = home()
     if where is None:
-        print(
-            "vcows: no passwd entry for this UID, so ~/.ssh cannot be located; "
-            "mount your SSH config yourself",
-            file=sys.stderr,
+        log.warning(
+            "no passwd entry for this UID, so ~/.ssh cannot be located; "
+            "mount your SSH config yourself"
         )
         return
 
@@ -228,10 +269,10 @@ def install(argv: list[str]) -> None:
             # Somebody mounted their own. Theirs wins -- and it is said out loud,
             # because the alternative is debugging a credential the config named
             # and nothing ever installed.
-            print(
-                f"vcows: {destination} already exists; leaving it alone. This "
-                f"run's ssh_keyfile and known_hosts were not installed.",
-                file=sys.stderr,
+            log.warning(
+                "%s already exists; leaving it alone. This run's ssh_keyfile "
+                "and known_hosts were not installed.",
+                destination,
             )
             return
         with os.fdopen(fd, "w") as handle:
@@ -242,12 +283,13 @@ def install(argv: list[str]) -> None:
         # ssh, which points at nothing. Measured under `--user 4242`, where the
         # synthesised passwd entry's home is `/` and unwritable: two messages,
         # and without this line the second looks like the error.
-        print(
-            f"vcows: could not write {destination}: {exc}. This run's "
-            f"ssh_keyfile and known_hosts were not installed, so the connection "
-            f"will use whatever ssh finds on its own -- likely failing with a "
-            f"host key or permission error that does not mention this.",
-            file=sys.stderr,
+        log.warning(
+            "could not write %s: %s. This run's ssh_keyfile and known_hosts "
+            "were not installed, so the connection will use whatever ssh finds "
+            "on its own -- likely failing with a host key or permission error "
+            "that does not mention this.",
+            destination,
+            exc,
         )
 
 
@@ -266,18 +308,7 @@ def verb(argv: list[str]) -> str | None:
 
 
 def main() -> None:
-    # `vcows` configures its own logging a moment from now; this covers the
-    # window before the exec. An unusable VCOWS_LOG_LEVEL is left entirely to
-    # `cli._log_level`, which reports it in one place rather than two.
-    logging.Formatter.converter = time.gmtime
-    with contextlib.suppress(ValueError):
-        logging.basicConfig(
-            level=os.environ.get("VCOWS_LOG_LEVEL", "INFO").upper(),
-            stream=sys.stderr,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%SZ",
-            force=True,
-        )
+    _configure_logging()
     if verb(sys.argv[1:]) not in OFFLINE:
         install(sys.argv[1:])
     # S606 flags shell-less execution, which is the safe half of the pair:

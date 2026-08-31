@@ -15,15 +15,20 @@ file's docstring gives.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
+import re
+import sys
+import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
 
+import orchestrator
 from orchestrator import cli, tofu
-from orchestrator.backends.libvirt import destroy, preflight
+from orchestrator.backends.libvirt import destroy, preflight, schema
 
 from .test_tofu_driver import DIAGNOSTIC, FAKE
 
@@ -169,70 +174,179 @@ def test_the_error_handler_survives_a_shape_it_does_not_expect(caplog):
 
 def test_the_default_is_info(monkeypatch):
     """Not WARNING. The purpose is traceability *after* delivery, and `destroy`
-    cannot be re-run to recover what was not recorded the first time."""
+    cannot be re-run to recover what was not captured the first time."""
     monkeypatch.delenv("VCOWS_LOG_LEVEL", raising=False)
-    assert cli._log_level() == "INFO"
+    assert orchestrator._log_level() == "INFO"
 
 
 @pytest.mark.parametrize("given, wanted", [("debug", "DEBUG"), ("WARNING", "WARNING")])
 def test_the_level_is_taken_from_the_environment(monkeypatch, given, wanted):
     monkeypatch.setenv("VCOWS_LOG_LEVEL", given)
-    assert cli._log_level() == wanted
+    assert orchestrator._log_level() == wanted
 
 
-def test_an_unusable_level_is_reported_and_ignored(monkeypatch, capsys):
+def test_an_unusable_level_falls_back_without_raising(monkeypatch):
     """`basicConfig` raises ValueError on an unknown level, which would turn a
-    typo in an environment variable into a run that does not start. Same shape
-    and the same voice as `schema._ceiling`."""
+    typo in an environment variable into a run that does not start."""
     monkeypatch.setenv("VCOWS_LOG_LEVEL", "chatty")
-    assert cli._log_level() == "INFO"
-    assert "ignoring VCOWS_LOG_LEVEL='chatty'" in capsys.readouterr().err
+    assert orchestrator._log_level() == "INFO"
+    orchestrator.configure_logging()  # must not raise
 
 
-def test_configuring_twice_rebinds_the_stream(monkeypatch, capsys):
-    """`force=True` is not decorative: `basicConfig` is a no-op when the root
-    logger already has handlers, so without it the first caller in a process
-    binds the handler to a stream every later one keeps writing to."""
-    monkeypatch.delenv("VCOWS_LOG_LEVEL", raising=False)
-    cli._logging()
-    cli._logging()
-    capsys.readouterr()
-    logging.getLogger("orchestrator.cli").info("after the second configure")
-    assert "after the second configure" in capsys.readouterr().err
+def test_quiet_mode_drops_the_report_and_keeps_the_problems(monkeypatch, capsys):
+    """`VCOWS_LOG_LEVEL=WARNING` is the quiet mode that falls out of putting the
+    report at INFO. It is the one setting at which output is not identical."""
+    monkeypatch.setenv("VCOWS_LOG_LEVEL", "WARNING")
+    orchestrator.configure_logging()
+    try:
+        logging.getLogger("orchestrator.cli").info("a report row")
+        logging.getLogger("orchestrator.cli").warning("a problem")
+        err = capsys.readouterr().err
+        assert "a report row" not in err
+        assert "a problem" in err
+    finally:
+        monkeypatch.delenv("VCOWS_LOG_LEVEL")
+        orchestrator.configure_logging()
 
 
-def test_the_timestamp_is_utc(monkeypatch):
-    """The format ends in `Z`. `asctime` is localtime unless the converter says
-    otherwise, and a site in another timezone would read a stamp that disagrees
-    with the run directory's name."""
-    monkeypatch.delenv("VCOWS_LOG_LEVEL", raising=False)
-    cli._logging()
-    import time
+# -- the shape of a line ---------------------------------------------------
 
+
+def test_every_line_carries_a_level_and_a_logger(capsys):
+    """The whole point of the migration: one channel, and the level is what
+    tells the operator which kind of line they are looking at."""
+    logging.getLogger("orchestrator.cli").warning("something degraded")
+    line = capsys.readouterr().err.strip()
+    assert "WARNING" in line
+    # The module, not the dotted path: 38 characters of shared prefix on every
+    # line is what `_Short` exists to remove.
+    assert "cli" in line and "orchestrator.cli" not in line
+    assert line.endswith("something degraded")
+    # ISO-8601 UTC with milliseconds -- a preflight puts four lines in one second.
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z ", line), line
+
+
+def test_the_timestamp_is_utc():
+    """`asctime` is localtime unless the converter says so, and a site in
+    another timezone would read a stamp that disagrees with its run directory."""
+    orchestrator.configure_logging()
     assert logging.Formatter.converter is time.gmtime
 
 
-def test_nothing_is_logged_above_info():
-    """Some tests exercise these modules directly rather than through `main`,
-    where no handler is configured and `logging.lastResort` writes WARNING+ to
-    the real stderr, escaping capsys. Keeping every statement at INFO or below
-    makes that unreachable -- this is the gate on that, not a style note."""
+def test_levels_line_up_in_the_gutter(capsys):
+    """`%(levelname)-7s` is padded so the message column starts at the same
+    offset regardless of level -- which is what keeps `_row`'s table aligned."""
+    logging.getLogger("orchestrator.cli").info("first")
+    logging.getLogger("orchestrator.cli").warning("second")
+    a, b = capsys.readouterr().err.splitlines()
+    assert a.index("first") == b.index("second"), (a, b)
+
+
+def test_the_handler_follows_a_replaced_stream(monkeypatch):
+    """The handler resolves `sys.stderr` when it writes, not when it is built.
+
+    Deliberately does **not** call `configure_logging` after replacing the
+    stream: doing so rebuilds the handler against the new one and the test would
+    pass whether or not the property exists. Configured at package import, a
+    bound handler holds the real stderr and writes straight past `capsys` --
+    measured at 39 failing tests before this property existed.
+    """
+    handler = orchestrator._Stderr()  # built against the current sys.stderr
+    replacement = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", replacement)
+
+    handler.emit(
+        logging.LogRecord("t", logging.WARNING, __file__, 0, "after the swap", (), None)
+    )
+    assert "after the swap" in replacement.getvalue()
+
+
+def test_configuring_twice_does_not_double_a_line(capsys):
+    """Handlers are replaced, not appended. Left to accumulate, every line would
+    be emitted once per call."""
+    orchestrator.configure_logging()
+    orchestrator.configure_logging()
+    capsys.readouterr()
+    logging.getLogger("orchestrator.cli").warning("once")
+    assert capsys.readouterr().err.count("once") == 1
+
+
+# -- the one thing that is not a log line ----------------------------------
+
+
+def test_the_confirm_prompt_is_bare_and_on_stdout(monkeypatch, capsys):
+    """`input()` writes it with no trailing newline so the cursor stays where
+    the operator types. Being the only unprefixed output vcows produces, it is
+    trivially separable from the log -- which is why it is the exception."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (print(prompt, end=""), "no")[1]
+    )
+
+    assert cli._confirm(2, "lab-a", yes=False) is False
+    captured = capsys.readouterr()
+    assert "type 'yes'" in captured.out
+    assert "INFO" not in captured.out and "WARNING" not in captured.out
+    assert captured.err == ""
+
+
+def test_the_non_tty_refusal_is_a_log_line(monkeypatch, capsys):
+    """`_confirm`'s other write is not interactive, so it is not an exception."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    assert cli._confirm(2, "lab-a", yes=False) is False
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ERROR" in captured.err and "pass --yes" in captured.err
+
+
+# -- the import-time write that forced the __init__ move -------------------
+
+
+def test_the_import_time_ceiling_warning_is_a_proper_log_line(monkeypatch, capsys):
+    """`schema._ceiling` runs while `VM_SCHEMA` is being built, before `main()`.
+    This is the assertion that fails if logging configuration moves back out of
+    `orchestrator/__init__.py`: the record would reach `logging.lastResort`,
+    which writes to stderr unprefixed and ignores VCOWS_LOG_LEVEL."""
+    import importlib
+
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", "lots")
+    try:
+        importlib.reload(schema)
+        err = capsys.readouterr().err
+        assert "VCOWS_MAX_VCPUS='lots'" in err
+        assert "WARNING" in err, "reached lastResort instead of our handler"
+        assert "schema" in err
+    finally:
+        monkeypatch.delenv("VCOWS_MAX_VCPUS")
+        importlib.reload(schema)
+
+
+# -- the gate that keeps it that way ---------------------------------------
+
+
+def test_nothing_prints(capsys):
+    """No `print(` anywhere in the shipped code.
+
+    With `_confirm`'s `input()` being the only sanctioned non-log output, and
+    `input()` not being a `print`, this gate is exact -- there is no allow-list
+    to drift. It replaces #143's `test_nothing_is_logged_above_info`, which
+    forbade `log.warning`/`log.error`; those are now required everywhere, and
+    the reason that gate existed (WARNING+ escaping `capsys` through
+    `logging.lastResort`) is answered by configuring at package import.
+    """
     import ast
 
-    banned = {"warning", "warn", "error", "exception", "critical", "fatal"}
-    offenders = []
     root = Path(__file__).resolve().parent.parent
     sources = [*(root / "orchestrator").rglob("*.py"), root / "container/entrypoint.py"]
+    offenders = []
     for path in sources:
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in banned
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "log"
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
             ):
-                offenders.append(f"{path.relative_to(root)}: log.{node.func.attr}")
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert offenders == []
 
 
@@ -248,3 +362,88 @@ def test_a_pool_that_answers_without_a_target_path_is_logged(caplog):
     with caplog.at_level(logging.DEBUG, logger=destroy.__name__):
         assert destroy._pool_holds(Pool(), {"/pool/app01.qcow2"}) is None
     assert "no <target><path>" in caplog.text
+
+
+# -- what the messages themselves say --------------------------------------
+
+
+def test_a_problem_without_a_where_renders_as_just_its_message(caplog):
+    """Most problems are about the run rather than about a field. The absent
+    `where` must be omitted, not rendered -- the first version bracketed it and
+    produced a leading `" : "`.
+
+    Asserted on the record's exact message rather than on a substring of the
+    line: the first version of this test checked for `":  "` and passed against
+    the very defect it was written for, which renders `" : "`.
+    """
+    from orchestrator.backends.base import Problem, Severity
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
+        cli._problem(Problem(Severity.WARNING, "the pool went away"))
+    (record,) = caplog.records
+    assert record.getMessage() == "the pool went away"
+
+
+def test_a_problem_with_a_where_names_it_first(caplog):
+    from orchestrator.backends.base import Problem, Severity
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
+        cli._problem(Problem(Severity.ERROR, "duplicate IP", "vms[0].nics[0]"))
+    (record,) = caplog.records
+    assert record.getMessage() == "[vms[0].nics[0]] duplicate IP"
+
+
+def test_a_tofu_error_diagnostic_is_logged_at_error(capsys):
+    """The errors from a failed `apply` are the most important lines in the log.
+    #136 put every diagnostic at INFO, so they sat at the same level as the
+    command line that produced them and said "error" in their text to say so."""
+    tofu._log_diagnostic(
+        "apply",
+        tofu.Diagnostic("error", "Volume Creation Failed", "", "libvirt_volume.x"),
+    )
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "apply [libvirt_volume.x]: Volume Creation Failed" in err
+
+
+def test_an_unrecognised_diagnostic_severity_is_visible_not_dropped(capsys):
+    """A severity string OpenTofu has not used before should be visible without
+    being alarming -- a warning, rather than dropped or promoted to error."""
+    tofu._log_diagnostic("plan", tofu.Diagnostic("notice", "Something new", "", ""))
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_a_multi_line_detail_reads_as_continuation(capsys):
+    """Unindented, the second line starts at column 0 and is indistinguishable
+    from the next record -- which is what makes a wall of these unreadable."""
+    tofu._log_diagnostic(
+        "apply", tofu.Diagnostic("error", "headline", "first line\nsecond line", "")
+    )
+    body = capsys.readouterr().err.splitlines()
+    assert body[0].endswith("headline")
+    assert body[1] == "    first line"
+    assert body[2] == "    second line"
+
+
+def test_an_invocation_logs_its_exit_code_and_duration(fake_tofu, tmp_path, caplog):
+    """OpenTofu's own output is inherited and unprefixed -- 200 lines to our 10
+    in a real deploy -- so the "running" line opens a block that nothing closed.
+    The exit code and elapsed time were also recorded nowhere."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
+        tofu.init(workdir)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("running ") for m in messages)
+    assert any(re.fullmatch(r"init: exit 0 in \d+\.\ds", m) for m in messages), messages
+
+
+def test_a_report_row_carries_no_trailing_padding(caplog):
+    """`_row` pads to fixed columns; with an empty detail that padding would
+    hang off the end of the record."""
+    with caplog.at_level(logging.INFO, logger="orchestrator.cli"):
+        logging.getLogger("orchestrator.cli").info(
+            "%s", cli._row("app01", "destroy", "")
+        )
+    (record,) = caplog.records
+    assert record.getMessage() == "app01                destroy"
