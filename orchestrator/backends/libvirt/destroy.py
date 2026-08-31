@@ -231,7 +231,7 @@ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
     import libvirt
 
     try:
-        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
     except (libvirt.libvirtError, ET.ParseError):
         return None
     if not path:
@@ -358,13 +358,16 @@ def _claimed_elsewhere(
         domains = conn.listAllDomains(0)
     except libvirt.libvirtError:
         return None
+    # The twin of preflight._domains. Deliberately not shared: the filter below
+    # runs before the read, and a shared iterator would have to move it after,
+    # warning about a domain this teardown is about to delete. #42.
     for dom in domains:
         name = "<unnamed>"
         try:
             name = dom.name()
             if dom.UUIDString() in ours:
                 continue
-            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
         except (libvirt.libvirtError, ET.ParseError) as exc:
             # A domain that vanished mid-scan claims nothing, and that is the
             # common case -- but one that could not be read may claim a disk this
@@ -394,7 +397,7 @@ def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
     import libvirt
 
     try:
-        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
     except (libvirt.libvirtError, ET.ParseError) as exc:
         out.problems.append(
             Problem.error(f"could not re-read: {exc}", where=target.name)
