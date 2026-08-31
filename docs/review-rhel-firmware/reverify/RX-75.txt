@@ -1,0 +1,600 @@
+RX-75 -- reverification of issue #75, "The RHEL firmware path dies after the
+volumes are written".
+
+Worktree /home/ssullivan/vcows-wt/rhel-firmware, branch lane/rhel-firmware,
+HEAD be50ae6 (= origin/master at the time of this run).
+
+Six CI runs on the throwaway branch spike/rhel-firmware-repro, dispatched with
+`gh workflow run ci.yml --ref spike/rhel-firmware-repro`. The branch has been
+deleted; the run logs remain retrievable by id. No `just smoke-libvirt` was run
+on this machine and the rig at qemu+ssh://vcows@vcows/system was not contacted.
+
+
+================================================================================
+A. ANCHORS (local, HEAD be50ae6)
+================================================================================
+
+$ git log --oneline -1
+be50ae6 Correct the README's --user recipe: three things lined up, not two, and the ':U' remedy costs the run record (#103)
+exit=0
+
+$ git log --oneline -- orchestrator/backends/libvirt/tofu/main.tf
+4eb378b CI on two platforms, and the tooling the survey called for (#1)
+exit=0
+  -- the module has not been touched since it was introduced, so run
+     33355418177 (commit 691ebe7) exercised the same expressions as HEAD.
+
+$ sed -n '127,139p' orchestrator/backends/libvirt/tofu/main.tf
+    nv_ram = each.value.nvram_template != null ? {
+      // The suffix follows the format, the way libvirt names its own: the rig
+      // writes <name>_VARS.qcow2 from a qcow2 template, while a raw .fd template
+      // gives .fd. Hardcoding .fd put qcow2 content under a raw name -- harmless,
+      // since the declared `format` is what is read, and misleading to anyone
+      // debugging it on a host whose other domains disagree.
+      nv_ram = "/var/lib/libvirt/qemu/nvram/${each.value.domain_name}_VARS.${each.value.loader_format == "qcow2" ? "qcow2" : "fd"}"
+      // The variables file follows the firmware build it was templated from, so
+      // one config field settles both.
+      format          = each.value.loader_format
+      template        = each.value.nvram_template
+      template_format = each.value.loader_format
+    } : null
+exit=0
+
+$ grep -n 'loader_format' orchestrator/backends/libvirt/schema.py
+134:        "loader_format": {"enum": ["raw", "qcow2"]},
+473:        for key in ("loader", "loader_format", "nvram_template"):
+496:    if "loader_format" in vm and loader is None:
+499:                "'loader_format' describes 'loader', which is not set",
+500:                where=f"{where}.loader_format",
+503:    if loader is not None and "loader_format" not in vm:
+510:                "'loader' was set without 'loader_format'. It is not optional: "
+exit=0
+
+$ sed -n '503,514p' orchestrator/backends/libvirt/schema.py
+    if loader is not None and "loader_format" not in vm:
+        # The module does not treat an absent format as "unknown", it treats it
+        # as raw: main.tf builds the varstore path with an `.fd` suffix and
+        # passes `format = null`. A qcow2 loader then gets an `.fd` varstore,
+        # which is the mismatch the first acceptance run already paid for.
+        problems.append(
+            Problem.error(
+                "'loader' was set without 'loader_format'. It is not optional: "
+                "the varstore path is built from it, and an absent value is "
+                "taken as 'raw'. Fedora's OVMF is qcow2, RHEL's is raw.",
+                where=f"{where}.loader",
+            )
+        )
+exit=0
+  -- loader_format is MANDATORY whenever loader is set. There is no config an
+     operator can write that pins a loader and dodges the failing attribute.
+
+
+================================================================================
+B. QUESTION 2 -- is loader_format: raw reachable through config.py validation?
+================================================================================
+
+$ cat /tmp/rhel.yaml
+schema_version: 1
+deployment: rhel-a
+backend: libvirt
+target:
+  libvirt:
+    uri: qemu+ssh://vcows@hypervisor.example/system
+    pool: images
+image:
+  source_qcow2: /images/golden.qcow2
+  base_volume_name: golden.qcow2
+vms:
+  - name: app01
+    vcpus: 2
+    memory_mib: 4096
+    disk_gb: 40
+    firmware: efi
+    loader: /usr/share/OVMF/OVMF_CODE.fd
+    loader_format: raw
+    nvram_template: /usr/share/OVMF/OVMF_VARS.fd
+    nics:
+      - network: default
+        ip_cidr: 192.168.122.60/24
+        gateway: 192.168.122.1
+        nameservers: [192.168.122.1]
+
+$ .venv/bin/python -m orchestrator.cli validate /tmp/rhel.yaml
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+/tmp/rhel.yaml: valid (1 VMs, deployment 'rhel-a')
+EXIT=0
+  -- the only diagnostic is the unrelated missing-image warning. Nothing in the
+     firmware cross-checks (schema.py:465-514) objects.
+
+$ .venv/bin/python  # render.py against the same config
+{
+  "domain_name": "app01",
+  "overlay_name": "app01.qcow2",
+  "seed_name": "app01-seed.iso",
+  "marker_xml": "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"rhel-a\",\"name\":\"app01\",\"id\":\"6193089f-4f6c-562e-bb13-3c745190cfad\"}</vcows>",
+  "vcpus": 2,
+  "memory_mib": 4096,
+  "disk_bytes": 42949672960,
+  "seed_iso": "/run/vcows/app01-seed.iso",
+  "firmware": "efi",
+  "machine": "q35",
+  "loader": "/usr/share/OVMF/OVMF_CODE.fd",
+  "loader_format": "raw",
+  "nvram_template": "/usr/share/OVMF/OVMF_VARS.fd",
+  "configured_address": "192.168.122.60",
+  "nics": [
+    {
+      "mac": "52:54:00:e2:ad:80",
+      "model": "virtio",
+      "network": "default",
+      "bridge": null
+    }
+  ]
+}
+  -- "raw" is passed through verbatim and reaches main.tf:119, :136 and :138.
+
+
+================================================================================
+C. QUESTION 1a -- what the provider's schema permits
+================================================================================
+
+docs/provider-schema-0.9.8.json, libvirt_domain.block.attributes.os
+
+$ python3  # dump the nesting flags
+nv_ram nesting_mode: single
+  format {'type': 'string', 'optional': True}
+  nv_ram {'type': 'string', 'required': True}
+  source {'optional': True, 'NESTED': True}
+  template {'type': 'string', 'optional': True}
+  template_format {'type': 'string', 'optional': True}
+
+os attributes (all of them):
+  acpi {'optional': True, 'NESTED': True}
+  bios {'optional': True, 'NESTED': True}
+  boot_devices {'optional': True, 'NESTED': True}
+  boot_menu {'optional': True, 'NESTED': True}
+  cmdline {'type': 'string', 'optional': True}
+  dtb {'type': 'string', 'optional': True}
+  firmware {'type': 'string', 'optional': True}
+  firmware_info {'optional': True, 'NESTED': True}
+  init {'type': 'string', 'optional': True}
+  init_args {'type': ['list', 'string'], 'optional': True}
+  init_dir {'type': 'string', 'optional': True}
+  init_env {'optional': True, 'NESTED': True}
+  init_group {'type': 'string', 'optional': True}
+  init_user {'type': 'string', 'optional': True}
+  initrd {'type': 'string', 'optional': True}
+  kernel {'type': 'string', 'optional': True}
+  loader {'type': 'string', 'optional': True}
+  loader_format {'type': 'string', 'optional': True}
+  loader_readonly {'type': 'string', 'optional': True}
+  loader_secure {'type': 'string', 'optional': True}
+  loader_stateless {'type': 'string', 'optional': True}
+  loader_type {'type': 'string', 'optional': True}
+  nv_ram {'optional': True, 'NESTED': True}
+  shim {'type': 'string', 'optional': True}
+  sm_bios {'optional': True, 'NESTED': True}
+  type {'type': 'string', 'optional': True}
+  type_arch {'type': 'string', 'optional': True}
+  type_machine {'type': 'string', 'optional': True}
+
+  -- format and template_format are Optional and NOT Computed. Not one attribute
+     under `os` carries computed:true. Optional-without-Computed is the flag that
+     makes OpenTofu demand the applied value equal the planned one, so any
+     attribute the provider re-derives from libvirt's XML is a candidate for
+     this failure and the schema gives no room to absorb it.
+     `nv_ram.nv_ram` is the only required attribute in the block; both formats
+     may be omitted.
+
+
+================================================================================
+D. CI RUN 33355418177 -- the run the issue was filed from (commit 691ebe7)
+================================================================================
+
+$ gh run view 33355418177 --log-failed | sed -n '739,758p'
+Error: Provider produced inconsistent result after apply
+
+When applying changes to libvirt_domain.vm["smoke01"], provider
+"provider[\"registry.opentofu.org/dmacvicar/libvirt\"]" produced an
+unexpected new value: .os.nv_ram.template_format: was cty.StringVal("raw"),
+but now null.
+
+This is a bug in the provider, which should be reported in the provider's own
+issue tracker.
+
+Error: Provider produced inconsistent result after apply
+
+When applying changes to libvirt_domain.vm["smoke01"], provider
+"provider[\"registry.opentofu.org/dmacvicar/libvirt\"]" produced an
+unexpected new value: .os.nv_ram.format: was cty.StringVal("raw"), but now
+null.
+
+This is a bug in the provider, which should be reported in the provider's own
+issue tracker.
+error: apply failed or exceeded 600s
+
+$ ... | sed -n '625,634p'   # what the plan carried
+          + firmware        = "efi"
+          + loader          = "/usr/share/OVMF/OVMF_CODE_4M.fd"
+          + loader_format   = "raw"
+          + loader_readonly = "yes"
+          + loader_type     = "pflash"
+          + nv_ram          = {
+              + nv_ram          = "/var/lib/libvirt/qemu/nvram/smoke01_VARS.fd"
+              + template        = "/usr/share/OVMF/OVMF_VARS_4M.fd"
+              + template_format = "raw"
+
+  -- .os.loader_format was planned as "raw" and was NOT reported inconsistent.
+     Two diagnostics, not three.
+
+
+================================================================================
+E. SPIKE 1 -- CI run 33373539104, job 99429789235 (smoke, 1m06s, exit 0)
+   the shipped module at be50ae6, smoke tfvars repinned to the raw .fd loader,
+   apply made non-fatal so the domain could be dumped
+================================================================================
+
+=== SPIKE probe/00 host firmware inventory ===
+-rw-r--r--+   1 root root 3653632 Jun  2 12:48 OVMF_CODE_4M.fd
+lrwxrwxrwx    1 root root      23 Jun  2 12:48 OVMF_CODE_4M.ms.fd -> OVMF_CODE_4M.secboot.fd
+-rw-r--r--+   1 root root 3653632 Jun  2 12:48 OVMF_CODE_4M.secboot.fd
+lrwxrwxrwx    1 root root      23 Jun  2 12:48 OVMF_CODE_4M.snakeoil.fd -> OVMF_CODE_4M.secboot.fd
+-rw-r--r--+   1 root root  540672 Jun  2 12:48 OVMF_VARS_4M.fd
+-rw-r--r--+   1 root root  540672 Jun  2 12:48 OVMF_VARS_4M.ms.fd
+-rw-r--r--+   1 root root  540672 Jun  2 12:48 OVMF_VARS_4M.snakeoil.fd
+/usr/share/qemu/firmware/:
+40-edk2-x86_64-secure-enrolled.json  50-edk2-x86_64-secure.json
+60-edk2-x86_64-amdsev.json           60-edk2-x86_64.json
+virsh --version -> 10.0.0
+OpenTofu v1.12.6 + provider registry.opentofu.org/dmacvicar/libvirt v0.9.8
+
+=== SPIKE probe/01 apply with a pinned raw loader (issue 75 repro) ===
+libvirt_volume.base[0]: Creation complete after 0s [id=/var/lib/libvirt/images/vcows-smoke-golden.qcow2]
+libvirt_volume.seed["smoke01"]: Creation complete after 0s [id=/var/lib/libvirt/images/vcows-smoke01-seed.iso]
+libvirt_volume.overlay["smoke01"]: Creation complete after 0s [id=/var/lib/libvirt/images/vcows-smoke01.qcow2]
+libvirt_domain.vm["smoke01"]: Creating...
+Error: Provider produced inconsistent result after apply
+  ... unexpected new value: .os.nv_ram.template_format: was cty.StringVal("raw"), but now null.
+Error: Provider produced inconsistent result after apply
+  ... unexpected new value: .os.nv_ram.format: was cty.StringVal("raw"), but now null.
+SPIKE apply exit status: 1
+
+=== SPIKE probe/02+03 the XML libvirtd stored ===
+<domain type='qemu'>           # and again as <domain type='qemu' id='1'>
+  <name>vcows-smoke01</name>
+  <metadata>
+    <vcows xmlns="urn:vcows:1">{"v":"0.1.0.0","deployment":"smoke","name":"smoke01","id":"9f2b8d40-5c1e-5a3f-9a77-1c2d3e4f5a6b"}</vcows>
+  </metadata>
+  <memory unit='KiB'>524288</memory>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='pc-q35-noble'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='enrolled-keys'/>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-smoke01_VARS.fd</nvram>
+    <boot dev='hd'/>
+  </os>
+
+  -- THE DOMAIN WAS DEFINED AND STARTED. libvirt accepted the XML; the failure is
+     OpenTofu's post-apply consistency check, not a define error. The `id='1'`
+     dump is a running domain. The marker is present, so `vcows destroy` can find
+     it -- the three volumes it cannot.
+  -- <loader> carries NO format='raw'. libvirt dropped it there too.
+  -- machine='q35' became 'pc-q35-noble' and memory MiB became KiB, and neither
+     was reported inconsistent.
+
+=== SPIKE probe/04 the os object the provider put in state ===
+{
+  "boot_devices": [ { "dev": "hd" } ],
+  "firmware": "efi",
+  "loader": "/usr/share/OVMF/OVMF_CODE_4M.fd",
+  "loader_format": "raw",
+  "loader_readonly": "yes",
+  "loader_secure": null,
+  "loader_stateless": null,
+  "loader_type": "pflash",
+  "nv_ram": {
+    "format": null,
+    "nv_ram": "/var/lib/libvirt/qemu/nvram/vcows-smoke01_VARS.fd",
+    "source": null,
+    "template": "/usr/share/OVMF/OVMF_VARS_4M.fd",
+    "template_format": null
+  },
+  "type": "hvm",
+  "type_arch": "x86_64",
+  "type_machine": "q35"
+}
+  -- the nv_ram block mirrors the XML exactly. Everything else in `os` mirrors
+     the PLAN: loader_format is "raw" and type_machine is "q35", neither of which
+     is in the XML libvirt returned.
+
+=== SPIKE probe/05 a second apply of the identical config ===
+  # libvirt_domain.vm["smoke01"] is tainted, so it must be replaced
+-/+ resource "libvirt_domain" "vm" {
+      ~ os          = {
+          ~ nv_ram          = {
+              + format          = "raw"
+              + template_format = "raw"
+libvirt_domain.vm["smoke01"]: Destroying... / Creating...
+Error: Provider produced inconsistent result after apply    (both attributes again)
+SPIKE second apply exit status: 1
+  -- not transient. Re-running destroys the running domain and fails again.
+
+
+================================================================================
+F. SPIKE 3 -- CI run 33374187704, job 99431853518 (smoke, exit 0)
+   libvirt's own XML formatter, isolated: virsh define / dumpxml / undefine.
+   No OpenTofu, no provider, no QEMU start.
+================================================================================
+
+=== SPIKE variant raw-both ===
+SENT:      loader format='raw'  nvram format='raw' templateFormat='raw'
+Domain 'vcows-probe' defined
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+=== SPIKE variant qcow2-both ===
+SENT:      loader format='qcow2'  nvram format='qcow2' templateFormat='qcow2'
+Domain 'vcows-probe' defined
+    <loader readonly='yes' type='pflash' format='qcow2'>/var/lib/libvirt/qemu/CODE.qcow2</loader>
+    <nvram template='/var/lib/libvirt/qemu/VARS.qcow2' format='qcow2'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+=== SPIKE variant no-format-qcow2 ===
+SENT:      loader  nvram
+    <loader readonly='yes' type='pflash'>/var/lib/libvirt/qemu/CODE.qcow2</loader>
+    <nvram template='/var/lib/libvirt/qemu/VARS.qcow2'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+=== SPIKE variant no-format-raw ===
+SENT:      loader  nvram
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+=== SPIKE variant mixed ===
+SENT:      loader format='raw'  nvram format='qcow2' templateFormat='raw'
+error: Failed to define domain from /tmp/.../probe.xml
+error: XML error: Format mismatch: loader.format='raw' nvram.format='qcow2'
+
+  -- format='raw' is dropped on BOTH <loader> and <nvram>: it is libvirt's
+     default and the formatter omits a default.
+  -- format='qcow2' is echoed on both.
+  -- templateFormat was dropped in the qcow2 case even though it was qcow2, which
+     is not a default. Spike 5 chases that.
+  -- libvirt does NOT probe. Given no format for a qcow2 file, it adds none.
+  -- libvirt validates loader.format against nvram.format and refuses a mismatch.
+
+
+================================================================================
+G. SPIKE 5 -- CI run 33374623746, job 99433215717 (smoke, exit 0)
+   the two things spike 4 could not reach
+================================================================================
+
+=== SPIKE 5 qcow2-format-raw-templateformat ===
+SENT: os loader format='qcow2' nvram format='qcow2' templateFormat='raw'
+Domain 'vcows-probe' defined
+    <loader readonly='yes' type='pflash' format='qcow2'>/var/lib/libvirt/qemu/CODE.qcow2</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd' format='qcow2'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+  -- templateFormat='raw' DIFFERS from format='qcow2' and was still dropped.
+     libvirt 10.0.0 never echoes templateFormat, for any value. The attribute is
+     write-only.
+
+=== SPIKE 5 qcow2-no-templateformat-STARTED ===
+SENT: os loader format='qcow2' nvram format='qcow2'
+Domain 'vcows-probe' defined
+    <loader readonly='yes' type='pflash' format='qcow2'>/var/lib/libvirt/qemu/CODE.qcow2</loader>
+    <nvram template='/var/lib/libvirt/qemu/VARS.qcow2' format='qcow2'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+Domain 'vcows-probe' started
+MATERIALISED VARSTORE: qemu-img: Could not open ... Failed to get shared "write" lock
+
+  -- a qcow2 template with no templateFormat defines and starts. The varstore
+     could not be read while QEMU held the write lock; the start is the claim.
+
+=== SPIKE 5 raw-nothing-declared-STARTED ===
+SENT: os loader nvram
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+Domain 'vcows-probe' started
+MATERIALISED VARSTORE: image: /var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin
+file format: raw
+virtual size: 528 KiB (540672 bytes)
+disk size: 528 KiB
+
+  -- exactly the shape the module emits after the fix, started for real, and the
+     varstore is a correct 540672-byte copy of OVMF_VARS_4M.fd.
+
+=== SPIKE 5 efi-autoselect-plus-qcow2-pin ===
+SENT: os firmware='efi' loader format='qcow2' nvram format='qcow2'
+error: Failed to define domain
+error: operation failed: Unable to find 'efi' firmware that is compatible with the current configuration
+
+=== SPIKE 5 efi-autoselect-plus-raw-pin ===
+SENT: os firmware='efi' loader format='raw' nvram format='raw' templateFormat='raw'
+Domain 'vcows-probe' defined
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-probe_VARS.bin</nvram>
+
+=== SPIKE 5 the host's firmware descriptors ===
+/usr/share/qemu/firmware/40-edk2-x86_64-secure-enrolled.json: ["/usr/share/OVMF/OVMF_CODE_4M.ms.fd","raw"]
+/usr/share/qemu/firmware/50-edk2-x86_64-secure.json: ["/usr/share/OVMF/OVMF_CODE_4M.secboot.fd","raw"]
+/usr/share/qemu/firmware/60-edk2-x86_64-amdsev.json: ["/usr/share/ovmf/OVMF.amdsev.fd","raw"]
+/usr/share/qemu/firmware/60-edk2-x86_64.json: ["/usr/share/OVMF/OVMF_CODE_4M.fd","raw"]
+
+  -- firmware='efi' does not defer to a pin, it validates the pin against the
+     host's descriptors. Every Ubuntu descriptor declares "raw", so a qcow2 pin
+     is refused. This is not #75; it is why spike 4 (below) could not reach it.
+
+
+================================================================================
+H. SPIKE 4 -- CI run 33374365926, job 99432405899 (smoke, exit 0)
+   the SHIPPED module with loader_format=qcow2 on libvirt 10.0.0. Inconclusive.
+================================================================================
+
+libvirt_volume.base[0]: Creation complete after 0s
+libvirt_volume.seed["smoke01"]: Creation complete after 0s
+libvirt_volume.overlay["smoke01"]: Creation complete after 0s
+libvirt_domain.vm["smoke01"]: Creating...
+Error: Domain Creation Failed
+  with libvirt_domain.vm["smoke01"],
+  on main.tf line 84, in resource "libvirt_domain" "vm":
+Failed to define domain in libvirt: operation failed: Unable to find 'efi'
+firmware that is compatible with the current configuration
+SPIKE 4 apply exit status: 1
+=== SPIKE 4 domain state ===
+error: failed to get domain 'vcows-smoke01'
+
+  -- died at define for the descriptor reason spike 5 isolated, before reaching
+     the consistency check. The module's qcow2 path cannot be exercised on an
+     Ubuntu runner. It is covered instead by section F/G's virsh probes plus the
+     Fedora acceptance run.
+  -- note the volumes were written here too, and no domain exists at all: this
+     is the shape #75's body describes, but for a different failure.
+
+
+================================================================================
+I. SPIKE 2 -- CI run 33373910589, job 99430947280 (smoke, 1m34s, ALL GREEN)
+   the candidate fix + the smoke gate repinned to the raw .fd loader
+================================================================================
+
+Apply complete! Resources: 4 added, 0 changed, 0 destroyed.
+  ok    the base volume exists in default
+  ok    the overlay volume exists in default
+  ok    the seed volume exists in default
+  ok    virStorageVolUpload wrote a real qcow2 header into the base volume
+  ok    the overlay backs onto the base volume on disk
+  ok    libvirt detects the seed volume as iso
+  ok    the domain runs under TCG, not KVM
+  ok    the marker survived DomainDefineXML
+  ok    the marker carries the id destroy discovers by
+  ok    the pinned raw loader reached the domain verbatim
+  ok    the varstore path follows the raw template's suffix
+  ok    libvirt omits format='raw', which is why the module must not declare it
+  ok    acpi reached the domain
+  ok    apic reached the domain
+  ok    the hpet timer is off, as this host's own guests have it
+  ok    the guest clock follows the host in UTC
+  ok    the overlay disk passes discard=unmap
+  ok    the root disk is the overlay's path, not its name
+  ok    the cdrom is the seed volume's path
+  ok    the root disk is vda on virtio
+  ok    the seed is sda on sata
+  ok    the seed is read-only
+  ok    the domain carries a virtio-rng reading /dev/urandom
+  ok    the NIC carries the derived MAC
+  ok    the NIC is on the default network
+  ok    the domain is running
+  ok    the domain is set to autostart
+SPIKE post-apply plan -detailed-exitcode: 0 (0 = no drift, 2 = drift)
+  ok    the applied domain re-reads clean: no attribute drifts on refresh
+SPIKE the stored os block
+  <os firmware='efi'>
+    <type arch='x86_64' machine='pc-q35-noble'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='enrolled-keys'/>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd'>/var/lib/libvirt/qemu/nvram/vcows-smoke01_VARS.fd</nvram>
+  </os>
+Destroy complete! Resources: 4 destroyed.
+  ok    destroy undefined the domain
+  ok    destroy removed vcows-smoke-golden.qcow2
+  ok    destroy removed vcows-smoke01.qcow2
+  ok    destroy removed vcows-smoke01-seed.iso
+
+  -- the stored <os> block is byte-identical to spike 1's. The fix changes what
+     is SENT, not what libvirt stores.
+  -- check and tofu jobs on this run: both green.
+
+Timing, apply -> "the module applies..." (same runner class, same job):
+  baseline  run 33372851070 job 99427641796, be50ae6, autoselect
+            08:27:12.060 -> 08:27:19.602  =  7.54 s
+  spike 2   run 33373910589 job 99430947280, raw pin + drift check
+            08:40:31.423 -> 08:40:43.527  = 12.10 s
+  of which the post-apply `plan -detailed-exitcode` accounts for 3.4 s
+  (assert block: 0.13 s baseline vs 3.50 s here), leaving about +1.1 s for the
+  branch swap itself.
+
+
+================================================================================
+J. THE OFFLINE TEST, PRICED AND PROVED (local, no CI)
+================================================================================
+
+Harness reproduced by hand from tests/test_tofu_module.py:168-187 -- module *.tf
+plus docs/provider-0.9.8.lock.hcl plus tests/golden/libvirt.tfvars.json as
+main.auto.tfvars.json, `tofu init` then `tofu test`, against the local mirror.
+
+$ tofu test -no-color        # unmodified HEAD
+libvirt-module.tftest.hcl... pass
+  run "the_module_renders_what_the_acceptance_run_settled"... pass
+  run "a_prebuilt_base_volume_is_used_in_place"... pass
+  run "a_bridged_nic_renders_source_bridge"... pass
+  run "a_bios_domain_is_given_no_firmware_and_no_varstore"... pass
+Success! 4 passed, 0 failed.
+EXIT=0
+
+$ tofu test -no-color        # the fix applied, tftest UNCHANGED
+    │ libvirt_domain.vm["app02"].os.nv_ram.format is "qcow2"
+    │ libvirt_domain.vm["app02"].os.nv_ram.template_format is null
+    │ var.vms["app02"].loader_format is "qcow2"
+the varstore's declared format does not follow the loader format: libvirt
+reads the declared format, not the extension
+Failure! 3 passed, 1 failed.
+EXIT=1
+  -- tests/libvirt-module.tftest.hcl:172-175 asserts template_format ==
+     loader_format. The fix must replace that assertion; its message's claim is
+     the one section F/G falsified.
+
+$ tofu test -no-color        # the fix + the proposed tftest change
+libvirt-module.tftest.hcl... pass
+  run "the_module_renders_what_the_acceptance_run_settled"... pass
+  run "a_prebuilt_base_volume_is_used_in_place"... pass
+  run "a_bridged_nic_renders_source_bridge"... pass
+  run "a_bios_domain_is_given_no_firmware_and_no_varstore"... pass
+  run "a_raw_loader_declares_no_format_libvirt_would_drop"... pass
+Success! 5 passed, 0 failed.
+EXIT=0
+
+$ tofu test -no-color        # teeth: fix reverted, proposed tftest kept
+  run "the_module_renders_what_the_acceptance_run_settled"... fail
+ 177:     condition     = libvirt_domain.vm["app02"].os.nv_ram.template_format == null
+    │ libvirt_domain.vm["app02"].os.nv_ram.template_format is "qcow2"
+  run "a_raw_loader_declares_no_format_libvirt_would_drop"... fail
+ 500:     condition     = libvirt_domain.vm["app03"].os.nv_ram.format == null
+ 504:     condition     = libvirt_domain.vm["app03"].os.nv_ram.template_format == null
+    │ libvirt_domain.vm["app03"].os.nv_ram.template_format is "raw"
+Failure! 3 passed, 2 failed.
+EXIT=1
+  -- two run blocks and three assertions, each naming the attribute.
+
+$ diff -u HEAD/main.tf fixed/main.tf
+-      format          = each.value.loader_format
+-      template        = each.value.nvram_template
+-      template_format = each.value.loader_format
++      format   = each.value.loader_format == "raw" ? null : each.value.loader_format
++      template = each.value.nvram_template
+
+$ tofu fmt -check main.tf libvirt-module.tftest.hcl
+exit=0
+
+Line counts: main.tf -3/+2 before comments. tests/libvirt-module.tftest.hcl
+447 -> 515 lines, +69/-1.
+
+
+================================================================================
+K. CI RUN LEDGER
+================================================================================
+
+33355418177  pre-existing, PR #74      the run #75 was filed from
+33373539104  spike 1   repro on HEAD + the stored XML + the provider's state
+33373910589  spike 2   the candidate fix, full gate green, no refresh drift
+33374187704  spike 3   libvirt's formatter isolated, five virsh variants
+33374365926  spike 4   qcow2 through the module -- inconclusive, wrong failure
+33374623746  spike 5   templateFormat is write-only; firmware descriptors
+
+Five dispatched of a budget of six. The sixth was not spent: the only thing left
+untested is the module's qcow2 path end to end, and section G shows an Ubuntu
+runner cannot host it.
+
+Spike branch spike/rhel-firmware-repro: deleted, local and remote.

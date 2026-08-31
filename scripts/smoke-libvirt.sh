@@ -62,6 +62,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 URI="qemu:///system"
 POOL="default"
 POOL_DIR="/var/lib/libvirt/images"
+# Hardcoded in main.tf's nv_ram path and nowhere configurable, so it is a
+# constant here too rather than something read back from the domain.
+NVRAM_DIR="/var/lib/libvirt/qemu/nvram"
 NETWORK="default"
 
 # One prefix on everything, so the cleanup below can name what it removes and a
@@ -72,6 +75,13 @@ OVERLAY_VOL="vcows-smoke01.qcow2"
 SEED_VOL="vcows-smoke01-seed.iso"
 MARKER_ID="9f2b8d40-5c1e-5a3f-9a77-1c2d3e4f5a6b"
 MAC="52:54:00:be:a8:60"
+
+# The firmware pin, in one place: the tfvars below is substituted from these and
+# the assertions read them back, so the two cannot drift apart. Ubuntu's `ovmf`
+# ships raw .fd builds and all four of its /usr/share/qemu/firmware descriptors
+# declare "raw" -- measured, CI run 33374623746.
+LOADER="/usr/share/OVMF/OVMF_CODE_4M.fd"
+NVRAM_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
 
 WORK=""
 
@@ -163,12 +173,37 @@ HCL
     # JSON, and in an unquoted heredoc every \" in it would collapse to " and
     # produce a document tofu cannot parse.
     #
-    # One VM, and `firmware = "efi"` with no loader pinned -- the app01 shape
-    # from tests/golden/libvirt.tfvars.json. That is the branch where libvirt
-    # selects the firmware from the host's own descriptors, which is a thing only
-    # a real libvirtd does. app02's explicitly pinned loader and nvram template
-    # are host-specific paths and stay with the mock.
-    sed "s|@WORK@|$WORK|g" > "$WORK/main.auto.tfvars.json" <<'JSON'
+    # One VM, `firmware = "efi"` with a raw .fd loader and varstore template
+    # pinned beside it -- the app02 shape from tests/golden/libvirt.tfvars.json
+    # in RHEL's format rather than Fedora's. That is the branch #75 died on, and
+    # the branch the delivery target takes (variables.tf:60-66 -- "RHEL ships a
+    # raw .fd"). Before #75 it had never been applied against a real libvirtd
+    # anywhere: not here, not on the rig, not in the acceptance run.
+    #
+    # **This replaced the autoselect shape** -- loader, loader_format and
+    # nvram_template all null, app01's -- and the swap gives up real coverage,
+    # recorded here because nothing else records it. Nothing anywhere now
+    # exercises libvirt selecting a firmware from the host's own descriptors and
+    # materialising a varstore from no template. What the module *emits* on that
+    # branch is still pinned offline (libvirt-module.tftest.hcl asserts app01's
+    # `os.firmware == "efi"`, `os.nv_ram == null` and the three null firmware
+    # arms); what libvirtd does with it is pinned by nothing. The trade taken:
+    # the branch given up has no known defect and the Fedora acceptance run
+    # applied it, while the branch taken here had a live one. Carrying both means
+    # two VMs in one apply, and DOMAIN/OVERLAY_VOL/SEED_VOL/MAC/MARKER_ID are
+    # script globals that four functions key off -- roughly +60 lines against a
+    # -3/+2 module fix. If autoselect later needs its own CI coverage, that is
+    # its own change.
+    #
+    # A qcow2 pin cannot substitute on this runner class: beside `firmware =
+    # "efi"` libvirt validates the pin against the host's descriptors rather than
+    # deferring to it, and every Ubuntu descriptor declares raw, so a qcow2 pin is
+    # refused at define with "Unable to find 'efi' firmware that is compatible
+    # with the current configuration" (CI runs 33374365926, 33374623746).
+    sed -e "s|@WORK@|$WORK|g" \
+        -e "s|@LOADER@|$LOADER|g" \
+        -e "s|@NVRAM_TEMPLATE@|$NVRAM_TEMPLATE|g" \
+        > "$WORK/main.auto.tfvars.json" <<'JSON'
 {
   "uri": "qemu:///system",
   "pool": "default",
@@ -190,9 +225,9 @@ HCL
       "seed_iso": "@WORK@/seed.iso",
       "firmware": "efi",
       "machine": "q35",
-      "loader": null,
-      "loader_format": null,
-      "nvram_template": null,
+      "loader": "@LOADER@",
+      "loader_format": "raw",
+      "nvram_template": "@NVRAM_TEMPLATE@",
       "configured_address": "192.168.122.60",
       "nics": [
         {
@@ -393,8 +428,31 @@ assert_domain() {
         contains "$xml" 'urn:vcows:1'
     check "the marker carries the id destroy discovers by" \
         contains "$xml" "$MARKER_ID"
-    check "libvirt selected an EFI firmware and materialised a varstore" \
-        contains "$xml" '<nvram'
+    # The firmware pin, read off what libvirtd stored rather than off the plan.
+    # The second line is the whole varstore element in one needle -- template
+    # attribute, directory and .fd suffix -- so it is also what proves the
+    # element is there for the two `absent` assertions below to mean anything.
+    check "the pinned raw loader reached the domain verbatim" \
+        contains "$xml" "<loader readonly='yes' type='pflash'>$LOADER</loader>"
+    check "the varstore path follows the raw template's suffix" \
+        contains "$xml" "template='$NVRAM_TEMPLATE'>$NVRAM_DIR/${DOMAIN}_VARS.fd<"
+
+    # #75's other half, and the half no offline gate can reach. The mock
+    # satisfies the schema with generated values and never reads anything back,
+    # so libvirt-module.tftest.hcl can only pin that the module stopped emitting
+    # these two attributes -- never that emitting them was wrong. These two lines
+    # are that evidence, and the apply above is the regression gate: put either
+    # attribute back in main.tf and `tofu apply` exits 1 with "Provider produced
+    # inconsistent result after apply", after all three volumes exist.
+    #
+    # Not scoped to the <nvram> line: `format=` and `templateFormat=` appear on
+    # no other element of this domain -- the disks carry <driver type=>, not a
+    # format attribute -- and an `absent` against an extracted line that came
+    # back empty would pass without having checked anything.
+    check "libvirt omits format='raw' from the varstore, which is why the module must not declare it" \
+        absent "$xml" "format='raw'"
+    check "libvirt omits templateFormat from the varstore, for every value" \
+        absent "$xml" 'templateFormat'
     check "acpi reached the domain" contains "$xml" '<acpi/>'
     check "apic reached the domain" contains "$xml" '<apic/>'
     check "the hpet timer is off, as this host's own guests have it" \
@@ -442,7 +500,7 @@ assert_gone() {
 }
 
 main() {
-    local uid
+    local uid drift
     # qemu:///system is root's socket, and adding this user to the libvirt group
     # would not take effect in the shell that added it. Re-exec once rather than
     # scatter sudo through every virsh call -- and `sudo "$0"` rather than
@@ -476,6 +534,18 @@ main() {
     log "what libvirtd created"
     assert_volumes
     assert_domain
+
+    # A successful apply proves the provider's *create* read agreed with its
+    # plan. Nothing else proves its *refresh* read does, and a disagreement there
+    # is #75 one step later: not a failed apply but a permanent diff that every
+    # subsequent plan re-proposes and no apply can settle. `-detailed-exitcode`
+    # is 0 for no changes, 1 for an error and 2 for a diff, so the assertion is
+    # on the number and not on `set -e`.
+    log "re-reading the applied domain"
+    drift=0
+    tofu -chdir="$WORK" plan -detailed-exitcode -input=false >/dev/null 2>&1 || drift=$?
+    check "the applied domain re-reads clean: no attribute drifts on refresh" \
+        test "$drift" -eq 0
 
     log "destroying"
     tofu -chdir="$WORK" destroy -auto-approve -input=false

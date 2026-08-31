@@ -165,13 +165,28 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     condition     = libvirt_domain.vm["app02"].os.loader_type == "pflash" && libvirt_domain.vm["app01"].os.loader_type == null
     error_message = "a pinned loader must be declared pflash; anything else is not a UEFI domain"
   }
-  // The declared format, not the extension, is what libvirt reads. Declaring a
-  // qcow2 varstore raw is the non-booting inversion of acceptance defect S6, and
-  // it is the attribute #75 dies on -- this pins what the module *emits*, which
-  // is the offline half of that problem and not the whole of it.
+  // A qcow2 varstore is declared qcow2. libvirt keeps that value and does not
+  // probe for it, so a qcow2 varstore left undeclared is opened raw -- the
+  // non-booting inversion of acceptance defect S6. The raw arm of this same
+  // expression is its own run block at the end of this file.
   assert {
-    condition     = libvirt_domain.vm["app02"].os.nv_ram.format == var.vms["app02"].loader_format && libvirt_domain.vm["app02"].os.nv_ram.template_format == var.vms["app02"].loader_format
-    error_message = "the varstore's declared format does not follow the loader format: libvirt reads the declared format, not the extension"
+    condition     = libvirt_domain.vm["app02"].os.nv_ram.format == var.vms["app02"].loader_format
+    error_message = "the varstore's declared format does not follow the loader format: an undeclared qcow2 varstore is opened raw and does not boot"
+  }
+  // This assertion used to read `template_format == loader_format`, with the
+  // message "libvirt reads the declared format, not the extension". That claim
+  // is false for this attribute and #75's reverification measured it so: on
+  // libvirt 10.0.0, `virsh define`/`dumpxml` with no provider in the loop drops
+  // templateFormat from the stored XML for *every* value, including one that
+  // differs from format. It is write-only. Nothing under `os` is computed, so
+  // declaring it made the provider return null where the plan held "raw" and
+  // killed the apply after all three volumes had been written.
+  //
+  // This pins what the module *emits*, which is the offline half of #75 and not
+  // the whole of it -- no mock can observe what libvirt hands back.
+  assert {
+    condition     = libvirt_domain.vm["app02"].os.nv_ram.template_format == null
+    error_message = "the module declares a varstore template_format: libvirt never echoes one back, so the apply dies after the volumes exist (#75)"
   }
   assert {
     condition     = libvirt_domain.vm["app02"].os.loader_readonly == "yes"
@@ -311,7 +326,7 @@ run "the_module_renders_what_the_acceptance_run_settled" {
 // it is also its limit: the fixture sets `base_volume.create = true` and gives
 // every NIC `network` with `bridge = null`, so three expressions in shipped
 // module code are never evaluated by it -- main.tf:25's zero arm, main.tf:34's
-// fallback to var.base_volume.path, and main.tf:205's non-null bridge arm.
+// fallback to var.base_volume.path, and main.tf:209's non-null bridge arm.
 //
 // The bridge arm is not merely uncovered, it is the shipped design.
 // findings.md settles the network as "bridged, static IPs from config", and
@@ -443,5 +458,68 @@ run "a_bios_domain_is_given_no_firmware_and_no_varstore" {
   assert {
     condition     = libvirt_domain.vm["app01"].os.nv_ram == null
     error_message = "a bios domain carries a varstore, which is a UEFI-only device"
+  }
+}
+
+run "a_raw_loader_declares_no_format_libvirt_would_drop" {
+  command = apply
+
+  // The fourth branch the golden tfvars does not take. app02 pins `qcow2`, so
+  // the raw arm of main.tf:142's ternary and the `.fd` arm of main.tf:133's
+  // suffix are evaluated by nothing else in this suite -- and raw is the RHEL
+  // shape (variables.tf:60-66), the one the tool is being built for. Same caveat
+  // as the three blocks above: `variables` overrides wholesale rather than
+  // merging, so this VM is hand-written and nothing asserts it still resembles
+  // what render.py emits.
+  //
+  // Two of the three assertions below are the offline half of #75, and half is
+  // all an offline gate gets. They pin that the module *stops emitting* the two
+  // attributes libvirt does not hand back. Whether libvirt hands them back is a
+  // property of libvirtd and the provider binary that no mock can observe; that
+  // half is scripts/smoke-libvirt.sh, which pins this same branch against a real
+  // libvirtd. A green run here must not be read as having closed #75.
+  variables {
+    vms = {
+      app03 = {
+        configured_address = "192.168.122.62"
+        disk_bytes         = 42949672960
+        domain_name        = "app03"
+        firmware           = "efi"
+        loader             = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+        loader_format      = "raw"
+        machine            = "q35"
+        marker_xml         = "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"lab-a\",\"name\":\"app03\",\"id\":\"2647c9f3-9d71-531a-b874-98a578d6c7aa\"}</vcows>"
+        memory_mib         = 4096
+        nics = [
+          {
+            bridge  = null
+            mac     = "52:54:00:be:a8:62"
+            model   = "virtio"
+            network = "default"
+          }
+        ]
+        nvram_template = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
+        overlay_name   = "app03.qcow2"
+        seed_iso       = "/run/vcows/lab-a/app03-seed.iso"
+        seed_name      = "app03-seed.iso"
+        vcpus          = 2
+      }
+    }
+  }
+
+  assert {
+    condition     = libvirt_domain.vm["app03"].os.nv_ram.format == null
+    error_message = "a raw varstore is declared format='raw': libvirt omits its own default, so the provider returns null where the plan held a string and the apply dies after the volumes are written (#75)"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app03"].os.nv_ram.template_format == null
+    error_message = "the module declares a varstore template_format: libvirt never echoes one back, for any value, so the apply dies after the volumes exist (#75)"
+  }
+  // main.tf:133's `.fd` arm, and the offline half of docs/rhel9-target.md's C2.
+  // A hardcoded .fd was the old bug here; a hardcoded .qcow2 would be the same
+  // bug inverted, and only a raw fixture can tell the two apart.
+  assert {
+    condition     = libvirt_domain.vm["app03"].os.nv_ram.nv_ram == "/var/lib/libvirt/qemu/nvram/app03_VARS.fd"
+    error_message = "a raw template's varstore is not named .fd: the suffix is following something other than the loader format"
   }
 }
