@@ -37,10 +37,13 @@ demand. Unconditional is what gives these teeth.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -57,6 +60,12 @@ CONTAINERFILE = "FROM scratch\nARG VCOWS_VERSION=9.9.9.9\n"
 #: Synthetic rather than `docs/cve-baseline.json` so the thresholds asserted here
 #: do not move when that file is trimmed.
 BASELINE_IDS = [f"CVE-2026-{n:05d}" for n in range(100)]
+
+#: The revision label inside the fake docker-archive, and so the tail of the
+#: bundle's own filename. Deliberately not the fixture repo's HEAD: the archive
+#: being older than the tree is the case `bundle.sh:84-91` warns about and does
+#: not refuse, and the passing test below asserts it is still only a warning.
+ARCHIVE_REVISION = "b" * 40
 
 #: One fake scanner. `-o PATH` is podman, `--output PATH` is trivy, and
 #: `-o spdx-json=PATH` is syft, so `${2#*=}` covers all three.
@@ -80,6 +89,15 @@ def _tree(tmp_path: Path, *scripts: str, containerfile: str = CONTAINERFILE) -> 
     return tmp_path
 
 
+def _report(tree: Path, found: list[str]) -> None:
+    """What the fake trivy will hand back. Rewritable between runs."""
+    (tree / "report.json").write_text(
+        json.dumps(
+            {"Results": [{"Vulnerabilities": [{"VulnerabilityID": i} for i in found]}]}
+        )
+    )
+
+
 def _fake_tools(tree: Path, found: list[str]) -> None:
     """podman, trivy and syft in the tree's own `.tools/bin`, reporting `found`.
 
@@ -87,11 +105,7 @@ def _fake_tools(tree: Path, found: list[str]) -> None:
     injection point and the test manipulates nothing. The archive is a stub:
     nothing in `image-scan.sh` reads it, only the two scanners it hands it to.
     """
-    (tree / "report.json").write_text(
-        json.dumps(
-            {"Results": [{"Vulnerabilities": [{"VulnerabilityID": i} for i in found]}]}
-        )
-    )
+    _report(tree, found)
     binaries = tree / ".tools" / "bin"
     binaries.mkdir(parents=True)
     payloads = {
@@ -105,10 +119,66 @@ def _fake_tools(tree: Path, found: list[str]) -> None:
 
 
 def _baseline(tree: Path, ids: list[str] = BASELINE_IDS) -> None:
-    """`docs/cve-baseline.json` as `image-scan.sh:113-117` reads it: `.accepted`
+    """`docs/cve-baseline.json` as `image-scan.sh:128-132` reads it: `.accepted`
     and nothing else."""
     (tree / "docs").mkdir()
     (tree / "docs" / "cve-baseline.json").write_text(json.dumps({"accepted": ids}))
+
+
+def _stamp_line(archive: Path) -> str:
+    """`sha256sum image.tar` output, which is the whole format of the PASSED
+    stamp `image-scan.sh:181` writes and `bundle.sh:77` checks."""
+    return f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  image.tar\n"
+
+
+def _fake_archive(path: Path, revision: str) -> None:
+    """A docker-archive as `archive_label` (`bundle.sh:32-39`) reads one.
+
+    Two JSON members in a tar: `manifest.json` naming the config blob, and the
+    blob carrying the two OCI labels the bundle is named from. Nothing in
+    `bundle.sh` opens a layer, so 2 KB stands in for the real 444 MB.
+    """
+    config = {
+        "config": {
+            "Labels": {
+                "org.opencontainers.image.version": "9.9.9.9",
+                "org.opencontainers.image.revision": revision,
+            }
+        }
+    }
+    members = {"manifest.json": [{"Config": "config.json"}], "config.json": config}
+    with tarfile.open(path, "w") as tar:
+        for name, payload in members.items():
+            blob = json.dumps(payload).encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(blob)
+            tar.addfile(info, io.BytesIO(blob))
+
+
+def _bundle_tree(tmp_path: Path, stamp: str | None) -> Path:
+    """A tree `bundle.sh` runs to completion in, `stamp` becoming `.cache/scan/PASSED`.
+
+    `None` writes no stamp at all. Past the precondition the script reaches
+    `source_revision` (`lib.sh:136`), which parses the module's `main.tf` for the
+    pinned provider version and calls `git rev-parse HEAD`; neither is what these
+    tests are about, and both stand between the precondition and the delivery.
+    """
+    tree = _tree(tmp_path, "bundle.sh")
+    module = tree / "orchestrator" / "backends" / "libvirt" / "tofu"
+    module.mkdir(parents=True)
+    (module / "main.tf").write_text('      version = "= 0.9.8"\n')
+    scan = tree / ".cache" / "scan"
+    scan.mkdir(parents=True)
+    _fake_archive(scan / "image.tar", ARCHIVE_REVISION)
+    (scan / "sbom.spdx.json").write_text('{"packages":[]}')
+    (scan / "trivy.json").write_text('{"Results":[]}')
+    if stamp is not None:
+        (scan / "PASSED").write_text(stamp)
+    git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "fixture"], check=True)
+    return tree
 
 
 def _run(tree: Path, script: str, **env: str) -> subprocess.CompletedProcess:
@@ -188,3 +258,80 @@ def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red
         assert done.returncode == 0, done.stderr
         assert f"baseline entries no longer found ({gone} of 100" in done.stderr
         assert "no findings outside the baseline" in done.stderr
+
+
+def test_the_scan_stamps_a_pass_and_takes_the_stamp_back_on_a_failure(tmp_path):
+    """`image-scan.sh:89` and `:181`, the two halves of the verdict.
+
+    The exit status is the only place the scan used to record whether it
+    accepted the image, and an exit status does not survive the process. Both
+    halves matter: a run that dies has to remove a stamp an earlier run left, or
+    `bundle.sh` reads yesterday's verdict about today's archive.
+    """
+    tree = _tree(tmp_path, "image-scan.sh")
+    _baseline(tree)
+    _fake_tools(tree, BASELINE_IDS)
+    scan = tree / ".cache" / "scan"
+
+    assert _run(tree, "bash scripts/image-scan.sh").returncode == 0
+    assert (scan / "PASSED").read_text() == _stamp_line(scan / "image.tar")
+
+    _report(tree, [*BASELINE_IDS, "CVE-2099-99999"])
+    done = _run(tree, "bash scripts/image-scan.sh")
+    assert done.returncode == 1, done.stderr
+    assert "1 new finding(s)" in done.stderr
+    assert not (scan / "PASSED").exists(), "a failed scan left its verdict behind"
+
+
+def test_bundle_refuses_an_archive_no_scan_has_accepted(tmp_path):
+    """The defect: three complete files and no verdict was enough to ship.
+
+    A scan that dies on a new finding writes the archive, the report and the SBOM
+    before it reads the baseline, so `bundle.sh:50-52` saw exactly what a passing
+    scan leaves and assembled a correctly named, checksum-verifying delivery for
+    an image the CVE gate had rejected.
+    """
+    tree = _bundle_tree(tmp_path, stamp=None)
+    done = _run(tree, "bash scripts/bundle.sh")
+    assert done.returncode == 1, done.stderr
+    assert "has not accepted this archive" in done.stderr
+    assert not (tree / ".cache" / "delivery").exists()
+
+
+def test_bundle_refuses_a_stamp_that_describes_a_different_archive(tmp_path):
+    """Why the stamp holds a digest rather than being empty.
+
+    A second scan that rewrites `image.tar` and then dies, or an archive copied
+    in by hand, leaves a stamp that vouches for bytes that are no longer there.
+    An empty marker would be about four lines lighter and could not tell the two
+    apart; the digest costs 2.0s over the real 444 MB.
+    """
+    tree = _bundle_tree(tmp_path, stamp=f"{'0' * 64}  image.tar\n")
+    done = _run(tree, "bash scripts/bundle.sh")
+    assert done.returncode == 1, done.stderr
+    assert "does not describe image.tar" in done.stderr
+    assert not (tree / ".cache" / "delivery").exists()
+
+
+def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
+    """The regression guard: a precondition that also refuses valid input is
+    worse than none.
+
+    Also pins the severity split. The archive's revision is not the fixture's
+    HEAD, so `bundle.sh:84-91` fires -- and must stay a warning, because
+    delivering an older image on purpose is legitimate where shipping an
+    unaccepted one is not.
+    """
+    tree = _bundle_tree(tmp_path, stamp=None)
+    scan = tree / ".cache" / "scan"
+    (scan / "PASSED").write_text(_stamp_line(scan / "image.tar"))
+    done = _run(tree, "bash scripts/bundle.sh")
+    assert done.returncode == 0, done.stderr
+    assert "warning: the archive was built at" in done.stderr
+    assert sorted(p.name for p in (tree / ".cache" / "delivery").iterdir()) == [
+        "SHA256SUMS",
+        "image.tar.sha256",
+        "sbom.spdx.json",
+        "trivy.json",
+        f"vcows-deploy-9.9.9.9-{ARCHIVE_REVISION}.tar.gz",
+    ]

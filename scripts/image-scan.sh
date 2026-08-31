@@ -73,6 +73,21 @@ main() {
     report="$out/trivy.json"
     sbom="$out/sbom.spdx.json"
 
+    # **The verdict has to outlive this process.** Everything this script writes
+    # -- archive at :92, report and SBOM at :95-96 -- is on disk and complete
+    # before the baseline is read at :128, so a passing .cache/scan and a failing
+    # one are byte-identical apart from what is inside trivy.json, and nothing
+    # reads that for a verdict. README.md:262-264 documents `just scan` and
+    # `just bundle` as separate commands, so the second routinely runs in a
+    # different shell, where an exit status is not available to be asked. The
+    # answer therefore has to be a file, in the directory that is already the
+    # interface between the two scripts.
+    #
+    # Cleared here rather than in save_archive so that a crash anywhere after
+    # this point -- in podman, trivy, syft, scan_floor, or either baseline check
+    # -- leaves no stamp behind for bundle.sh to find.
+    rm -f "$out/PASSED"
+
     log "saving $tag"
     save_archive "$tag" "$archive"
 
@@ -153,6 +168,17 @@ main() {
         printf '%s\n' "$gone" | sed 's/^/  /' >&2
     fi
     log "no findings outside the baseline"
+
+    # The last act of a passing run, and the only thing that writes this file.
+    # It holds `sha256sum image.tar` output -- one line, one format bundle.sh
+    # already produces at :119 -- so the verdict is bound to the bytes it was
+    # reached about and cannot be inherited by an archive a later run wrote. No
+    # timestamp: delivering an older image on purpose is legitimate, so an age
+    # limit would refuse a bundle for a reason that is not the CVE verdict.
+    #
+    # --write-baseline returns at :116, above this and below the rm, so
+    # recording what is there now never authorises a bundle.
+    ( cd "$out" && sha256sum image.tar ) > "$out/PASSED"
 }
 
 main "$@"
