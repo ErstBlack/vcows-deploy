@@ -1,0 +1,13 @@
+# just lint — worktree at origin/master 672a500
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+49 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+EXIT=0

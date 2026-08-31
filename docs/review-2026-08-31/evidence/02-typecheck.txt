@@ -1,0 +1,16 @@
+# just typecheck
+.venv/bin/ty check
+All checks passed!
+EXIT=0
+
+# just verify-provider
+./scripts/verify-provider.sh
+provider version per main.tf: 0.9.8
+  ok    Containerfile PROVIDER_VERSION
+  ok    lock file version
+  ok    mirrored zip sha256 vs Containerfile
+  ok    mirror index h1: vs committed lock
+  ok    mirror index zh: vs Containerfile
+  ok    mirror holds exactly one provider zip
+all provider facts agree
+EXIT=0

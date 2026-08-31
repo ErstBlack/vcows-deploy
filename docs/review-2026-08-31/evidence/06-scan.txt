@@ -1,0 +1,26 @@
+# just scan — live trivy against docs/cve-baseline.json
+./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+Copying blob sha256:f0c7ff1acfc99a513a834c43874f79b8584ae074e5e56fa6aafc3dcf4f5ab428
+Copying blob sha256:3293a35a8a294a00e6e92ce53a4fa82f5d5c97c462775897376e63d6d2ff3aae
+Copying blob sha256:9cb19a94b3b077ed2a5041fc02f0807582f5963c2f821d088979d75d2056dc98
+Copying blob sha256:3b8e282ee472719b034824b0f6eff4dbaa090ef553f3cbc46e707210d43c019a
+Copying blob sha256:c05fc1f56be4f293e2a2e235fd75bc149b0ef0a6319df8fe940258b9ceb0a2f3
+Copying blob sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef
+Copying blob sha256:00a368543f15deeee232c14583970481ca8e20323fece48c7d9a297b88cabdfe
+Copying blob sha256:c2151a84c23e5d2a35840993973f1268824c5925a29ffe7c2546027db746860f
+Copying blob sha256:b59bc26488cf47b1db6faf1382758cca8399acaf1e824d2ae1e0a72604841113
+Copying blob sha256:c824757482dc28aa5b7c8196df2f984d7147b6720f237e550c35df04fc7ebfca
+Copying blob sha256:431a22c12f5bd13f31b80b6826cba3e3d87c3ecf93c0436093bdad2a83341a56
+Copying blob sha256:f5ce341978c4c374b92c6cccafd3181edaef455bef55d876e88cf8cc4d246acb
+Copying blob sha256:7fd3e6f17e15c6d48436b3a091ac67247a0fe9993a2e49e47cc7a47c20d1a1dc
+Copying blob sha256:5a8871ac3663343aafead0189b32226bb2cc948b46632ab943e954a3ba72f743
+Copying config sha256:84dcf01a718d12e5396b0f3d7e4fc15598619966a49326d9b7712f2546c922b2
+Writing manifest to image destination
+scanning
+  report /tmp/claude-1000/-home-ssullivan-vcows-deploy/269a6abf-4acb-4406-82e1-912115c87037/scratchpad/rv3/.cache/scan/trivy.json
+  sbom   /tmp/claude-1000/-home-ssullivan-vcows-deploy/269a6abf-4acb-4406-82e1-912115c87037/scratchpad/rv3/.cache/scan/sbom.spdx.json
+baseline entries no longer found (1 of 100; stale, or fixed by a pin bump):
+  CVE-2026-58055
+no findings outside the baseline
+EXIT=0

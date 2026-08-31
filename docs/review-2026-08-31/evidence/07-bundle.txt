@@ -1,0 +1,21 @@
+# just bundle
+./scripts/bundle.sh
+compressing image.tar -> vcows-deploy-0.1.0.0-672a500a5f3db394e91a3b91fb383517e504246d.tar.gz
+
+bundle  /tmp/claude-1000/-home-ssullivan-vcows-deploy/269a6abf-4acb-4406-82e1-912115c87037/scratchpad/rv3/.cache/delivery
+  vcows-deploy-0.1.0.0-672a500a5f3db394e91a3b91fb383517e504246d.tar.gz  (144M)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-672a500a5f3db394e91a3b91fb383517e504246d.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0
+
+# .cache/delivery
+total 156472
+-rw-r--r--. 1 ssullivan ssullivan        76 Aug 30 23:56 image.tar.sha256
+-rw-r--r--. 1 ssullivan ssullivan   7056338 Aug 30 23:56 sbom.spdx.json
+-rw-r--r--. 1 ssullivan ssullivan       376 Aug 30 23:56 SHA256SUMS
+-rw-r--r--. 1 ssullivan ssullivan   2365007 Aug 30 23:56 trivy.json
+-rw-r--r--. 1 ssullivan ssullivan 150790660 Aug 30 23:56 vcows-deploy-0.1.0.0-672a500a5f3db394e91a3b91fb383517e504246d.tar.gz
