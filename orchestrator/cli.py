@@ -26,11 +26,13 @@ import argparse
 import contextlib
 import inspect
 import json
+import logging
 import os
 import shutil
 import stat
 import subprocess
 import sys
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,6 +60,75 @@ MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
 
 #: The one non-`.tf` file `_stage_module` will carry out of a module directory.
 LOCK_NAME = ".terraform.lock.hcl"
+
+#: The log carries the *detail*; the prints below carry the headline. That split
+#: is #136's, and it is why nothing here re-prints a `Problem`, a `Decision` or an
+#: `Outcome` -- each of those is already printed where it arrives (findings.md
+#: §3), and repeating one would make this the fifth result carrier that section
+#: refuses. What the log records is what would otherwise be destroyed.
+#:
+#: Named explicitly rather than by ``__name__``, which is the idiom everywhere
+#: else here. The image's ``/usr/local/bin/vcows`` is ``python3 -m
+#: orchestrator.cli``, so ``__name__`` is ``__main__`` on exactly the path that
+#: ships -- and a log read weeks after delivery would say which module a line
+#: came from for every module except this one.
+log = logging.getLogger("orchestrator.cli")
+
+#: Default INFO rather than WARNING because the purpose is traceability *after*
+#: delivery: a site dumps `podman logs` weeks later, and `destroy` cannot be
+#: re-run to reproduce anything that was not recorded the first time. DEBUG adds
+#: the per-object recovery detail.
+LOG_LEVEL_DEFAULT = "INFO"
+
+#: `%(name)s` is the module, so a line says where it came from without the
+#: message having to. The `Z` is made true by the `gmtime` converter in `_logging`
+#: -- `asctime` is localtime otherwise, and a site in another timezone would read
+#: a stamp that disagrees with the run directory's name.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_DATEFMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _log_level() -> str:
+    """``VCOWS_LOG_LEVEL``, or the default if it is unset or not a level name.
+
+    Same shape and the same voice as ``schema._ceiling``: an override that will
+    not parse is reported and ignored rather than taken silently, and never
+    fatal. `basicConfig` raises `ValueError` on an unknown level, which would
+    turn a typo in an environment variable into a run that does not start.
+    """
+    raw = os.environ.get("VCOWS_LOG_LEVEL")
+    if raw is None:
+        return LOG_LEVEL_DEFAULT
+    if raw.upper() not in logging.getLevelNamesMapping():
+        print(
+            f"vcows: ignoring VCOWS_LOG_LEVEL={raw!r}: not a level name. "
+            f"Using {LOG_LEVEL_DEFAULT}.",
+            file=sys.stderr,
+        )
+        return LOG_LEVEL_DEFAULT
+    return raw.upper()
+
+
+def _logging() -> None:
+    """Configure the root logger. Called once, from ``main``.
+
+    ``force=True`` is not decorative. `basicConfig` is a no-op when the root
+    logger already has handlers, so without it the first test in a session binds
+    the handler to *that* test's `capsys` stderr and every later test reads a
+    stream that is no longer connected to anything.
+
+    ``sys.stderr`` is resolved here rather than at import for the same reason:
+    `capsys` has already replaced it by the time `main` runs, and a module-level
+    handler would hold the real one and escape capture entirely.
+    """
+    logging.Formatter.converter = time.gmtime
+    logging.basicConfig(
+        level=_log_level(),
+        stream=sys.stderr,
+        format=LOG_FORMAT,
+        datefmt=LOG_DATEFMT,
+        force=True,
+    )
 
 
 class UsageError(Exception):
@@ -173,6 +244,10 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
                 f"directory can read them.",
                 file=sys.stderr,
             )
+    # The join key. A `podman logs` dump weeks after delivery has no other way to
+    # say which run.json it belongs to -- the container is gone, and the record
+    # the site ships home names a directory this process never otherwise states.
+    log.info("run directory %s", path)
     return path
 
 
@@ -766,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
     # per-file chmod can reach them. A umask is the only lever that covers a
     # child process, and it has to be set before the first verb runs.
     os.umask(0o077)
+    # Before parsing, so a log line is possible from the first thing that runs.
+    _logging()
     args = _parser().parse_args(argv)
     try:
         return int(args.func(args))

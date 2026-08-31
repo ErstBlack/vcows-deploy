@@ -273,6 +273,41 @@ run it removed is the one somebody needed. On a host that keeps them:
 find runs/ -mindepth 2 -maxdepth 2 -type d -mtime +30 -exec rm -rf {} +
 ```
 
+## The log
+
+**The printout carries the headline; the log carries the detail.** Everything
+vcows decides — the preflight rows, the problems, `created N VM(s)` — is printed
+as it always was. The log is for what the printout does not keep: the OpenTofu
+diagnostic's multi-line *why*, the exact `tofu` command line, the URI actually
+dialled, the libvirt error behind a check that could not be answered.
+
+It goes to **stderr**, so in a container `podman logs <id>` is the whole of it and
+no mount is required. Nothing is written to the run directory, which means the log
+survives the one case the record does not — a `--run-dir` on a mount vcows cannot
+write, where `run.json` never appears at all.
+
+`VCOWS_LOG_LEVEL` sets the level and is read from the container's environment,
+like `VCOWS_MAX_*` above. **The default is `INFO`**, so a delivered run records
+its own account without anyone having opted in beforehand; this matters most for
+`destroy`, which cannot be re-run to reproduce what was not captured the first
+time. `DEBUG` adds the per-object detail — libvirt lookup misses, unreadable
+pools, a config the entrypoint declined to read. A value that is not a level name
+is reported and ignored rather than being fatal.
+
+```
+2026-08-31T21:42:26Z INFO orchestrator.cli: run directory /runs/lab-a/20260831T214226Z
+2026-08-31T21:42:26Z INFO orchestrator.backends.libvirt.preflight: connecting to qemu+ssh://vcows@hv1/system
+```
+
+That first line is the join key: it is what ties a `podman logs` dump to the
+`run.json` an air-gapped site ships home. Timestamps are UTC, matching the run
+directory's name.
+
+**The log names paths, never contents.** No `user_data`, no seed ISO bytes, no
+key material — `ssh_keyfile` and `known_hosts` appear as the paths they are. Treat
+it as less protected than the run directory even so: that directory is `0700` and
+a container's logs are whatever the host's log driver does with them.
+
 ## Air gap
 
 The image carries the OpenTofu provider in `/opt/tofu-mirror` and points at it
