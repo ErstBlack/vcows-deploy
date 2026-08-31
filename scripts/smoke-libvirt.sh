@@ -299,11 +299,18 @@ storage_pool() {
 # libvirtd needs that network defined and active or the domain will not define.
 # libvirt-daemon-system defines it; nothing starts it on a fresh runner.
 default_network() {
+    local err
     vsh net-info "$NETWORK" >/dev/null 2>&1 \
         || die "libvirt's '$NETWORK' network is not defined -- libvirt-daemon-system should have"
-    vsh net-start "$NETWORK" >/dev/null 2>&1 || true
-    vsh net-info "$NETWORK" | grep -qE 'Active: *yes' \
-        || die "libvirt's '$NETWORK' network will not start"
+    # Same treatment as the pool above: the reason has to reach the log, or a
+    # reader gets the symptom and another CI round trip.
+    if ! err="$(vsh net-start "$NETWORK" 2>&1)"; then
+        if ! vsh net-info "$NETWORK" | grep -qE 'Active: *yes'; then
+            log "$(vsh net-dumpxml "$NETWORK" 2>&1)"
+            log "$(journalctl -u libvirtd --no-pager -n 40 2>&1 || true)"
+            die "libvirt's '$NETWORK' network will not start: $err"
+        fi
+    fi
 }
 
 # The golden image and the seed. Both are throwaway: the point is that real bytes
