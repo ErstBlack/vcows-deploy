@@ -10,7 +10,7 @@ and the reason the anchor is worth opening.
 
 ## The dev venv, and why `uv sync` is wrong
 
-Create it with `just dev-env` and nothing else. `pyproject.toml:26-34` states the
+Create it with `just dev-env` and nothing else. `pyproject.toml` states the
 failure mode: without `--system-site-packages` the `python3-libvirt` RPM binding
 is invisible, and without an explicit `--python /usr/bin/python3` uv installs its
 own managed CPython whose site-packages contains no RPMs at all, so the flag
@@ -20,15 +20,16 @@ lockfile is honoured anyway: `just dev-env` exports `uv.lock` and installs the
 export, so the `>=` bounds in `pyproject.toml` constrain `uv lock` and not the
 venv.
 
-This is not a rig-only concern. `tests/fake_libvirt.py:25` imports `libvirt` at
+This is not a rig-only concern. `tests/fake_libvirt.py` imports `libvirt` at
 module scope, so a wrong venv breaks collection, not just the hardware tests.
 
 ## The config is not declarative
 
-`README.md:7` is headed "Read this first" for this reason: **deleting a VM from
-`config.yaml` does not delete the VM.** vcows never converges. `deploy` creates
-what is missing and reports what already exists; it never modifies and never
-removes. Tearing something down is `vcows destroy`, and nothing else.
+`README.md`'s opening section is headed "Read this first" for this reason:
+**deleting a VM from `config.yaml` does not delete the VM.** vcows never
+converges. `deploy` creates what is missing and reports what already exists; it
+never modifies and never removes. Tearing something down is `vcows destroy`,
+and nothing else.
 
 Identity is the **marker**, a JSON payload in the domain's `<metadata>`, never
 the name (`orchestrator/marker.py`). A renamed VM is still ours and still
@@ -44,7 +45,7 @@ recipe.
 
 ## Gate discipline: a skip must be able to become a failure
 
-`tests/conftest.py:7`: "A gate that quietly passes because it did not run is
+`tests/conftest.py`: "A gate that quietly passes because it did not run is
 worse than no gate." Every conditional skip goes through `conftest.gate()` or
 `conftest.require()`, and `tests/test_gates.py` AST-walks the suite and fails
 on any bare skip. **`BANNED` in that file is the list, not this sentence** -- it
@@ -57,6 +58,14 @@ failure, not a style note.
 names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, plus `all`.
 It is case-sensitive and does not strip whitespace, so `VCOWS_GATES="tofu, image"`
 silently demands only `tofu`.
+
+## Do not cite line numbers
+
+Anchor a reference to a name -- a symbol, a function, a heading, a variable --
+never to `file:NN`. A line number drifts on every insertion above it, nothing
+checks that it still points where it claims, and every correction so far has
+been a renumbering rather than a removal of the fragility. A name survives the
+edit that moves it.
 
 ## Commits, and how work ships
 
@@ -82,7 +91,7 @@ to review and cannot close an issue from a commit body.
 
 Each group carries `why` and `recheck`, and every accept or reject turns on
 **reachability**, not severity. The x/crypto acceptance rests on
-`orchestrator/backends/libvirt/render.py:61` passing `sshcmd` to
+`orchestrator/backends/libvirt/render.py` passing `sshcmd` to
 `connection_uri`: that dialer execs OpenSSH and never enters `x/crypto/ssh`.
 
 **`scripts/image-scan.sh`'s `--write-baseline` destroys that rationale.** It
@@ -99,10 +108,10 @@ the obvious helpful action, not a boundary.
 
 ## Four pins nothing can automate
 
-* `BASE_DIGEST` — `Containerfile:80`
-* `TOFU_RPM_SHA256` — `Containerfile:97`
-* `PROVIDER_SHA256` — `Containerfile:104`
-* the `h1:` hash — `docs/provider-0.9.8.lock.hcl:8`
+* `BASE_DIGEST` — `Containerfile`
+* `TOFU_RPM_SHA256` — `Containerfile`
+* `PROVIDER_SHA256` — `Containerfile`
+* the `h1:` hash — `docs/provider-0.9.8.lock.hcl`
 
 No update bot can recompute any of them, which is why `dependabot.yml` is
 deliberately not pointed at the `Containerfile`. `just verify-provider` is the

@@ -437,8 +437,9 @@ GATE_ROWS = [
     # `uses:`, the second allowlist. A tag ref is what the pin exists to refuse.
     ("mutable-tag", {"ci.yml": _USES % "actions/checkout@v7"}, "", False),
     ("digest-pin", {"ci.yml": _USES % _DIGEST}, "", True),
-    # `lint.sh:101-103`: reading only one extension "fails open on a file it was
-    # written to cover". The file discovery is the gate's, not YAML's.
+    # `workflows_carry_no_logic`'s own reason for globbing both extensions:
+    # reading only one "fails open on a file it was written to cover". The file
+    # discovery is the gate's, not YAML's.
     ("yaml-extension", {"ci.yaml": _RUN % HOSTILE}, "", False),
 ]
 
