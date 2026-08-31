@@ -43,7 +43,8 @@ save_archive() {
 
 # A differential gate can only compare what it was handed. If trivy analysed
 # nothing -- a database that failed to download, a report schema that moved, a jq
-# path that stopped matching -- then `found` is empty, `comm -13` is empty, and
+# path that stopped matching -- then `found` is empty, its difference against the
+# baseline is empty, and
 # this script logs "no findings outside the baseline" and exits 0. That is green
 # by neglect arriving through the front door, and it is the one failure mode a
 # subset check cannot see. So assert the scan happened before trusting silence.
@@ -65,7 +66,7 @@ scan_floor() {
 main() {
     need trivy syft jq
 
-    local tag out archive report sbom found new gone accepted missing
+    local tag out archive report sbom found delta new gone accepted missing
     tag="$(image_tag)"
     out="$REPO/.cache/scan"; mkdir -p "$out"
     archive="$out/image.tar"
@@ -85,31 +86,41 @@ main() {
     # empty set as "accepted", which would bake the broken scan in.
     scan_floor "$report" "$sbom"
 
-    found="$(jq -r '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | .[]' "$report")"
+    # Kept as a JSON array. Every question below is a set operation, and jq can
+    # answer all of them without the ids ever becoming text.
+    found="$(jq -c '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique' "$report")"
 
     if [ "${1:-}" = "--write-baseline" ]; then
         jq -n --arg image "$tag" \
               --arg generated "$(now_utc)" \
-              --argjson accepted "$(printf '%s' "$found" | jq -R . | jq -s .)" \
+              --argjson accepted "$found" \
               '{image: $image, generated: $generated,
                 note: "Findings reviewed and accepted at this image. Most live in the statically linked golang.org/x/crypto/ssh inside /usr/bin/tofu and the vendored terraform-provider-libvirt, and can only be cleared by bumping those pins. Anything not listed here fails scripts/image-scan.sh.",
                 accepted: $accepted}' > "$BASELINE"
-        log "wrote $(basename "$BASELINE") with $(printf '%s' "$found" | grep -c . || true) accepted findings"
+        log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found") accepted findings"
         return
     fi
 
     if [ ! -f "$BASELINE" ]; then
-        log "no docs/cve-baseline.json yet -- $(printf '%s' "$found" | grep -c . || true) findings, none classified"
+        log "no docs/cve-baseline.json yet -- $(jq 'length' <<<"$found") findings, none classified"
         die "run 'scripts/image-scan.sh --write-baseline' once the pins are settled"
     fi
 
-    new="$(comm -13 \
-        <(jq -r '.accepted[]' "$BASELINE" | sort) \
-        <(printf '%s\n' "$found" | sort))"
+    # One read of the baseline, answering all three questions asked of it. jq's
+    # `-` is set difference; `found` arrives sorted from `unique` and `.accepted`
+    # is stored sorted, so both lists come out in the order the old sort-and-comm
+    # pair produced.
+    delta="$(jq -c --argjson found "$found" '{
+        new:      ($found - .accepted),
+        gone:     (.accepted - $found),
+        accepted: (.accepted | length)
+    }' "$BASELINE")"
+
+    new="$(jq -r '.new[]' <<<"$delta")"
     if [ -n "$new" ]; then
         log "findings not in docs/cve-baseline.json:"
         printf '%s\n' "$new" | sed 's/^/  /' >&2
-        die "$(printf '%s' "$new" | grep -c .) new finding(s)"
+        die "$(jq '.new | length' <<<"$delta") new finding(s)"
     fi
 
     # The other direction. One or two accepted ids disappearing is ordinary --
@@ -117,11 +128,9 @@ main() {
     # disappearing at once is not a clean image; it is a scan that did not read
     # this image, and scan_floor's structural checks cannot catch it because the
     # report is well-formed and simply about something else.
-    gone="$(comm -23 \
-        <(jq -r '.accepted[]' "$BASELINE" | sort) \
-        <(printf '%s\n' "$found" | sort))"
-    accepted="$(jq '.accepted | length' "$BASELINE")"
-    missing="$(printf '%s' "$gone" | grep -c . || true)"
+    gone="$(jq -r '.gone[]' <<<"$delta")"
+    accepted="$(jq '.accepted' <<<"$delta")"
+    missing="$(jq '.gone | length' <<<"$delta")"
     if [ "$accepted" -gt 0 ] && [ "$missing" -eq "$accepted" ]; then
         die "none of the $accepted accepted findings are present -- the scan did not read this image"
     fi
