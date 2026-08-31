@@ -1,0 +1,1351 @@
+# RX-E2.txt — issue #77, the inherit_errexit defect
+#
+# Reverification of the 2026-08-31 review's finding against aed962d, on branch
+# lane/shell-errexit. Captured output, not prose: each block is the command, the
+# real stdout+stderr, then its exit status.
+#
+# Worktree : /home/ssullivan/vcows-wt/shell-errexit  (aed962d)
+# Scratch  : /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1
+# Date     : 2026-08-31T06:08:28Z
+#
+# No file in the worktree was modified. Every mutation below is in a fresh
+# `git clone` of the worktree under the scratch dir.
+==============================================================================
+PREAMBLE — where this ran, and the .tools/bin safety check
+==============================================================================
+
+$ git -C /home/ssullivan/vcows-wt/shell-errexit rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+
+$ ls -la /home/ssullivan/vcows-wt/shell-errexit/.tools
+total 8
+drwxr-xr-x.  3 ssullivan ssullivan   50 Aug 31 01:31 .
+drwxr-xr-x. 16 ssullivan ssullivan 4096 Aug 31 01:34 ..
+lrwxrwxrwx.  1 ssullivan ssullivan   39 Aug 31 01:31 bin -> /home/ssullivan/vcows-deploy/.tools/bin
+drwxr-xr-x.  3 ssullivan ssullivan   35 Aug 29 19:56 tofu-mirror
+-rw-r--r--.  1 ssullivan ssullivan  247 Aug 28 22:23 tofurc
+
+# ^ .tools/bin is a SYMLINK into the live repo. Every scratch tree below is a
+# fresh `git clone` of the worktree, which does not carry .tools at all, plus a
+# real (initially empty) .tools/bin created by hand. Nothing was ever written
+# through the symlink.
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head/.tools
+total 4
+drwxr-xr-x.  4 ssullivan ssullivan   36 Aug 31 01:55 .
+drwxr-xr-x. 13 ssullivan ssullivan 4096 Aug 31 01:56 ..
+drwxr-xr-x.  2 ssullivan ssullivan    6 Aug 31 01:55 bin
+drwxr-xr-x.  2 ssullivan ssullivan    6 Aug 31 01:55 tofu-mirror
+
+$ ls -la /home/ssullivan/vcows-deploy/.tools/bin   # the live one, after everything
+total 441924
+drwxr-xr-x. 2 ssullivan ssullivan        61 Aug 31 01:02 .
+drwxr-xr-x. 4 ssullivan ssullivan        50 Aug 29 22:27 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 141178250 Aug 29 22:47 cosign
+-rwxr-xr-x. 1 ssullivan ssullivan  55661096 Aug 29 19:48 hadolint
+-rwxr-xr-x. 1 ssullivan ssullivan  87220386 Aug 27 12:25 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 168456354 Aug 14 07:03 trivy
+
+$ sha256sum /home/ssullivan/vcows-deploy/.tools/bin/*
+4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  /home/ssullivan/vcows-deploy/.tools/bin/cosign
+c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /home/ssullivan/vcows-deploy/.tools/bin/hadolint
+abca2def61de9952fa06d3977bb1e064818facb9badfce502b450d3d6846a91f  /home/ssullivan/vcows-deploy/.tools/bin/syft
+d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791  /home/ssullivan/vcows-deploy/.tools/bin/trivy
+
+==============================================================================
+0 — ENVIRONMENT
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+EXIT=0
+
+$ bash --version | head -1
+GNU bash, version 5.2.26(1)-release (x86_64-redhat-linux-gnu)
+EXIT=0
+
+$ shellcheck --version | sed -n 2p
+version: 0.10.0
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '16,17p' scripts/lib.sh
+set -euo pipefail
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -rn 'inherit_errexit' scripts/ .claude/ tests/ justfile Containerfile
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git log --oneline -1 454ee7c
+454ee7c Section 4 of the tooling survey, decided item by item (#21) (#72)
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git merge-base --is-ancestor 454ee7c HEAD && echo '454ee7c IS an ancestor of aed962d'
+454ee7c IS an ancestor of aed962d
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '129,146p' scripts/lib.sh
+source_revision() {
+    local provider ship sha dirt
+    provider="$(provider_version)"
+    ship=(orchestrator container licenses Containerfile .containerignore
+          "docs/provider-${provider}.lock.hcl")
+    sha="$(git -C "$REPO" rev-parse HEAD)"
+    # Assigned on its own line, then tested. Inside `[ -n "$(git ...)" ]` a git
+    # that fails is indistinguishable from a clean tree: the substitution comes
+    # back empty, the test is false, and this records a clean SHA for a dirty
+    # one -- an image claiming a revision it does not have. As a bare assignment
+    # the failure reaches the `set -e` in this file instead. SC2312.
+    dirt="$(git -C "$REPO" status --porcelain -- "${ship[@]}")"
+    if [ -n "$dirt" ]; then
+        log "warning: shipped paths are modified; recording ${sha}-dirty"
+        sha="${sha}-dirty"
+    fi
+    printf '%s\n' "$sha"
+}
+EXIT=0
+
+==============================================================================
+SITE 1 — scripts/image-build.sh:23  image_tag -> containerfile_arg (die lib.sh:81)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s1 && sed -i 's/^ARG VCOWS_VERSION=0.1.0.0$/ARG VCOWS_VERSION=/' Containerfile && sed -n '89p' Containerfile
+ARG VCOWS_VERSION=
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s1 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+warning: shipped paths are modified; recording aed962d48ee85641ef9580515b698c50881a271d-dirty
+building localhost/vcows-deploy:
+FAKE-PODMAN ARGS: build -t localhost/vcows-deploy: --build-arg GIT_SHA=aed962d48ee85641ef9580515b698c50881a271d-dirty --build-arg BUILD_DATE=2026-08-31T05:57:18Z /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s1
+built localhost/vcows-deploy:
+run 'just test-image' to exercise the offline gate
+EXIT=0
+
+==============================================================================
+SITE 1 COUNTERFACTUAL — same tree, plus 'shopt -s inherit_errexit' at lib.sh:17
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s1 && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s1 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+==============================================================================
+SITE 2 — scripts/image-scan.sh:70  image_tag
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2 && sed -i 's/^ARG VCOWS_VERSION=0.1.0.0$/ARG VCOWS_VERSION=/' Containerfile && sed -n '89p' Containerfile
+ARG VCOWS_VERSION=
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-scan.sh
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+saving localhost/vcows-deploy:
+FAKE-PODMAN ARGS: save --format docker-archive -o /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/image.tar localhost/vcows-deploy:
+scanning
+FAKE-TRIVY ARGS: image --quiet --input /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/image.tar --format json --output /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/trivy.json
+FAKE-SYFT ARGS: scan docker-archive:/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/image.tar -q -o spdx-json=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/sbom.spdx.json
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/sbom.spdx.json
+jq: error: Could not open file /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s2/.cache/scan/trivy.json: No such file or directory
+EXIT=2
+
+==============================================================================
+SITE 3 — scripts/test-image.sh:14  image_tag  (exports VCOWS_IMAGE into pytest)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s3 && sed -i 's/^ARG VCOWS_VERSION=0.1.0.0$/ARG VCOWS_VERSION=/' Containerfile && sed -n '89p' Containerfile
+ARG VCOWS_VERSION=
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s3 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/test-image.sh
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+exercising localhost/vcows-deploy:
+FAKE-PYTEST ARGS: -m pytest -q -rs
+FAKE-PYTEST sees VCOWS_IMAGE=[localhost/vcows-deploy:] VCOWS_GATES=[image]
+EXIT=0
+
+==============================================================================
+SITE 4a — scripts/image-build.sh:38  source_revision -> provider_version (die lib.sh:110)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a && sed -i 's/version = "= 0.9.8"/version = "0.9.8"/' orchestrator/backends/libvirt/tofu/main.tf && sed -n '11p' orchestrator/backends/libvirt/tofu/main.tf
+      version = "0.9.8"
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+error: no pinned provider version in /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a/orchestrator/backends/libvirt/tofu/main.tf
+warning: shipped paths are modified; recording aed962d48ee85641ef9580515b698c50881a271d-dirty
+building localhost/vcows-deploy:0.1.0.0
+FAKE-PODMAN ARGS: build -t localhost/vcows-deploy:0.1.0.0 --build-arg GIT_SHA=aed962d48ee85641ef9580515b698c50881a271d-dirty --build-arg BUILD_DATE=2026-08-31T05:57:19Z /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a
+built localhost/vcows-deploy:0.1.0.0
+run 'just test-image' to exercise the offline gate
+EXIT=0
+
+# what ship[] then watches, printed from the real function:
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a && bash -c 'source scripts/lib.sh; provider="$(provider_version)" || true; echo "ship glob would be docs/provider-${provider}.lock.hcl"; ls docs/provider-*.lock.hcl'
+error: no pinned provider version in /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a/orchestrator/backends/libvirt/tofu/main.tf
+ship glob would be docs/provider-.lock.hcl
+docs/provider-0.9.8.lock.hcl
+EXIT=0
+
+==============================================================================
+SITE 4a COUNTERFACTUAL — plus inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+error: no pinned provider version in /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4a/orchestrator/backends/libvirt/tofu/main.tf
+EXIT=1
+
+==============================================================================
+SITE 4b / RX-E9 — scripts/image-build.sh:38  source_revision -> git rev-parse (lib.sh:134), .git absent
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && mv .git ../s4b-git-aside && ls -d .git 2>&1
+ls: cannot access '.git': No such file or directory
+EXIT=2
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+building localhost/vcows-deploy:0.1.0.0
+FAKE-PODMAN ARGS: build -t localhost/vcows-deploy:0.1.0.0 --build-arg GIT_SHA= --build-arg BUILD_DATE=2026-08-31T05:57:20Z /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b
+built localhost/vcows-deploy:0.1.0.0
+run 'just test-image' to exercise the offline gate
+EXIT=0
+
+# THIS IS THE #21 / 454ee7c RE-MEASUREMENT: aed962d CONTAINS 454ee7c.
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && bash -c 'source scripts/lib.sh; rev="$(source_revision)"; echo "rev=[$rev] rc=$?"'
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+rev=[] rc=0
+EXIT=0
+
+# and source_revision called as a PLAIN COMMAND, not inside \$( ):
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && bash -c 'source scripts/lib.sh; source_revision; echo "rc=$?"'
+fatal: not a git repository (or any of the parent directories): .git
+EXIT=128
+
+==============================================================================
+SITE 4b COUNTERFACTUAL — plus inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+fatal: not a git repository (or any of the parent directories): .git
+EXIT=128
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s4b && bash -c 'source scripts/lib.sh; rev="$(source_revision)"; echo "rev=[$rev] rc=$?"'
+fatal: not a git repository (or any of the parent directories): .git
+EXIT=128
+
+==============================================================================
+SITE 5 — scripts/bundle.sh:61  source_revision
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5 && sed -n '50,70p' scripts/bundle.sh
+    for f in "$archive" "$sbom" "$report"; do
+        [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
+    done
+
+    version="$(archive_label "$archive" org.opencontainers.image.version)"
+    revision="$(archive_label "$archive" org.opencontainers.image.revision)"
+    name="vcows-deploy-${version}-${revision}.tar.gz"
+
+    # Not fatal. Delivering an older image on purpose is legitimate; delivering
+    # one by accident because a rebuild was skipped is the thing worth saying out
+    # loud, and the filename records which it was either way.
+    worktree="$(source_revision)"
+    if [ "$revision" != "$worktree" ]; then
+        log "warning: the archive was built at $revision but the tree is at $worktree"
+        log "         run 'just image && just scan' to bundle the current tree"
+    fi
+
+    out="$REPO/.cache/delivery"
+    rm -rf "$out"
+    mkdir -p "$out"
+
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5 && mv .git ../s5-git-aside && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh
+error: no image.tar -- run 'just scan' first, which writes it
+EXIT=1
+
+==============================================================================
+SITE 6 — scripts/install-tools.sh:115  fetch -> digest (die :40) / curl :67 / sha256sum :68
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s6 && sed '$d' scripts/install-tools.sh > scripts/_it.sh && diff scripts/install-tools.sh scripts/_it.sh
+169d168
+< main "$@"
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s6 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash drive-it.sh
+  tofu 9.9.9: downloading
+error: no pinned digest for tofu:9.9.9 -- add it from the project's published checksums file
+curl: (22) The requested URL returned error: 404
+sha256sum: 'standard input': no properly formatted checksum lines found
+unzip:  cannot find or open /tmp/tmp.Zd6KdmUsy0/tofu/tofu_9.9.9_linux_amd64.zip, /tmp/tmp.Zd6KdmUsy0/tofu/tofu_9.9.9_linux_amd64.zip.zip or /tmp/tmp.Zd6KdmUsy0/tofu/tofu_9.9.9_linux_amd64.zip.ZIP.
+EXIT=9
+
+==============================================================================
+SITE 6 COUNTERFACTUAL — plus inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s6 && sed '$d' scripts/install-tools.sh > scripts/_it.sh && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash drive-it.sh
+  tofu 9.9.9: downloading
+error: no pinned digest for tofu:9.9.9 -- add it from the project's published checksums file
+EXIT=1
+
+==============================================================================
+BOUNDARY — scripts/install-tools.sh:157, a SINGLE-level $( ) call, must still fail
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/b1 && sed -i 's/^ARG TOFU_VERSION=1.12.6$/ARG TOFU_VERSION=/' Containerfile && sed -n '96p' Containerfile
+ARG TOFU_VERSION=
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/b1 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/install-tools.sh
+error: no 'ARG TOFU_VERSION=' in Containerfile
+EXIT=1
+
+==============================================================================
+BOUNDARY — bundle.sh:32-39 archive_label, die is direct (one level)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/b2 && sed -n '28,45p' scripts/bundle.sh
+# One label out of the image config inside a docker-archive, without loading the
+# image. manifest.json names the config blob; the config carries the labels the
+# Containerfile set. Reading the archive rather than `podman inspect` on the tag
+# is deliberate: the tag may have been rebuilt since this archive was written.
+archive_label() {
+    local archive="$1" key="$2" config value
+    config="$(tar -xOf "$archive" manifest.json | jq -r '.[0].Config')"
+    [ -n "$config" ] || die "no manifest.json in $archive -- not a docker-archive?"
+    value="$(tar -xOf "$archive" "$config" | jq -r --arg k "$key" '.config.Labels[$k] // empty')"
+    [ -n "$value" ] || die "image in $archive carries no $key label"
+    printf '%s\n' "$value"
+}
+
+main() {
+    need gzip jq
+
+    local scan out archive sbom report version revision worktree name
+
+EXIT=0
+
+==============================================================================
+ENUMERATION at aed962d — every $( ) that calls a repo function
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/b2 && grep -rn 'image_tag\|source_revision\|provider_version\|containerfile_arg\|archive_label\|fetch ' scripts/*.sh | grep -v '^scripts/_it.sh'
+scripts/bundle.sh:32:archive_label() {
+scripts/bundle.sh:54:    version="$(archive_label "$archive" org.opencontainers.image.version)"
+scripts/bundle.sh:55:    revision="$(archive_label "$archive" org.opencontainers.image.revision)"
+scripts/bundle.sh:61:    worktree="$(source_revision)"
+scripts/image-build.sh:14:# would make the suffix mean nothing. It lives in `source_revision` in lib.sh
+scripts/image-build.sh:23:    tag="$(image_tag)"
+scripts/image-build.sh:38:    sha="$(source_revision)"
+scripts/image-scan.sh:70:    tag="$(image_tag)"
+scripts/install-tools.sh:100:    # advisory and the fetch machinery never runs. That is the intended
+scripts/install-tools.sh:115:    file="$(fetch "$tool" "$version" "$tmp")"
+scripts/install-tools.sh:157:    tofu_version="$(containerfile_arg TOFU_VERSION)"
+scripts/lib.sh:78:containerfile_arg() {
+scripts/lib.sh:92:# empty version and status 0, and containerfile_arg's promise to fail loudly did
+scripts/lib.sh:94:image_tag() {
+scripts/lib.sh:100:    version="$(containerfile_arg VCOWS_VERSION)"
+scripts/lib.sh:107:provider_version() {
+scripts/lib.sh:129:source_revision() {
+scripts/lib.sh:131:    provider="$(provider_version)"
+scripts/mirror.sh:57:    local version; version="$(provider_version)"
+scripts/smoke-libvirt.sh:129:    version="$(provider_version)"
+scripts/test-image.sh:14:VCOWS_IMAGE="$(image_tag)"
+scripts/verify-provider.sh:43:    mod_version="$(provider_version)"
+scripts/verify-provider.sh:47:    cf_version="$(containerfile_arg PROVIDER_VERSION)"
+scripts/verify-provider.sh:48:    cf_sha="$(containerfile_arg PROVIDER_SHA256)"
+EXIT=0
+
+==============================================================================
+SHELLCHECK — does the aed962d gate catch any of this?
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/sc && rm -f scripts/_it.sh; bash scripts/lint.sh 2>&1 | tail -12
+scripts/lint.sh: line 19: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/sc/.venv/bin/ruff: No such file or directory
+  FAIL  ruff check
+scripts/lint.sh: line 19: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/sc/.venv/bin/ruff: No such file or directory
+  FAIL  ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+FAKE-PYTEST ARGS: - /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/sc
+FAKE-PYTEST sees VCOWS_IMAGE=[<unset>] VCOWS_GATES=[<unset>]
+  ok    workflows carry no logic
+error: 2 gate(s) failed: ruff check
+ruff format
+EXIT=0
+
+$ shellcheck -o all -s bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/min.sh
+
+In /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/min.sh line 5:
+outer() { local v; v="$(inner)"; printf '%s\n' "$v"; }
+                                                ^-- SC2250 (style): Prefer putting braces around variable references even when not strictly required.
+
+Did you mean: 
+outer() { local v; v="$(inner)"; printf '%s\n' "${v}"; }
+
+
+In /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/min.sh line 6:
+main() { local x; x="$(outer)"; echo "reached, x=[$x]"; }
+                                                  ^-- SC2250 (style): Prefer putting braces around variable references even when not strictly required.
+
+Did you mean: 
+main() { local x; x="$(outer)"; echo "reached, x=[${x}]"; }
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2250 -- Prefer putting braces around vari...
+EXIT=1
+
+$ bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/min.sh
+error: boom
+reached, x=[]
+EXIT=0
+
+==============================================================================
+SITE 5 — scripts/bundle.sh:61  source_revision, reached with a synthetic docker-archive
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && tar -tf .cache/scan/image.tar
+manifest.json
+config.json
+EXIT=0
+
+# control: with .git present, the two revisions agree and no warning fires
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh 2>&1 | head -20
+compressing image.tar -> vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz
+
+bundle  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b/.cache/delivery
+  vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz  (4.0K)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0
+
+# now .git is moved aside: source_revision returns empty at status 0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && mv .git ../s5b-git-aside && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh 2>&1 | head -20
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+warning: the archive was built at aed962d48ee85641ef9580515b698c50881a271d but the tree is at 
+         run 'just image && just scan' to bundle the current tree
+compressing image.tar -> vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz
+
+bundle  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b/.cache/delivery
+  vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz  (4.0K)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0
+
+==============================================================================
+SITE 5 COUNTERFACTUAL — plus inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh 2>&1 | head -20
+fatal: not a git repository (or any of the parent directories): .git
+EXIT=0
+
+==============================================================================
+RX-E3 DOWNSTREAM — what the REAL podman does with the empty tag (no fakes)
+==============================================================================
+
+$ podman build -t 'localhost/vcows-tagtest:' /nonexistent-context-dir
+Error: context must be a directory: "/nonexistent-context-dir"
+EXIT=125
+
+$ podman save --format docker-archive -o /tmp/L1-empty-tag.tar 'localhost/vcows-deploy:'
+Error: parsing reference "localhost/vcows-deploy:": invalid reference format
+EXIT=125
+
+$ rm -f /tmp/L1-empty-tag.tar; echo cleaned
+cleaned
+EXIT=0
+
+# correction to the block above: `| head -20` masked the exit status.
+# re-run of SITE 5, unpiped, before and after the counterfactual:
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh >/dev/null
+fatal: not a git repository (or any of the parent directories): .git
+EXIT=128
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && sed -n '16,17p' scripts/lib.sh
+set -euo pipefail
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/bundle.sh >/dev/null
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+warning: the archive was built at aed962d48ee85641ef9580515b698c50881a271d but the tree is at 
+         run 'just image && just scan' to bundle the current tree
+compressing image.tar -> vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz
+
+bundle  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/s5b/.cache/delivery
+  vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz  (4.0K)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-aed962d48ee85641ef9580515b698c50881a271d.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0
+
+# correction: the podman build probe needs a real context directory.
+
+$ podman build -t 'localhost/vcows-tagtest:' /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/ctx
+Error: tag localhost/vcows-tagtest:: invalid reference format
+EXIT=125
+
+$ podman build -t 'localhost/vcows-tagtest:0.1.0.0' /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/ctx
+STEP 1/1: FROM scratch
+COMMIT localhost/vcows-tagtest:0.1.0.0
+--> f281e6e46898
+Successfully tagged localhost/vcows-tagtest:0.1.0.0
+f281e6e46898f9080cf406147092e43cf7af4d5591db9c8ec5a4fd8a83efa5d1
+EXIT=0
+
+$ podman rmi -f localhost/vcows-tagtest:0.1.0.0
+Untagged: localhost/vcows-tagtest:0.1.0.0
+Deleted: f281e6e46898f9080cf406147092e43cf7af4d5591db9c8ec5a4fd8a83efa5d1
+EXIT=0
+
+==============================================================================
+SECTION 5 EVIDENCE — what else `shopt -s inherit_errexit` changes
+==============================================================================
+
+==============================================================================
+SCRIPTS THAT SOURCE lib.sh at aed962d
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && grep -ln 'source .*lib.sh' scripts/*.sh
+scripts/bundle.sh
+scripts/image-build.sh
+scripts/image-scan.sh
+scripts/install-tools.sh
+scripts/lint.sh
+scripts/mirror.sh
+scripts/os-deps.sh
+scripts/smoke-libvirt.sh
+scripts/test-image.sh
+scripts/verify-provider.sh
+EXIT=0
+
+==============================================================================
+EVERY MULTI-COMMAND OR FUNCTION-CALL $( ) IN THOSE SCRIPTS
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && grep -rn '\$(' scripts/*.sh | grep -v '^\s*#' | grep -c ''
+91
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && grep -rn '="\$(' scripts/*.sh | sed 's/^\(scripts\/[a-z-]*\.sh:[0-9]*\).*/\1/' | wc -l
+60
+EXIT=0
+
+==============================================================================
+PROBE — install-tools.sh version_of(): a tool on PATH that prints no dotted version
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && sed -n '16,17p' scripts/lib.sh
+set -euo pipefail
+# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/noversion:$PATH bash probe_vo.sh
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && sed -n '16,19p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
+# in every command-substitution subshell.
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/noversion:$PATH bash probe_vo.sh
+EXIT=1
+
+==============================================================================
+just verify-provider — OFF then ON
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && just verify-provider
+./scripts/verify-provider.sh
+provider version per main.tf: 0.9.8
+  ok    Containerfile PROVIDER_VERSION
+  ok    lock file version
+  ok    mirrored zip sha256 vs Containerfile
+  ok    mirror index h1: vs committed lock
+  ok    mirror index zh: vs Containerfile
+  ok    mirror holds exactly one provider zip
+all provider facts agree
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && just verify-provider
+./scripts/verify-provider.sh
+provider version per main.tf: 0.9.8
+  ok    Containerfile PROVIDER_VERSION
+  ok    lock file version
+  ok    mirrored zip sha256 vs Containerfile
+  ok    mirror index h1: vs committed lock
+  ok    mirror index zh: vs Containerfile
+  ok    mirror holds exactly one provider zip
+all provider facts agree
+EXIT=0
+
+==============================================================================
+just test-image against the image built above — OFF then ON
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && VCOWS_IMAGE_TAG=localhost/vcows-deploy-l1:0.1.0.0 just test-image 2>&1 | tail -6
+........................................................................ [ 82%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+421 passed, 15 skipped in 42.09s
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && VCOWS_IMAGE_TAG=localhost/vcows-deploy-l1:0.1.0.0 just test-image 2>&1 | tail -6
+........................................................................ [ 82%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+421 passed, 15 skipped in 41.22s
+EXIT=0
+
+==============================================================================
+scripts/bundle.sh dry sanity — OFF then ON (no scan cache: both must die the same way)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && bash scripts/bundle.sh
+error: no image.tar -- run 'just scan' first, which writes it
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && bash scripts/bundle.sh
+error: no image.tar -- run 'just scan' first, which writes it
+EXIT=1
+
+==============================================================================
+FINAL STATE OF THE GATE TREE
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && git diff
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+index e10caef..6abd166 100644
+--- a/scripts/lib.sh
++++ b/scripts/lib.sh
+@@ -14,6 +14,9 @@
+ # shellcheck disable=SC2034
+ 
+ set -euo pipefail
++shopt -s inherit_errexit
++# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
++# in every command-substitution subshell.
+ IFS=$'\n\t'
+ 
+ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXIT=0
+
+==============================================================================
+just check — CONTROL, the gate tree at aed962d with no change
+==============================================================================
+$ git rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+
+$ sed -n '16,17p' scripts/lib.sh
+set -euo pipefail
+IFS=$'\n\t'
+
+$ just check
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+49 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+.venv/bin/ty check
+All checks passed!
+.venv/bin/python -m pytest -q -rs 
+........................................................................ [ 16%]
+.........................................ssssssssss..................... [ 33%]
+........................................................................ [ 49%]
+...........sssssssssssssss.............................................. [ 66%]
+........................................................................ [ 82%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [10] tests/test_image.py: set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and install podman to run the container gate; build it with `just image`. buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and per-run isolation, and `buildah run` provides none of the three
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+411 passed, 25 skipped in 36.70s
+EXIT=0
+
+==============================================================================
+just check — the same tree carrying shopt -s inherit_errexit
+==============================================================================
+$ git diff --stat
+ scripts/lib.sh | 3 +++
+ 1 file changed, 3 insertions(+)
+
+$ git diff
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+index e10caef..53b07ed 100644
+--- a/scripts/lib.sh
++++ b/scripts/lib.sh
+@@ -14,6 +14,9 @@
+ # shellcheck disable=SC2034
+ 
+ set -euo pipefail
++# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
++# in every command-substitution subshell.
++shopt -s inherit_errexit
+ IFS=$'\n\t'
+ 
+ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+$ just check
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+49 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+.venv/bin/ty check
+All checks passed!
+.venv/bin/python -m pytest -q -rs 
+........................................................................ [ 16%]
+.........................................ssssssssss..................... [ 33%]
+........................................................................ [ 49%]
+...........sssssssssssssss.............................................. [ 66%]
+........................................................................ [ 82%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [10] tests/test_image.py: set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and install podman to run the container gate; build it with `just image`. buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and per-run isolation, and `buildah run` provides none of the three
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+411 passed, 25 skipped in 30.48s
+EXIT=0
+
+==============================================================================
+just image — the same tree carrying shopt -s inherit_errexit
+==============================================================================
+$ VCOWS_IMAGE_TAG=localhost/vcows-deploy-L1:0.1.0.0 just image
+./scripts/image-build.sh
+building localhost/vcows-deploy-L1:0.1.0.0
+Error: tag localhost/vcows-deploy-L1:0.1.0.0: invalid reference format: repository name must be lowercase
+error: Recipe `image` failed on line 101 with exit code 125
+
+real	0m0.201s
+user	0m0.107s
+sys	0m0.072s
+EXIT=125
+# NOTE: the tag named in the assignment, localhost/vcows-deploy-L1:0.1.0.0, is rejected
+# by podman for the uppercase L. Re-run with the lowercase spelling.
+
+$ VCOWS_IMAGE_TAG=localhost/vcows-deploy-l1:0.1.0.0 just image
+./scripts/image-build.sh
+building localhost/vcows-deploy-l1:0.1.0.0
+STEP 1/29: FROM quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+STEP 2/29: ARG BASE_IMAGE
+--> Using cache 70ad390762f5026f2297be5a3d8b426367dac9e0159acb2da962bc48cee63deb
+--> 70ad390762f5
+STEP 3/29: ARG BASE_DIGEST
+--> Using cache 6a9c26bcb6865d5888a6e6c5f1d0e57e04d89c6f4df2bbe7491f22c53b05eb14
+--> 6a9c26bcb686
+STEP 4/29: ARG VCOWS_VERSION=0.1.0.0
+--> Using cache bf9f01854c54030481445847c0647a28eec339c1c28e58452bf195ebce4b6f5c
+--> bf9f01854c54
+STEP 5/29: ARG GIT_SHA=unknown
+--> Using cache 87239556953b5489bbc9e6ca0bbdd751913b3b30997669a681818c7b2f7e3401
+--> 87239556953b
+STEP 6/29: ARG BUILD_DATE=unknown
+--> Using cache c01ce0ed1cabf2eff4ba5246432790b3791b94fece054a7655e8258a9cfaf301
+--> c01ce0ed1cab
+STEP 7/29: ARG TOFU_VERSION=1.12.6
+--> Using cache 1e5f2565d6233d35fa12fd4fb43974b66c425ce6b298ed782987ba7c78f380e5
+--> 1e5f2565d623
+STEP 8/29: ARG TOFU_RPM_SHA256=547fe4544d3091ede04478f143fbb17bb0e010999237d904bf8950ad7542848f
+--> Using cache b58f7b428a97fb6adf2ca1dea35d9d1e82a2f6f1bdaf18c5a9f64d7e57e2b322
+--> b58f7b428a97
+STEP 9/29: ARG PROVIDER_VERSION=0.9.8
+--> Using cache 7bd77c2ba1ca9fb5282014ae719e13850c50d5c267f648414deafadb8934fe09
+--> 7bd77c2ba1ca
+STEP 10/29: ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
+--> Using cache 99b1a0c229e0fd3082a30cf29b9b07bfce98e7c7db218f0044274e61974635e4
+--> 99b1a0c229e0
+STEP 11/29: ARG IMAGE_LICENSES="MPL-2.0 AND Apache-2.0 AND GPL-2.0-only AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-3-Clause AND Python-2.0.1"
+--> Using cache 006f8517ee8fa19f0b8f3c6230fed5c22bf93efb99a1fe64e83cd7861a0ecf7d
+--> 006f8517ee8f
+STEP 12/29: RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release  && dnf -y install --nodocs --setopt=install_weak_deps=0       glibc-minimal-langpack       python3-libvirt       python3-pyyaml       python3-jsonschema       python3-pycdlib       openssh-clients  && dnf -y remove epel-release  && dnf clean all  && rm -rf /var/cache/dnf /var/cache/libdnf5 /etc/yum.repos.d/epel*.repo
+Rocky Linux 10 - BaseOS                          22 MB/s |  21 MB     00:00    
+Rocky Linux 10 - AppStream                      5.4 MB/s | 2.6 MB     00:00    
+Rocky Linux 10 - Extras                          11 kB/s | 5.8 kB     00:00    
+Last metadata expiration check: 0:00:01 ago on Mon Aug 31 06:03:03 2026.
+Dependencies resolved.
+================================================================================
+ Package              Architecture   Version               Repository      Size
+================================================================================
+Installing:
+ epel-release         noarch         10-7.el10_1           extras          19 k
+
+Transaction Summary
+================================================================================
+Install  1 Package
+
+Total download size: 19 k
+Installed size: 25 k
+Downloading Packages:
+epel-release-10-7.el10_1.noarch.rpm             220 kB/s |  19 kB     00:00    
+--------------------------------------------------------------------------------
+Total                                           104 kB/s |  19 kB     00:00     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Installing       : epel-release-10-7.el10_1.noarch                        1/1 
+  Running scriptlet: epel-release-10-7.el10_1.noarch                        1/1 
+Many EPEL packages require the CodeReady Builder (CRB) repository.
+It is recommended that you run /usr/bin/crb enable to enable the CRB repository.
+
+
+Installed:
+  epel-release-10-7.el10_1.noarch                                               
+
+Complete!
+Extra Packages for Enterprise Linux 10 - x86_64  10 MB/s | 6.6 MB     00:00    
+Last metadata expiration check: 0:00:03 ago on Mon Aug 31 06:03:06 2026.
+Package glibc-minimal-langpack-2.39-121.el10_2.x86_64 is already installed.
+Dependencies resolved.
+=======================================================================================
+ Package                             Arch    Version                   Repo        Size
+=======================================================================================
+Installing:
+ openssh-clients                     x86_64  9.9p1-25.el10_2.rocky.0.1 baseos     762 k
+ python3-jsonschema                  noarch  4.19.1-7.el10             baseos     207 k
+ python3-libvirt                     x86_64  11.10.0-2.el10            appstream  364 k
+ python3-pycdlib                     noarch  1.16.0-2.el10_2           epel       311 k
+ python3-pyyaml                      x86_64  6.0.1-19.el10             baseos     237 k
+Upgrading:
+ glibc                               x86_64  2.39-128.el10_2           baseos     2.1 M
+ glibc-common                        x86_64  2.39-128.el10_2           baseos     311 k
+ glibc-minimal-langpack              x86_64  2.39-128.el10_2           baseos      28 k
+Installing dependencies:
+ cyrus-sasl-gssapi                   x86_64  2.1.28-29.el10            baseos      27 k
+ libcbor                             x86_64  0.11.0-3.el10             baseos      33 k
+ libedit                             x86_64  3.1-52.20230828cvs.el10   baseos     105 k
+ libfido2                            x86_64  1.14.0-7.el10             baseos      97 k
+ libnl3                              x86_64  3.11.0-1.el10             baseos     357 k
+ libssh                              x86_64  0.12.0-3.el10_2           baseos     277 k
+ libssh-config                       noarch  0.12.0-3.el10_2           baseos     8.5 k
+ libtirpc                            x86_64  1.3.5-1.el10              baseos      94 k
+ libvirt-libs                        x86_64  11.10.0-12.4.el10_2       appstream  5.4 M
+ numactl-libs                        x86_64  2.0.19-3.el10             baseos      31 k
+ openssh                             x86_64  9.9p1-25.el10_2.rocky.0.1 baseos     350 k
+ python3-attrs                       noarch  23.2.0-7.el10             baseos     127 k
+ python3-jsonschema-specifications   noarch  2023.11.2-6.el10          baseos      29 k
+ python3-referencing                 noarch  0.31.1-6.el10             baseos      84 k
+ python3-rpds-py                     x86_64  0.17.1-6.el10             baseos     306 k
+
+Transaction Summary
+=======================================================================================
+Install  20 Packages
+Upgrade   3 Packages
+
+Total download size: 12 M
+Downloading Packages:
+(1/23): cyrus-sasl-gssapi-2.1.28-29.el10.x86_64  79 kB/s |  27 kB     00:00    
+(2/23): libcbor-0.11.0-3.el10.x86_64.rpm         96 kB/s |  33 kB     00:00    
+(3/23): python3-pycdlib-1.16.0-2.el10_2.noarch. 767 kB/s | 311 kB     00:00    
+(4/23): libedit-3.1-52.20230828cvs.el10.x86_64. 635 kB/s | 105 kB     00:00    
+(5/23): libnl3-3.11.0-1.el10.x86_64.rpm         1.6 MB/s | 357 kB     00:00    
+(6/23): libfido2-1.14.0-7.el10.x86_64.rpm       267 kB/s |  97 kB     00:00    
+(7/23): libtirpc-1.3.5-1.el10.x86_64.rpm        790 kB/s |  94 kB     00:00    
+(8/23): libssh-0.12.0-3.el10_2.x86_64.rpm       644 kB/s | 277 kB     00:00    
+(9/23): numactl-libs-2.0.19-3.el10.x86_64.rpm   294 kB/s |  31 kB     00:00    
+(10/23): libssh-config-0.12.0-3.el10_2.noarch.r  27 kB/s | 8.5 kB     00:00    
+(11/23): openssh-9.9p1-25.el10_2.rocky.0.1.x86_ 2.2 MB/s | 350 kB     00:00    
+(12/23): python3-attrs-23.2.0-7.el10.noarch.rpm 642 kB/s | 127 kB     00:00    
+(13/23): python3-jsonschema-specifications-2023 306 kB/s |  29 kB     00:00    
+(14/23): python3-jsonschema-4.19.1-7.el10.noarc 1.1 MB/s | 207 kB     00:00    
+(15/23): python3-referencing-0.31.1-6.el10.noar 701 kB/s |  84 kB     00:00    
+(16/23): openssh-clients-9.9p1-25.el10_2.rocky. 1.4 MB/s | 762 kB     00:00    
+(17/23): python3-pyyaml-6.0.1-19.el10.x86_64.rp 891 kB/s | 237 kB     00:00    
+(18/23): python3-rpds-py-0.17.1-6.el10.x86_64.r 1.7 MB/s | 306 kB     00:00    
+(19/23): python3-libvirt-11.10.0-2.el10.x86_64. 1.0 MB/s | 364 kB     00:00    
+(20/23): glibc-common-2.39-128.el10_2.x86_64.rp 1.7 MB/s | 311 kB     00:00    
+(21/23): libvirt-libs-11.10.0-12.4.el10_2.x86_6 8.7 MB/s | 5.4 MB     00:00    
+(22/23): glibc-2.39-128.el10_2.x86_64.rpm       3.8 MB/s | 2.1 MB     00:00    
+(23/23): glibc-minimal-langpack-2.39-128.el10_2 295 kB/s |  28 kB     00:00    
+--------------------------------------------------------------------------------
+Total                                           4.6 MB/s |  12 MB     00:02     
+Extra Packages for Enterprise Linux 10 - x86_64 1.6 MB/s | 1.6 kB     00:00    
+Importing GPG key 0xE37ED158:
+ Userid     : "Fedora (epel10) <epel@fedoraproject.org>"
+ Fingerprint: 7D8D 15CB FC4E 6268 8591 FB26 33D9 8517 E37E D158
+ From       : /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-10
+Key imported successfully
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Upgrading        : glibc-common-2.39-128.el10_2.x86_64                   1/26 
+  Upgrading        : glibc-minimal-langpack-2.39-128.el10_2.x86_64         2/26 
+  Running scriptlet: glibc-2.39-128.el10_2.x86_64                          3/26 
+  Upgrading        : glibc-2.39-128.el10_2.x86_64                          3/26 
+  Running scriptlet: glibc-2.39-128.el10_2.x86_64                          3/26 
+  Installing       : python3-rpds-py-0.17.1-6.el10.x86_64                  4/26 
+  Installing       : python3-attrs-23.2.0-7.el10.noarch                    5/26 
+  Installing       : python3-referencing-0.31.1-6.el10.noarch              6/26 
+  Installing       : python3-jsonschema-specifications-2023.11.2-6.el10    7/26 
+  Installing       : cyrus-sasl-gssapi-2.1.28-29.el10.x86_64               8/26 
+  Installing       : libcbor-0.11.0-3.el10.x86_64                          9/26 
+  Installing       : libfido2-1.14.0-7.el10.x86_64                        10/26 
+  Installing       : libedit-3.1-52.20230828cvs.el10.x86_64               11/26 
+  Installing       : libnl3-3.11.0-1.el10.x86_64                          12/26 
+  Installing       : libtirpc-1.3.5-1.el10.x86_64                         13/26 
+  Installing       : numactl-libs-2.0.19-3.el10.x86_64                    14/26 
+  Installing       : openssh-9.9p1-25.el10_2.rocky.0.1.x86_64             15/26 
+  Installing       : libssh-config-0.12.0-3.el10_2.noarch                 16/26 
+  Installing       : libssh-0.12.0-3.el10_2.x86_64                        17/26 
+  Installing       : libvirt-libs-11.10.0-12.4.el10_2.x86_64              18/26 
+  Installing       : python3-libvirt-11.10.0-2.el10.x86_64                19/26 
+  Installing       : openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64     20/26 
+  Running scriptlet: openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64     20/26 
+  Installing       : python3-jsonschema-4.19.1-7.el10.noarch              21/26 
+  Installing       : python3-pyyaml-6.0.1-19.el10.x86_64                  22/26 
+  Installing       : python3-pycdlib-1.16.0-2.el10_2.noarch               23/26 
+  Cleanup          : glibc-2.39-121.el10_2.x86_64                         24/26 
+  Cleanup          : glibc-minimal-langpack-2.39-121.el10_2.x86_64        25/26 
+  Cleanup          : glibc-common-2.39-121.el10_2.x86_64                  26/26 
+  Running scriptlet: glibc-common-2.39-121.el10_2.x86_64                  26/26 
+
+Upgraded:
+  glibc-2.39-128.el10_2.x86_64                                                  
+  glibc-common-2.39-128.el10_2.x86_64                                           
+  glibc-minimal-langpack-2.39-128.el10_2.x86_64                                 
+Installed:
+  cyrus-sasl-gssapi-2.1.28-29.el10.x86_64                                       
+  libcbor-0.11.0-3.el10.x86_64                                                  
+  libedit-3.1-52.20230828cvs.el10.x86_64                                        
+  libfido2-1.14.0-7.el10.x86_64                                                 
+  libnl3-3.11.0-1.el10.x86_64                                                   
+  libssh-0.12.0-3.el10_2.x86_64                                                 
+  libssh-config-0.12.0-3.el10_2.noarch                                          
+  libtirpc-1.3.5-1.el10.x86_64                                                  
+  libvirt-libs-11.10.0-12.4.el10_2.x86_64                                       
+  numactl-libs-2.0.19-3.el10.x86_64                                             
+  openssh-9.9p1-25.el10_2.rocky.0.1.x86_64                                      
+  openssh-clients-9.9p1-25.el10_2.rocky.0.1.x86_64                              
+  python3-attrs-23.2.0-7.el10.noarch                                            
+  python3-jsonschema-4.19.1-7.el10.noarch                                       
+  python3-jsonschema-specifications-2023.11.2-6.el10.noarch                     
+  python3-libvirt-11.10.0-2.el10.x86_64                                         
+  python3-pycdlib-1.16.0-2.el10_2.noarch                                        
+  python3-pyyaml-6.0.1-19.el10.x86_64                                           
+  python3-referencing-0.31.1-6.el10.noarch                                      
+  python3-rpds-py-0.17.1-6.el10.x86_64                                          
+
+Complete!
+Dependencies resolved.
+================================================================================
+ Package              Architecture   Version              Repository       Size
+================================================================================
+Removing:
+ epel-release         noarch         10-7.el10_1          @extras          25 k
+
+Transaction Summary
+================================================================================
+Remove  1 Package
+
+Freed space: 25 k
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                        1/1 
+  Erasing          : epel-release-10-7.el10_1.noarch                        1/1 
+
+Removed:
+  epel-release-10-7.el10_1.noarch                                               
+
+Complete!
+25 files removed
+--> 4fbf7961b86a
+STEP 13/29: RUN curl -fsSLo /tmp/tofu.rpm       "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_amd64.rpm"  && echo "${TOFU_RPM_SHA256}  /tmp/tofu.rpm" | sha256sum -c -  && rpm -i /tmp/tofu.rpm  && rm -f /tmp/tofu.rpm
+/tmp/tofu.rpm: OK
+warning: /tmp/tofu.rpm: Header V4 RSA/SHA256 Signature, key ID e5fd9f80: NOKEY
+--> a85cc16c511b
+STEP 14/29: COPY .tools/tofu-mirror /opt/tofu-mirror
+--> 2183e73bb6e8
+STEP 15/29: COPY container/tofurc /opt/tofu/tofurc
+--> e13b190a62f5
+STEP 16/29: RUN echo "${PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_${PROVIDER_VERSION}_linux_amd64.zip"   | sha256sum -c -
+/opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_0.9.8_linux_amd64.zip: OK
+--> f83e5910b8c5
+STEP 17/29: COPY licenses /opt/vcows/licenses
+--> 855a05678775
+STEP 18/29: COPY orchestrator /opt/vcows/orchestrator
+--> ec9102637449
+STEP 19/29: COPY docs/provider-0.9.8.lock.hcl      /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl
+--> e8eb42e80cc2
+STEP 20/29: RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n'       > /usr/local/bin/vcows  && chmod 0755 /usr/local/bin/vcows
+--> f7ef86afd117
+STEP 21/29: COPY --chmod=0755 container/entrypoint.py /usr/local/bin/vcows-entrypoint
+--> da67baf1c782
+STEP 22/29: ENV PYTHONPATH=/opt/vcows     PYTHONDONTWRITEBYTECODE=1     VCOWS_MANIFEST=/opt/vcows/manifest.json     CHECKPOINT_DISABLE=1     TF_CLI_CONFIG_FILE=/opt/tofu/tofurc     TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache
+--> 0cb21d4b070b
+STEP 23/29: RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm  && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf        /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/  && tofu -chdir=/tmp/warm init -input=false -no-color > /dev/null  && rm -rf /tmp/warm
+--> 3653eeb4de82
+STEP 24/29: COPY container/manifest.py /tmp/manifest.py
+--> 80ea982371ca
+STEP 25/29: RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}"     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}"     PROVIDER_SHA256="${PROVIDER_SHA256}"     PROVIDER_LOCK=/opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl     python3 /tmp/manifest.py > /opt/vcows/manifest.json  && rm -f /tmp/manifest.py
+--> 2245362b7e78
+STEP 26/29: LABEL org.opencontainers.image.title="vcows-deploy"       org.opencontainers.image.description="Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh"       org.opencontainers.image.version="${VCOWS_VERSION}"       org.opencontainers.image.revision="${GIT_SHA}"       org.opencontainers.image.created="${BUILD_DATE}"       org.opencontainers.image.licenses="${IMAGE_LICENSES}"       org.opencontainers.image.vendor="vcows"       org.opencontainers.image.authors="vcows"       org.opencontainers.image.source="https://github.com/ErstBlack/vcows-deploy"       org.opencontainers.image.base.name="${BASE_IMAGE}"       org.opencontainers.image.base.digest="${BASE_DIGEST}"       name="vcows-deploy"       version="${VCOWS_VERSION}"       summary="Deploy golden qcow2 images as VMs to KVM/libvirt"       vendor="vcows"       license="${IMAGE_LICENSES}"
+--> 54b943599e7d
+STEP 27/29: WORKDIR /
+--> 742fe9a17db1
+STEP 28/29: ENTRYPOINT ["/usr/local/bin/vcows-entrypoint"]
+--> 179fdb6c1471
+STEP 29/29: CMD ["--help"]
+COMMIT localhost/vcows-deploy-l1:0.1.0.0
+--> 3898b7446610
+Successfully tagged localhost/vcows-deploy-l1:0.1.0.0
+3898b74466101871a09c562959b52737ffdb77db4eb8b904aa99b2f6ef5b9372
+built localhost/vcows-deploy-l1:0.1.0.0
+run 'just test-image' to exercise the offline gate
+
+real	0m43.346s
+user	0m31.278s
+sys	0m10.051s
+EXIT=0
+
+==============================================================================
+SECTION 7 EVIDENCE — the proposed failing test
+==============================================================================
+
+==============================================================================
+THE PROPOSED TEST FILE
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && cat tests/test_shell_errexit.py
+"""The shell library's guards, exercised rather than linted.
+
+`scripts/lint.sh` checks the scripts' syntax and style; nothing checks what they
+do, which is how a `die` that never stopped anything survived two reviews and a
+fix aimed at it. These two tests are the smallest thing that notices.
+
+No gate. `bash` is not optional here -- the suite already shells out in
+`test_image.py` and `test_seed_iso.py` -- and `conftest.gate()` exists for
+dependencies that may be absent, whose names are a closed set (`test_gates.py`
+KNOWN). An unconditional assertion is the point.
+
+The library is copied into `tmp_path` rather than read in place because `REPO`
+(`lib.sh:19-20`) is derived from `BASH_SOURCE` and `readonly`: relocating
+`lib.sh` is the only way to point `containerfile_arg` at a Containerfile this
+test controls.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+LIB = ROOT / "scripts" / "lib.sh"
+
+
+def _tree(tmp_path: Path, version_line: str) -> Path:
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(LIB, tmp_path / "scripts" / "lib.sh")
+    (tmp_path / "Containerfile").write_text(f"FROM scratch\n{version_line}\n")
+    return tmp_path
+
+
+def _run(tree: Path, script: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f"source '{tree}/scripts/lib.sh'\n{script}"],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+    )
+
+
+def test_a_guard_two_levels_inside_a_substitution_stops_the_caller(tmp_path):
+    """`image_tag` -> `containerfile_arg` -> `die`, called as `x="$(image_tag)"`.
+
+    That is the shape of `image-build.sh:23`, `image-scan.sh:70` and
+    `test-image.sh:14`. Without `inherit_errexit` the `die` exits only the
+    innermost subshell, `image_tag` returns `localhost/vcows-deploy:` at status
+    0, and the builder is invoked with an empty tag.
+    """
+    tree = _tree(tmp_path, "ARG VCOWS_VERSION=")
+    done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+    assert "no 'ARG VCOWS_VERSION=' in Containerfile" in done.stderr
+    assert done.returncode != 0, f"the die did not stop the caller: {done.stdout!r}"
+    assert "REACHED" not in done.stdout
+
+
+def test_the_same_call_succeeds_when_the_arg_is_present(tmp_path):
+    """The vacuity guard: the test above must fail for the guard, not for the harness."""
+    tree = _tree(tmp_path, "ARG VCOWS_VERSION=9.9.9.9")
+    done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "REACHED tag=[localhost/vcows-deploy:9.9.9.9]"
+EXIT=0
+
+==============================================================================
+BEFORE — lib.sh has no inherit_errexit: the assertion must FAIL
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && sed -n '16,17p' scripts/lib.sh
+set -euo pipefail
+# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && .venv/bin/python -m pytest -q tests/test_shell_errexit.py 2>&1 | tail -25
+=================================== FAILURES ===================================
+________ test_a_guard_two_levels_inside_a_substitution_stops_the_caller ________
+
+tmp_path = PosixPath('/tmp/pytest-of-ssullivan/pytest-680/test_a_guard_two_levels_inside0')
+
+    def test_a_guard_two_levels_inside_a_substitution_stops_the_caller(tmp_path):
+        """`image_tag` -> `containerfile_arg` -> `die`, called as `x="$(image_tag)"`.
+    
+        That is the shape of `image-build.sh:23`, `image-scan.sh:70` and
+        `test-image.sh:14`. Without `inherit_errexit` the `die` exits only the
+        innermost subshell, `image_tag` returns `localhost/vcows-deploy:` at status
+        0, and the builder is invoked with an empty tag.
+        """
+        tree = _tree(tmp_path, "ARG VCOWS_VERSION=")
+        done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+        assert "no 'ARG VCOWS_VERSION=' in Containerfile" in done.stderr
+>       assert done.returncode != 0, f"the die did not stop the caller: {done.stdout!r}"
+E       AssertionError: the die did not stop the caller: 'REACHED tag=[localhost/vcows-deploy:]\n'
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['bash', '-c', 'source \'/tmp/pytest-of-ssullivan/pytest-680/test_a_guard_two_levels_inside0/scr...rncode=0, stdout='REACHED tag=[localhost/vcows-deploy:]\n', stderr="error: no 'ARG VCOWS_VERSION=' in Containerfile\n").returncode
+
+tests/test_shell_errexit.py:55: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_shell_errexit.py::test_a_guard_two_levels_inside_a_substitution_stops_the_caller - AssertionError: the die did not stop the caller: 'REACHED tag=[localhost/vc...
+1 failed, 1 passed in 1.01s
+EXIT=0
+
+==============================================================================
+AFTER — the one-line fix: both assertions must PASS
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+# A `die` inside a $(helper) must stop the caller. Without this, errexit is off
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && .venv/bin/python -m pytest -q tests/test_shell_errexit.py 2>&1 | tail -8
+..                                                                       [100%]
+2 passed in 0.37s
+EXIT=0
+
+==============================================================================
+VACUITY MUTATION — break the harness (wrong ARG name) and the second test must FAIL
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && .venv/bin/python -m pytest -q tests/test_shell_errexit.py 2>&1 | tail -12
+        tree = _tree(tmp_path, "ARG NOT_THE_ARG=9.9.9.9")
+        done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+>       assert done.returncode == 0, done.stderr
+E       AssertionError: error: no 'ARG VCOWS_VERSION=' in Containerfile
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['bash', '-c', 'source \'/tmp/pytest-of-ssullivan/pytest-682/test_the_same_call_succeeds_wh0/scr...ag)"\necho "REACHED tag=[$tag]"'], returncode=1, stdout='', stderr="error: no 'ARG VCOWS_VERSION=' in Containerfile\n").returncode
+
+tests/test_shell_errexit.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_shell_errexit.py::test_the_same_call_succeeds_when_the_arg_is_present - AssertionError: error: no 'ARG VCOWS_VERSION=' in Containerfile
+1 failed, 1 passed in 0.75s
+EXIT=0
+
+==============================================================================
+THE WHOLE SUITE, WITH THE NEW FILE AND THE FIX
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && just check 2>&1 | tail -8
+50 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+error: 1 gate(s) failed: ruff check
+error: Recipe `lint` failed on line 55 with exit code 1
+EXIT=0
+
+==============================================================================
+AND THE WHOLE SUITE WITH THE NEW FILE AND THE FIX REVERTED (the red state)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gate && .venv/bin/python -m pytest -q 2>&1 | tail -12
+        tree = _tree(tmp_path, "ARG VCOWS_VERSION=")
+        done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+        assert "no 'ARG VCOWS_VERSION=' in Containerfile" in done.stderr
+>       assert done.returncode != 0, f"the die did not stop the caller: {done.stdout!r}"
+E       AssertionError: the die did not stop the caller: 'REACHED tag=[localhost/vcows-deploy:]\n'
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['bash', '-c', 'source \'/tmp/pytest-of-ssullivan/pytest-683/test_a_guard_two_levels_inside0/scr...rncode=0, stdout='REACHED tag=[localhost/vcows-deploy:]\n', stderr="error: no 'ARG VCOWS_VERSION=' in Containerfile\n").returncode
+
+tests/test_shell_errexit.py:55: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_shell_errexit.py::test_a_guard_two_levels_inside_a_substitution_stops_the_caller - AssertionError: the die did not stop the caller: 'REACHED tag=[localhost/vc...
+1 failed, 412 passed, 25 skipped in 33.44s
+EXIT=0
+
+==============================================================================
+just check with the fix AND the new test file
+==============================================================================
+$ .venv/bin/ruff check tests/test_shell_errexit.py
+All checks passed!
+EXIT=0
+
+$ just check
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+50 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+.venv/bin/ty check
+All checks passed!
+.venv/bin/python -m pytest -q -rs 
+........................................................................ [ 16%]
+.........................................ssssssssss..................... [ 32%]
+........................................................................ [ 49%]
+...........sssssssssssssss.............................................. [ 65%]
+........................................................................ [ 82%]
+........................................................................ [ 98%]
+......                                                                   [100%]
+=========================== short test summary info ============================
+SKIPPED [10] tests/test_image.py: set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and install podman to run the container gate; build it with `just image`. buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and per-run isolation, and `buildah run` provides none of the three
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+413 passed, 25 skipped in 32.10s
+EXIT=0
+
+==============================================================================
+THE PROPOSED TEST FILE AS IT STANDS AFTER THE E501 FIX
+==============================================================================
+
+$ cat tests/test_shell_errexit.py
+"""The shell library's guards, exercised rather than linted.
+
+`scripts/lint.sh` checks the scripts' syntax and style; nothing checks what they
+do, which is how a `die` that never stopped anything survived two reviews and a
+fix aimed at it. These two tests are the smallest thing that notices.
+
+No gate. `bash` is not optional here -- the suite already shells out in
+`test_image.py` and `test_seed_iso.py` -- and `conftest.gate()` exists for
+dependencies that may be absent, whose names are a closed set (`test_gates.py`
+KNOWN). An unconditional assertion is the point.
+
+The library is copied into `tmp_path` rather than read in place because `REPO`
+(`lib.sh:19-20`) is derived from `BASH_SOURCE` and `readonly`: relocating
+`lib.sh` is the only way to point `containerfile_arg` at a Containerfile this
+test controls.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+LIB = ROOT / "scripts" / "lib.sh"
+
+
+def _tree(tmp_path: Path, version_line: str) -> Path:
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(LIB, tmp_path / "scripts" / "lib.sh")
+    (tmp_path / "Containerfile").write_text(f"FROM scratch\n{version_line}\n")
+    return tmp_path
+
+
+def _run(tree: Path, script: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f"source '{tree}/scripts/lib.sh'\n{script}"],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+    )
+
+
+def test_a_guard_two_levels_inside_a_substitution_stops_the_caller(tmp_path):
+    """`image_tag` -> `containerfile_arg` -> `die`, called as `x="$(image_tag)"`.
+
+    That is the shape of `image-build.sh:23`, `image-scan.sh:70` and
+    `test-image.sh:14`. Without `inherit_errexit` the `die` exits only the
+    innermost subshell, `image_tag` returns `localhost/vcows-deploy:` at status
+    0, and the builder is invoked with an empty tag.
+    """
+    tree = _tree(tmp_path, "ARG VCOWS_VERSION=")
+    done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+    assert "no 'ARG VCOWS_VERSION=' in Containerfile" in done.stderr
+    assert done.returncode != 0, f"the die did not stop the caller: {done.stdout!r}"
+    assert "REACHED" not in done.stdout
+
+
+def test_the_same_call_succeeds_when_the_arg_is_present(tmp_path):
+    """The vacuity guard: the test above must fail for the guard, not the harness."""
+    tree = _tree(tmp_path, "ARG VCOWS_VERSION=9.9.9.9")
+    done = _run(tree, 'tag="$(image_tag)"\necho "REACHED tag=[$tag]"')
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "REACHED tag=[localhost/vcows-deploy:9.9.9.9]"
+EXIT=0

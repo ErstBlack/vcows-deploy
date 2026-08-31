@@ -1,0 +1,347 @@
+# RX-E3.txt — the lib.sh:88-93 comment (#90's item for this lane)
+#
+# Reverification of the 2026-08-31 review's finding against aed962d, on branch
+# lane/shell-errexit. Captured output, not prose: each block is the command, the
+# real stdout+stderr, then its exit status.
+#
+# Worktree : /home/ssullivan/vcows-wt/shell-errexit  (aed962d)
+# Scratch  : /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1
+# Date     : 2026-08-31T06:08:28Z
+#
+# No file in the worktree was modified. Every mutation below is in a fresh
+# `git clone` of the worktree under the scratch dir.
+
+==============================================================================
+THE COMMENT UNDER TEST — scripts/lib.sh:85-102 at aed962d
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '85,102p' scripts/lib.sh | cat -n
+     1	# The tag `just image` builds and `just test-image` exercises. One definition, so
+     2	# the two recipes cannot disagree about which image is under test.
+     3	#
+     4	# The version is assigned before it is used, not interpolated inline. A `die`
+     5	# inside a command substitution exits only the subshell, and when that
+     6	# substitution is an *argument* rather than an assignment the enclosing command
+     7	# still succeeds -- so the inline form returned `localhost/vcows-deploy:` with an
+     8	# empty version and status 0, and containerfile_arg's promise to fail loudly did
+     9	# not hold at its own call site.
+    10	image_tag() {
+    11	    local version
+    12	    if [ -n "${VCOWS_IMAGE_TAG:-}" ]; then
+    13	        printf '%s\n' "$VCOWS_IMAGE_TAG"
+    14	        return
+    15	    fi
+    16	    version="$(containerfile_arg VCOWS_VERSION)"
+    17	    printf '%s\n' "localhost/vcows-deploy:$version"
+    18	}
+EXIT=0
+
+==============================================================================
+MUTATION — Containerfile:89 'ARG VCOWS_VERSION=0.1.0.0' -> 'ARG VCOWS_VERSION='
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && sed -i 's/^ARG VCOWS_VERSION=0.1.0.0$/ARG VCOWS_VERSION=/' Containerfile && sed -n '89p' Containerfile
+ARG VCOWS_VERSION=
+EXIT=0
+
+==============================================================================
+SHAPE A — image_tag as a PLAIN COMMAND (the shape the comment says is safe)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; image_tag; echo CONTINUED'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+==============================================================================
+SHAPE B — the real call shape at all three sites: tag="$(image_tag)"  (ASSIGNMENT)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; tag="$(image_tag)"; echo "tag=[$tag] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+tag=[localhost/vcows-deploy:] CONTINUED
+EXIT=0
+
+==============================================================================
+SHAPE C — the pre-RW-G5 inline form the comment blames: an ARGUMENT position
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; echo "tag=[localhost/vcows-deploy:$(containerfile_arg VCOWS_VERSION)] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+tag=[localhost/vcows-deploy:] CONTINUED
+EXIT=0
+
+==============================================================================
+SHAPE D — assignment, but the substitution is the OUTER level (one call deep)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; v="$(containerfile_arg VCOWS_VERSION)"; echo "v=[$v] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+==============================================================================
+SAME FOUR SHAPES WITH inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && sed -i 's/^set -euo pipefail$/set -euo pipefail\nshopt -s inherit_errexit/' scripts/lib.sh && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; image_tag; echo CONTINUED'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; tag="$(image_tag)"; echo "tag=[$tag] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; echo "tag=[localhost/vcows-deploy:$(containerfile_arg VCOWS_VERSION)] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+tag=[localhost/vcows-deploy:] CONTINUED
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e3 && bash -c 'source scripts/lib.sh; v="$(containerfile_arg VCOWS_VERSION)"; echo "v=[$v] CONTINUED"'
+error: no 'ARG VCOWS_VERSION=' in Containerfile
+EXIT=1
+
+==============================================================================
+SHAPE C IS NOT WHAT THE FIX CHANGED — the commit that installed the comment
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git log --oneline -1 -S'the enclosing command still succeeds' -- scripts/lib.sh
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git log --oneline --follow -3 -- scripts/lib.sh
+454ee7c Section 4 of the tooling survey, decided item by item (#21) (#72)
+0355d59 De-duplicate the shell scripts: one provider reader, one sha256 format, need/now_utc, jq-native CVE gate (#37, #38, #39, #40) (#64)
+950ca7e Replace signing with the delivery bundle, and give the scan gate a floor (#5)
+EXIT=0
+
+==============================================================================
+THE SECOND COMMENT WITH THE SAME WRONG CAUSE — scripts/lint.sh at aed962d
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '160,182p' scripts/lint.sh | cat -n
+     1	    # **Four of shellcheck's nine optional checks, and the flags rather than a
+     2	    # .shellcheckrc.** A config file is found by searching upward from each input
+     3	    # and is silently ignored when it is not found or when it names a check the
+     4	    # running shellcheck does not know; an unknown `-o` name here exits non-zero
+     5	    # and fails this gate instead. The EPEL shellcheck on the maintainer's box
+     6	    # (0.10.0) is newer than the one os-deps.sh installs from apt on ubuntu:24.04,
+     7	    # so that difference is real and has to fail loudly. conftest.py:7: a gate
+     8	    # that quietly passes because it did not run is worse than no gate.
+     9	    #
+    10	    # Measured over these same two globs before enabling, ~1160 lines:
+    11	    # check-unassigned-uppercase 0, quote-safe-variables 0,
+    12	    # avoid-nullary-conditions 0, check-extra-masked-returns 9.
+    13	    #
+    14	    # The nine were fixed rather than suppressed. Two were real: lib.sh's
+    15	    # `git status` inside `[ -n "$(...)" ]`, which recorded a clean SHA for a
+    16	    # dirty tree when git failed, and image-build.sh's `now_utc` inline in
+    17	    # --build-arg, which shipped an empty BUILD_DATE label. Both now assign on
+    18	    # their own line, where `set -e` sees the failure. The other seven are du,
+    19	    # jq, basename and id inside log lines and die messages, and carry `|| true`.
+    20	    #
+    21	    # `require-variable-braces` is the fifth check the survey proposed and is
+    22	    # deliberately out: 293 findings, every one a mechanical $var -> ${var} with
+    23	    # no correctness content, which would have buried the nine above.
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -n 'where .set -e. sees the failure\|reaches the .set -e' scripts/lint.sh scripts/lib.sh scripts/image-build.sh
+scripts/lint.sh:177:    # their own line, where `set -e` sees the failure. The other seven are du,
+scripts/lib.sh:139:    # the failure reaches the `set -e` in this file instead. SC2312.
+EXIT=0
+
+==============================================================================
+WHAT SHELLCHECK AND inherit_errexit EACH COVER — the two are not the same set
+==============================================================================
+
+==============================================================================
+WHAT THE aed962d SHELLCHECK FLAGS DO AND DO NOT CATCH
+==============================================================================
+
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeB.sh
+#!/usr/bin/env bash
+set -euo pipefail
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+inner() { local v; v="$(printf '')"; [ -n "$v" ] || die "empty"; printf '%s\n' "$v"; }
+outer() { local x; x="$(inner)"; printf 'wrapped:%s\n' "$x"; }
+main() { local t; t="$(outer)"; printf 'reached t=[%s]\n' "$t"; }
+main
+EXIT=0
+
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeB.sh
+EXIT=0
+
+$ bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeB.sh
+error: empty
+reached t=[wrapped:]
+EXIT=0
+
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeC.sh
+#!/usr/bin/env bash
+set -euo pipefail
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+inner() { local v; v="$(printf '')"; [ -n "$v" ] || die "empty"; printf '%s\n' "$v"; }
+main() { printf 'reached t=[%s]\n' "$(inner)"; }
+main
+EXIT=0
+
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeC.sh
+
+In /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeC.sh line 5:
+main() { printf 'reached t=[%s]\n' "$(inner)"; }
+                                      ^---^ SC2312 (info): Consider invoking this command separately to avoid masking its return value (or use '|| true' to ignore).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2312 -- Consider invoking this command se...
+EXIT=1
+
+$ bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeC.sh
+error: empty
+reached t=[]
+EXIT=0
+
+==============================================================================
+SHAPE C WITH inherit_errexit — the proposed fix does NOT cover argument position
+==============================================================================
+
+$ bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeC.sh
+error: empty
+reached t=[]
+EXIT=0
+
+$ bash /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/sc/shapeB.sh
+error: empty
+EXIT=1
+
+==============================================================================
+BLAME — which commit installed lib.sh:88-93 and lib.sh:135-139
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git log --format='%h %s' -L 88,93:scripts/lib.sh | head -20
+950ca7e Replace signing with the delivery bundle, and give the scan gate a floor (#5)
+
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+--- a/scripts/lib.sh
++++ b/scripts/lib.sh
+@@ -58,0 +59,6 @@
++# The version is assigned before it is used, not interpolated inline. A `die`
++# inside a command substitution exits only the subshell, and when that
++# substitution is an *argument* rather than an assignment the enclosing command
++# still succeeds -- so the inline form returned `localhost/vcows-deploy:` with an
++# empty version and status 0, and containerfile_arg's promise to fail loudly did
++# not hold at its own call site.
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git log --format='%h %s' -L 135,139:scripts/lib.sh | head -12
+454ee7c Section 4 of the tooling survey, decided item by item (#21) (#72)
+
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+--- a/scripts/lib.sh
++++ b/scripts/lib.sh
+@@ -135,1 +135,5 @@
+-    if [ -n "$(git -C "$REPO" status --porcelain -- "${ship[@]}")" ]; then
++    # Assigned on its own line, then tested. Inside `[ -n "$(git ...)" ]` a git
++    # that fails is indistinguishable from a clean tree: the substitution comes
++    # back empty, the test is false, and this records a clean SHA for a dirty
++    # one -- an image claiming a revision it does not have. As a bare assignment
++    # the failure reaches the `set -e` in this file instead. SC2312.
+EXIT=0
+
+==============================================================================
+GITLAB / GITHUB JOB COUNT at aed962d (issue #76 says '.gitlab-ci.yml:38 (all four jobs)')
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -n '^[a-z][a-z-]*:' .gitlab-ci.yml
+20:stages: [check, image]
+22:default:
+41:check:
+52:tofu:
+87:smoke:
+116:image:
+175:rebuild-scan:
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -n 'bootstrap' .gitlab-ci.yml
+36:.bootstrap: &bootstrap
+49:    - *bootstrap
+74:    - *bootstrap
+106:  # Not *bootstrap: that anchor ends in `just dev-env`, and
+108:  # bootstrap scripts stay -- os-deps.sh brings jq for `ensure-mirror` and
+156:    - *bootstrap
+187:    - *bootstrap
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '104,115p' .gitlab-ci.yml
+        files: [orchestrator/backends/libvirt/tofu/main.tf]
+      paths: [.tools/tofu-mirror]
+  # Not *bootstrap: that anchor ends in `just dev-env`, and
+  # scripts/smoke-libvirt.sh drives tofu and virsh and touches no Python. The two
+  # bootstrap scripts stay -- os-deps.sh brings jq for `ensure-mirror` and
+  # xorriso for the seed ISO.
+  script:
+    - ./scripts/os-deps.sh
+    - ./scripts/install-tools.sh
+    - just ensure-mirror
+    - just smoke-libvirt
+
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -n '^  [a-z][a-z-]*:' .github/workflows/ci.yml
+14:  push:
+27:  contents: read
+30:  check:
+54:  tofu:
+93:  smoke:
+EXIT=0
+
+==============================================================================
+LINE-BY-LINE ANCHOR CHECK — every file:line issue #77 cites
+==============================================================================
+scripts/lib.sh:16                set -euo pipefail
+scripts/lib.sh:81                    [ -n "$value" ] || die "no 'ARG ${name}=' in Containerfile"
+scripts/lib.sh:88                # The version is assigned before it is used, not interpolated inline. A `die`
+scripts/lib.sh:93                # not hold at its own call site.
+scripts/lib.sh:100                   version="$(containerfile_arg VCOWS_VERSION)"
+scripts/lib.sh:110                   [ -n "$version" ] || die "no pinned provider version in $MODULE/main.tf"
+scripts/lib.sh:131                   provider="$(provider_version)"
+scripts/lib.sh:134                   sha="$(git -C "$REPO" rev-parse HEAD)"
+scripts/lib.sh:139                   # the failure reaches the `set -e` in this file instead. SC2312.
+scripts/image-build.sh:23            tag="$(image_tag)"
+scripts/image-build.sh:38            sha="$(source_revision)"
+scripts/image-scan.sh:70             tag="$(image_tag)"
+scripts/test-image.sh:14         VCOWS_IMAGE="$(image_tag)"
+scripts/bundle.sh:32             archive_label() {
+scripts/bundle.sh:39             }
+scripts/bundle.sh:61                 worktree="$(source_revision)"
+scripts/install-tools.sh:40              *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
+scripts/install-tools.sh:63          want="$(digest "${tool}:${version}")"
+scripts/install-tools.sh:67          curl -fsSL --retry 3 -o "$file" "$src"
+scripts/install-tools.sh:68          echo "${want}  ${file}" | sha256sum -c - >/dev/null
+scripts/install-tools.sh:115         file="$(fetch "$tool" "$version" "$tmp")"
+scripts/install-tools.sh:157         tofu_version="$(containerfile_arg TOFU_VERSION)"
+scripts/lint.sh:159                  #
+Containerfile:89                 ARG VCOWS_VERSION=0.1.0.0
+
+==============================================================================
+LINE-BY-LINE ANCHOR CHECK — every file:line issue #76 cites
+==============================================================================
+scripts/install-tools.sh:19            # Containerfile without adding a digest below is a hard failure, which is the
+scripts/install-tools.sh:20            # intended way to find out.
+scripts/install-tools.sh:58            # Verified download into a scratch dir. The digest check is `sha256sum -c -`
+scripts/install-tools.sh:60            # unpacking into something surprising.
+scripts/install-tools.sh:68                echo "${want}  ${file}" | sha256sum -c - >/dev/null
+scripts/lib.sh:63                                      die "$tool not on PATH -- run scripts/install-tools.sh" ;;
+justfile:51                                ./scripts/install-tools.sh
+.github/workflows/ci.yml:50                  - run: ./scripts/install-tools.sh
+.github/workflows/ci.yml:79                  - run: ./scripts/install-tools.sh
+.github/workflows/ci.yml:114                 - run: ./scripts/install-tools.sh
+.github/workflows/image.yml:70               - run: ./scripts/install-tools.sh
+.github/workflows/scheduled.yml:62           - run: ./scripts/install-tools.sh
+.gitlab-ci.yml:38                        - ./scripts/install-tools.sh
+.gitlab-ci.yml:112                         - ./scripts/install-tools.sh
+README.md:306                          ./scripts/install-tools.sh  # pinned uv, tofu, just, hadolint, trivy, syft
+.github/workflows/ci.yml:7             # expresses per workflow rather than per job. No third-party actions: the pinned
+.github/workflows/ci.yml:9             # the standard the Containerfile already holds itself to.

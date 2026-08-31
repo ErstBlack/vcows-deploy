@@ -14,6 +14,11 @@
 # shellcheck disable=SC2034
 
 set -euo pipefail
+# A `die` inside `$(helper)` has to stop the caller. Command substitutions do not
+# inherit errexit, so without this every guard one call level down is inert:
+# containerfile_arg's die exited only its own subshell and `tag="$(image_tag)"`
+# carried on with `localhost/vcows-deploy:` at status 0.
+shopt -s inherit_errexit
 IFS=$'\n\t'
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -85,12 +90,14 @@ containerfile_arg() {
 # The tag `just image` builds and `just test-image` exercises. One definition, so
 # the two recipes cannot disagree about which image is under test.
 #
-# The version is assigned before it is used, not interpolated inline. A `die`
-# inside a command substitution exits only the subshell, and when that
-# substitution is an *argument* rather than an assignment the enclosing command
-# still succeeds -- so the inline form returned `localhost/vcows-deploy:` with an
-# empty version and status 0, and containerfile_arg's promise to fail loudly did
-# not hold at its own call site.
+# The version is assigned before it is used rather than interpolated inline.
+# Argument position is a real mechanism -- measured, a substitution in an
+# argument fails open where the same call in an assignment does not -- but it is
+# not the one that produced `localhost/vcows-deploy:` here. containerfile_arg's
+# die is two levels down, and at two levels both forms fail open; `shopt -s
+# inherit_errexit` (:21) is what closes it. The assignment stays because
+# check-extra-masked-returns still flags the argument form, which that option
+# does not cover.
 image_tag() {
     local version
     if [ -n "${VCOWS_IMAGE_TAG:-}" ]; then

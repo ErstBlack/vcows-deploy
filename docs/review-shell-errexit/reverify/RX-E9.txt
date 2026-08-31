@@ -1,0 +1,124 @@
+# RX-E9.txt — source_revision, and whether 454ee7c closed anything
+#
+# Reverification of the 2026-08-31 review's finding against aed962d, on branch
+# lane/shell-errexit. Captured output, not prose: each block is the command, the
+# real stdout+stderr, then its exit status.
+#
+# Worktree : /home/ssullivan/vcows-wt/shell-errexit  (aed962d)
+# Scratch  : /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1
+# Date     : 2026-08-31T06:08:28Z
+#
+# No file in the worktree was modified. Every mutation below is in a fresh
+# `git clone` of the worktree under the scratch dir.
+
+==============================================================================
+THE CLAIM UNDER TEST
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '129,146p' scripts/lib.sh
+source_revision() {
+    local provider ship sha dirt
+    provider="$(provider_version)"
+    ship=(orchestrator container licenses Containerfile .containerignore
+          "docs/provider-${provider}.lock.hcl")
+    sha="$(git -C "$REPO" rev-parse HEAD)"
+    # Assigned on its own line, then tested. Inside `[ -n "$(git ...)" ]` a git
+    # that fails is indistinguishable from a clean tree: the substitution comes
+    # back empty, the test is false, and this records a clean SHA for a dirty
+    # one -- an image claiming a revision it does not have. As a bare assignment
+    # the failure reaches the `set -e` in this file instead. SC2312.
+    dirt="$(git -C "$REPO" status --porcelain -- "${ship[@]}")"
+    if [ -n "$dirt" ]; then
+        log "warning: shipped paths are modified; recording ${sha}-dirty"
+        sha="${sha}-dirty"
+    fi
+    printf '%s\n' "$sha"
+}
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '174,178p' scripts/lint.sh
+    # `git status` inside `[ -n "$(...)" ]`, which recorded a clean SHA for a
+    # dirty tree when git failed, and image-build.sh's `now_utc` inline in
+    # --build-arg, which shipped an empty BUILD_DATE label. Both now assign on
+    # their own line, where `set -e` sees the failure. The other seven are du,
+    # jq, basename and id inside log lines and die messages, and carry `|| true`.
+EXIT=0
+
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim/git
+#!/usr/bin/env bash
+# rev-parse works; status fails. Isolates lib.sh:140 from lib.sh:134.
+for a in "$@"; do
+    case "$a" in
+        rev-parse) echo 1111111111111111111111111111111111111111; exit 0 ;;
+        status)    echo "fake-git: status refused" >&2; exit 42 ;;
+    esac
+done
+exit 0
+EXIT=0
+
+==============================================================================
+aed962d — source_revision as a PLAIN COMMAND (the only shape where the claim holds)
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim:$PATH bash -c 'source scripts/lib.sh; source_revision; echo CONTINUED'
+fake-git: status refused
+EXIT=42
+
+==============================================================================
+aed962d — source_revision at its REAL call shape, inside $( )
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim:$PATH bash -c 'source scripts/lib.sh; r="$(source_revision)"; echo "rev=[$r] CONTINUED"'
+fake-git: status refused
+rev=[1111111111111111111111111111111111111111] CONTINUED
+EXIT=0
+
+==============================================================================
+aed962d — the whole of image-build.sh:38 with that shim
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim:/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+fake-git: status refused
+building localhost/vcows-deploy:0.1.0.0
+FAKE-PODMAN ARGS: build -t localhost/vcows-deploy:0.1.0.0 --build-arg GIT_SHA=1111111111111111111111111111111111111111 --build-arg BUILD_DATE=2026-08-31T06:04:32Z /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9
+built localhost/vcows-deploy:0.1.0.0
+run 'just test-image' to exercise the offline gate
+EXIT=0
+
+==============================================================================
+WITH inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && sed -i 's/^set -euo pipefail$/set -euo pipefail\nshopt -s inherit_errexit/' scripts/lib.sh && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim:$PATH bash -c 'source scripts/lib.sh; r="$(source_revision)"; echo "rev=[$r] CONTINUED"'
+fake-git: status refused
+EXIT=42
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9 && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/gitshim:/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+fake-git: status refused
+EXIT=42
+
+==============================================================================
+AND image-build.sh:41 built="$(now_utc)" — the OTHER half of lint.sh:177, which DOES hold
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9b && sed -n '39,47p' scripts/image-build.sh
+    # Not inline in --build-arg below: there a now_utc that fails is masked and
+    # the image ships a BUILD_DATE label that is empty rather than absent. SC2312.
+    built="$(now_utc)"
+
+    log "building $tag"
+    "${builder[@]}" -t "$tag" \
+        --build-arg GIT_SHA="$sha" \
+        --build-arg BUILD_DATE="$built" \
+        "$REPO"
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e9b && env PATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/datefail:/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/fakebin:$PATH bash scripts/image-build.sh
+fake-date: refused
+EXIT=7
