@@ -168,8 +168,7 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
 # known_hosts, because neither libvirt nor the provider honours those as URI
 # parameters and both run ssh. Container glue: cli.py stays out of anyone's home
 # directory. See container/entrypoint.py for the measurements behind it.
-COPY container/entrypoint.py /usr/local/bin/vcows-entrypoint
-RUN chmod 0755 /usr/local/bin/vcows-entrypoint
+COPY --chmod=0755 container/entrypoint.py /usr/local/bin/vcows-entrypoint
 
 ENV PYTHONPATH=/opt/vcows \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -185,7 +184,7 @@ ENV PYTHONPATH=/opt/vcows \
 RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
  && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf \
        /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/ \
- && (cd /tmp/warm && tofu init -input=false -no-color > /dev/null) \
+ && tofu -chdir=/tmp/warm init -input=false -no-color > /dev/null \
  && rm -rf /tmp/warm
 
 # Last, so it describes the finished image. Everything above is already in place
