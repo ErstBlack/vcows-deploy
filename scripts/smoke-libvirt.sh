@@ -81,10 +81,13 @@ WORK=""
 fail=0
 check() {
     local what="$1"; shift
+    # stderr, where `log` and `die` already write. On stdout these interleaved
+    # with the final `die` and the log showed the verdict above the last two
+    # results it was a verdict on.
     if "$@" >/dev/null 2>&1; then
-        printf '  ok    %s\n' "$what"
+        printf '  ok    %s\n' "$what" >&2
     else
-        printf '  FAIL  %s\n' "$what"
+        printf '  FAIL  %s\n' "$what" >&2
         fail=1
     fi
 }
@@ -398,10 +401,16 @@ assert_domain() {
         contains "$xml" "<clock offset='utc'>"
     check "the overlay disk passes discard=unmap" \
         contains "$xml" "discard='unmap'"
+    # No trailing `/>` on these two. libvirt writes `<source file='...'
+    # index='2'/>` for a running domain, so matching the self-closing form
+    # asserted the index rather than the path -- measured, and the only two
+    # assertions the fifth CI run failed. The path is the claim: destroy parses
+    # `<source file=>`, and a module emitting a volume name rather than a
+    # computed path is what this is guarding against.
     check "the root disk is the overlay's path, not its name" \
-        contains "$xml" "<source file='$POOL_DIR/$OVERLAY_VOL'/>"
+        contains "$xml" "<source file='$POOL_DIR/$OVERLAY_VOL'"
     check "the cdrom is the seed volume's path" \
-        contains "$xml" "<source file='$POOL_DIR/$SEED_VOL'/>"
+        contains "$xml" "<source file='$POOL_DIR/$SEED_VOL'"
     check "the root disk is vda on virtio" \
         contains "$xml" "<target dev='vda' bus='virtio'/>"
     check "the seed is sda on sata" \
