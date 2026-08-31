@@ -25,6 +25,7 @@ nothing, because nothing lives there.
 |---|---|---|
 | `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, ty, pytest |
 | `tofu` | PRs/MRs and master pushes | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
+| `smoke` | PRs/MRs and master pushes | `just smoke-libvirt` — the module applied to a real libvirtd, then destroyed |
 | `image` | master, tags, and PR/MRs touching the image's inputs | build, `just test-image`, `just scan` |
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
 
@@ -43,6 +44,37 @@ thing exercising the air-gap properties — the provider resolved from the baked
 mirror with no `direct` block, the RPM binding visible to the interpreter that
 actually runs, `init` not rewriting the committed lock. Validating a
 `Containerfile` change only after review has passed on it is the wrong order.
+
+## The smoke job, and what it is for
+
+`tofu` reads the module through `mock_provider "libvirt" {}`, which satisfies the
+pinned provider's schema with generated values. That reaches every expression in
+the module and reaches no hypervisor, so three things it stands in for have never
+run: `virStorageVolUpload`, libvirtd parsing the domain XML the module renders,
+and define/start/undefine of that domain. `smoke` runs those against a libvirtd
+installed on the runner and asserts against `virsh dumpxml`, `virsh vol-dumpxml`
+and `qemu-img info` — what libvirtd created, not what tofu planned.
+
+The domain runs under TCG, so **no `/dev/kvm` is required** and the job behaves
+the same on a GitHub-hosted runner and a GitLab.com SaaS one. Getting there needs
+a two-attribute override — `type = "qemu"`, `cpu = null` — written into a *copy*
+of the module; the shipped tree is untouched. `scripts/smoke-libvirt.sh` carries
+the reasoning, including the measurement that
+`TF_PROVIDER_LIBVIRT_DOMAIN_TYPE`, which `docs/tooling-2026-08-30.md` §4.1
+credits with the same swap, does not exist in the 0.9.8 provider binary and could
+not win against a declared attribute if it did.
+
+**It boots no guest and observes no guest address.** The domain reaches firmware
+and stops. `docs/acceptance.md` defect 5 — guests healthy on the wrong addresses
+— is outside what this gate can see.
+
+It is not the rig gate and does not touch it: `tests/test_libvirt_rig.py` and
+`VCOWS_RIG_URI` stay a named skip against real hardware, a real pool and a real
+golden image. `smoke` creates a 64 MiB throwaway qcow2 of its own.
+
+It is also not in `just check`. It installs packages, writes `/etc/libvirt` and
+starts a system daemon, none of which belongs in a recipe a developer runs before
+pushing or in the hook that runs on every agent turn.
 
 ## Which gates run, and which cannot
 
@@ -78,7 +110,11 @@ GitLab, once it exists:
 
 - `linux` — a Docker-executor runner that can reach the package mirrors and the
   OpenTofu registry. Build-time network only; nothing in CI resembles what the
-  air-gapped site runs.
+  air-gapped site runs. The `smoke` job carries the same tag and one further
+  requirement no tag expresses: it starts libvirtd and defines a domain, so the
+  executor has to be privileged. `scripts/smoke-libvirt.sh` starts the daemons
+  directly when `/run/systemd/system` is absent, which is the container case,
+  but nothing can give an unprivileged container a tap device.
 - `podman` — rootless podman, for the image job. **buildah is not a substitute.**
   It builds this Containerfile fine and even runs containers, but `buildah run`
   does not honour the image `ENTRYPOINT` and mutates the working container
