@@ -157,6 +157,12 @@ main() {
     # today. Halving was measured and rejected -- it first fires at 51, above
     # the 45 it exists to catch. Multiplication rather than `accepted / 3` so
     # the firing point does not depend on how integer division rounds.
+    #
+    # Proportional rather than a constant, so trimming the baseline is not also
+    # a threshold edit. Those numbers were measured at 100 accepted ids. At the
+    # 99 that remain after CVE-2026-58055 -- a rocky id, so it came out of both
+    # partial losses -- the same two scenarios are 44 and 55, and the firing
+    # point is still 34, because `-gt` makes 33 * 3 = 99 not enough.
     gone="$(jq -r '.gone[]' <<<"$delta")"
     accepted="$(jq '.accepted' <<<"$delta")"
     missing="$(jq '.gone | length' <<<"$delta")"

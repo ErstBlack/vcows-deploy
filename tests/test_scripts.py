@@ -127,7 +127,7 @@ def _baseline(tree: Path, ids: list[str] = BASELINE_IDS) -> None:
 
 def _stamp_line(archive: Path) -> str:
     """`sha256sum image.tar` output, which is the whole format of the PASSED
-    stamp `image-scan.sh:181` writes and `bundle.sh:77` checks."""
+    stamp `image-scan.sh:187` writes and `bundle.sh:77` checks."""
     return f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  image.tar\n"
 
 
@@ -236,7 +236,7 @@ GONE_ROWS = [(1, False), (33, False), (34, True), (45, True), (56, True)]
 
 @pytest.mark.parametrize(("gone", "red"), GONE_ROWS)
 def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red):
-    """`image-scan.sh:148` on a 100-id baseline, at five points of the curve.
+    """`image-scan.sh:169` on a 100-id baseline, at five points of the curve.
 
     The guard tested `missing -eq accepted`, so it fired only at a total loss --
     a case `scan_floor` (`:56-64`) already refuses. The two losses it exists to
@@ -261,7 +261,7 @@ def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red
 
 
 def test_the_scan_stamps_a_pass_and_takes_the_stamp_back_on_a_failure(tmp_path):
-    """`image-scan.sh:89` and `:181`, the two halves of the verdict.
+    """`image-scan.sh:89` and `:187`, the two halves of the verdict.
 
     The exit status is the only place the scan used to record whether it
     accepted the image, and an exit status does not survive the process. Both
