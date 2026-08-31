@@ -522,45 +522,56 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         )
         raise DestroyError(out)
 
-    for target in targets:
-        # Whether the disks below are being deleted against a live document or
-        # against the preflight snapshot alone. It changes what the evidence is
-        # worth, so it changes what gets reported.
-        vanished = False
-        try:
-            dom = session.lookupByUUIDString(target.id)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() != ERR_NO_DOMAIN:
-                # We have been told nothing about this domain, so we know nothing
-                # about what it owns. Deleting its recorded disks on the strength
-                # of a failed lookup is the one thing this branch must not do.
-                _fail(out, target.name, "look up", exc)
-                continue
-            # Already gone. Its disks may not be, so they are still resolved
-            # below -- from the preflight snapshot, which is why `_deletable`
-            # rather than the snapshot decides what may go.
-            vanished = True
-            out.skipped.append(target.name)
-        else:
-            fresh = _reverify(dom, target, out)
-            if fresh is None:
-                continue
-            target = fresh
-            if not _stop(dom, target.name, out):
-                continue
-            if not _undefine(dom, target.name, mask, out):
-                continue
-            out.destroyed.append(target.name)
+    try:
+        for target in targets:
+            # Whether the disks below are being deleted against a live document or
+            # against the preflight snapshot alone. It changes what the evidence is
+            # worth, so it changes what gets reported.
+            vanished = False
+            try:
+                dom = session.lookupByUUIDString(target.id)
+            except libvirt.libvirtError as exc:
+                if exc.get_error_code() != ERR_NO_DOMAIN:
+                    # We have been told nothing about this domain, so we know nothing
+                    # about what it owns. Deleting its recorded disks on the strength
+                    # of a failed lookup is the one thing this branch must not do.
+                    _fail(out, target.name, "look up", exc)
+                    continue
+                # Already gone. Its disks may not be, so they are still resolved
+                # below -- from the preflight snapshot, which is why `_deletable`
+                # rather than the snapshot decides what may go.
+                vanished = True
+                out.skipped.append(target.name)
+            else:
+                fresh = _reverify(dom, target, out)
+                if fresh is None:
+                    continue
+                target = fresh
+                if not _stop(dom, target.name, out):
+                    continue
+                if not _undefine(dom, target.name, mask, out):
+                    continue
+                out.destroyed.append(target.name)
 
-        for path in target.disks:
-            if _deletable(path, target, claimed, out):
-                # After the call, not before it. `_delete_volume` has three
-                # outcomes and only one of them is a delete; the warning is a
-                # report of the delete, so it has to know which one happened.
-                before = len(out.destroyed)
-                _delete_volume(session, path, target.name, out)
-                if vanished and len(out.destroyed) > before:
-                    _deleted_on_name_alone(out, target, path)
+            for path in target.disks:
+                if _deletable(path, target, claimed, out):
+                    # After the call, not before it. `_delete_volume` has three
+                    # outcomes and only one of them is a delete; the warning is a
+                    # report of the delete, so it has to know which one happened.
+                    before = len(out.destroyed)
+                    _delete_volume(session, path, target.name, out)
+                    if vanished and len(out.destroyed) > before:
+                        _deleted_on_name_alone(out, target, path)
+    except BaseException as exc:
+        # `out` is a local, and `DestroyError` is the only route that carries
+        # it out of here. An interrupt takes neither route, so `_destroy`'s
+        # `getattr(exc, "outcome", None)` finds nothing and the account of a
+        # half-finished teardown is lost -- the one it can least afford to
+        # lose, since the operator has to re-run this and the record is the
+        # only thing that says which domains are already gone.
+        carrier: Any = exc
+        carrier.outcome = out
+        raise
 
     if out.failed:
         raise DestroyError(out)
