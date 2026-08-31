@@ -889,7 +889,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=6" },
     { name = "ruff", specifier = ">=0.16" },
-    { name = "ty", specifier = ">=0.0.75" },
+    { name = "ty", specifier = "==0.0.75" },
     { name = "types-pyyaml", specifier = ">=6" },
 ]
 

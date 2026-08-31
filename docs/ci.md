@@ -54,7 +54,7 @@ correct and `tofu, image` silently demands only `tofu`.
 |---|---|---|
 | `tofu` | demanded | the mirror is rebuilt or restored first |
 | `image` | demanded, in the image job | needs a built image and podman |
-| `pycdlib` | satisfied | a runtime dependency, installed by `uv pip install -e .` |
+| `pycdlib` | satisfied | a runtime dependency, installed by `just dev-env` |
 | `rig` | **never** | needs a reachable hypervisor |
 
 `VCOWS_GATES=all` is never set. The rig gate needs hardware no hosted runner has;

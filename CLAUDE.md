@@ -15,8 +15,10 @@ failure mode: without `--system-site-packages` the `python3-libvirt` RPM binding
 is invisible, and without an explicit `--python /usr/bin/python3` uv installs its
 own managed CPython whose site-packages contains no RPMs at all, so the flag
 appears to work while `import libvirt` still fails. `uv sync` can express
-neither, which is why this project uses `uv venv` plus `uv pip install` rather
-than a lockfile.
+neither, which is why this project uses `uv venv` plus `uv pip install`. The
+lockfile is honoured anyway: `just dev-env` exports `uv.lock` and installs the
+export, so the `>=` bounds in `pyproject.toml` constrain `uv lock` and not the
+venv.
 
 This is not a rig-only concern. `tests/fake_libvirt.py:25` imports `libvirt` at
 module scope, so a wrong venv breaks collection, not just the hardware tests.
