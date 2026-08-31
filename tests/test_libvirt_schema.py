@@ -11,6 +11,7 @@ import struct
 
 import pytest
 
+from orchestrator.backends.base import Problem
 from orchestrator.backends.libvirt import schema
 from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
@@ -370,11 +371,12 @@ def test_a_vm_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     backend, and calling `schema.validate` with one anyway raises `TypeError` out
     of `_check_volume_names` -- on master too, for a reason this guard is nowhere
     near. So the predicate is pinned directly, one clause at a time."""
-    assert schema._nic_checks_are_safe(cfg["vms"][0]) is True
-    assert schema._nic_checks_are_safe("app01") is False
-    assert schema._nic_checks_are_safe({"name": "app01"}) is False
-    assert schema._nic_checks_are_safe({"nics": []}) is False
-    assert schema._nic_checks_are_safe({"name": "app01", "nics": ["eth0"]}) is False
+    safe = schema._nic_checks_are_safe
+    assert safe(cfg["vms"][0], []) is True
+    assert safe("app01", []) is False
+    assert safe({"name": "app01"}, []) is False
+    assert safe({"nics": []}, []) is False
+    assert safe({"name": "app01", "nics": ["eth0"]}, []) is False
 
 
 def test_a_nic_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
@@ -388,6 +390,59 @@ def test_a_nic_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     # vms[0] registers no address, so vms[1] reusing one is not reported. That
     # is a round trip the operator pays -- and the alternative is a crash.
     assert "already used by" not in messages(problems)
+
+
+def test_the_guard_refuses_when_the_schema_failure_is_inside_a_nic(cfg):
+    """The clause the container's shape cannot express (#112).
+
+    `structural` is one VM's problems and `problems_from` puts the failing path
+    in `where`, so a `.nics` in it is the schema saying the failure is inside the
+    data `_check_nics` indexes. Anything else -- a `vcpus` out of range, an
+    unexpected key -- names no nic and still runs the checks, which is the whole
+    point of the guard and is pinned end to end by the parametrised test above.
+    """
+    vm = cfg["vms"][0]
+    inside = Problem.error("not of type 'string'", where="vms[0].nics[0].ip_cidr")
+    outside = Problem.error("less than the minimum", where="vms[0].vcpus")
+    assert schema._nic_checks_are_safe(vm, [outside]) is True
+    assert schema._nic_checks_are_safe(vm, [inside]) is False
+    assert schema._nic_checks_are_safe(vm, [outside, inside]) is False
+
+
+@pytest.mark.parametrize(
+    "field, value, expect",
+    [
+        ("ip_cidr", None, "None is not of type 'string'"),
+        ("ip_cidr", 5, "5 is not of type 'string'"),
+        ("ip_cidr", True, "True is not of type 'string'"),
+        ("nameservers", None, "None is not of type 'array'"),
+        ("nameservers", 5, "5 is not of type 'array'"),
+        ("nameservers", True, "True is not of type 'array'"),
+        ("mac", 5, "5 is not of type 'string'"),
+        ("mac", True, "True is not of type 'string'"),
+    ],
+)
+def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing(
+    cfg, registry, field, value, expect
+):
+    """#112. A nic that is a mapping whose *field* is wrong passes every clause
+    of the container-shape guard, and `_check_nics` assumes the schema ran:
+    `ip_cidr` reaches `"/" not in raw` (`TypeError`), `nameservers` reaches
+    `enumerate` (`TypeError`), `mac` reaches `.lower()` (`AttributeError`). Each
+    unwound past every other check and past `config.load`'s "every problem rather
+    than the first", so the operator got a stack trace instead of a field name.
+
+    A blank YAML value is the commonest way in -- `ip_cidr:` with nothing after
+    it parses as `None` -- and every trigger here is already caught by the schema
+    `_check_vm_structure` just ran, so the named error is what has to reach the
+    operator. Asserted against the whole fatal list, not a substring, because the
+    defect was the *loss* of everything else: the composed path is included since
+    `config.load` runs it for all four verbs, not only `validate`.
+    """
+    cfg["vms"][0]["nics"][0][field] = value
+    expected = [(f"vms[0].nics[0].{field}", expect)]
+    for problems in (schema.validate(cfg), core_validate(cfg, registry)):
+        assert [(p.where, p.message) for p in errors(problems)] == expected
 
 
 def test_duplicate_mac_across_vms_is_rejected(cfg):

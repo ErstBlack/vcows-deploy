@@ -244,7 +244,7 @@ def validate(cfg: dict) -> list[Problem]:
         where = f"vms[{i}]"
         structural = _check_vm_structure(vm, where)
         problems += structural
-        if structural and not _nic_checks_are_safe(vm):
+        if structural and not _nic_checks_are_safe(vm, structural):
             continue
         problems += _check_firmware(vm, where)
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
@@ -255,7 +255,7 @@ def validate(cfg: dict) -> list[Problem]:
     return problems
 
 
-def _nic_checks_are_safe(vm: object) -> bool:
+def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
     """Whether `_check_firmware` and `_check_nics` can read this VM unguarded.
 
     Normally `_check_vm_structure` passing is what makes that safe. When it did
@@ -265,10 +265,27 @@ def _nic_checks_are_safe(vm: object) -> bool:
     or an unexpected key says nothing about any of them, and skipping anyway costs
     the operator the edit round trip `config.py:117-119` rules out.
 
+    **The container's shape is only half the question, and asking only it was a
+    regression.** A nic that is a mapping with one wrongly-typed *field* passes
+    every clause below: `ip_cidr:` left blank in YAML is `None`, `nics` is still
+    a list of dicts, and `_check_nics` then reached `"/" not in raw` in
+    `_parse_interface` with `None` and raised an uncaught `TypeError` that lost
+    every other problem in the document -- the same class of unwind `_check_target`
+    wraps `urlsplit` against, added by the same commit that added this guard
+    (#112). So the schema's own verdict is consulted first, and `problems_from`
+    has already computed it: it puts the failing path in `where`
+    (`vms[0].nics[0].ip_cidr`) and `structural` is one VM's problems, so a `.nics`
+    anywhere in it places the failure inside the data these checks index, and the
+    skip is the only answer that does not crash. A `vcpus` out of range is
+    `vms[0].vcpus`, which names no nic, so the case this guard was written for
+    still runs the checks and still reports a duplicate address alongside it.
+
     ``object`` and not ``dict``: the first clause is the one that matters when a
     VM is not a mapping at all, and annotating the parameter as the thing it is
     testing for would make that clause unreachable by declaration.
     """
+    if any(".nics" in p.where for p in structural):
+        return False
     return (
         isinstance(vm, dict)
         and isinstance(vm.get("name"), str)
