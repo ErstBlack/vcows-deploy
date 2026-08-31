@@ -75,16 +75,21 @@ suffix expression — `_VARS.${loader_format == "qcow2" ? "qcow2" : "fd"}` — w
 rendered against no real template until 2026-08-31.
 
 **Partly closed.** `scripts/smoke-libvirt.sh` now pins a raw `.fd` loader and
-template on every CI run and asserts the rendered `<nvram template='…_VARS.fd'>`
-against a real libvirtd, which is the first half of the check below. Two gaps
-remain: it is Ubuntu with libvirt 10.0.0 rather than RHEL 9 EUS, and `assert_gone`
-does not yet confirm the varstore file is removed (#111). Closing this needs the
-same VM on a 9.x target, and the destroy half.
+template on every CI run, asserts the rendered `<nvram template='…_VARS.fd'>`
+against a real libvirtd, and `assert_gone` asserts the varstore file is gone after
+`tofu destroy` (#111, 2026-08-31). So both halves of the check below run in CI, and
+the subject of the destroy half is the provider's teardown rather than the script's
+own `undefine --nvram`, which happens later in `cleanup`. One gap remains: it is
+Ubuntu with libvirt 10.0.0 rather than RHEL 9 EUS. Closing this needs the same VM on
+a 9.x target.
 
 The qcow2 path is settled: watched at two-second resolution on 2026-08-29, both
-varstores appeared at define and were gone by the next sample after destroy. Do
-not assume that carries — the point of this check is that the extension, the
-template format, and libvirt's own handling all differ.
+varstores appeared at define and were gone by the next sample after destroy. That
+was never evidence about `.fd`, because the extension, the template format, and
+libvirt's own handling all differ — which is why the destroy half was worth
+asserting separately rather than assuming. It passed first time, on CI run
+33430036395: the provider's destroy removes a raw `.fd` varstore on libvirt
+10.0.0. What is still unmeasured is a 9.x daemon, not the format.
 
 ### C3 — the flag shed nobody has ever seen fire
 
