@@ -249,3 +249,91 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     error_message = "`address` reads as something libvirt was asked; nothing here observes one"
   }
 }
+
+// -- the two branches the golden tfvars does not take -------------------------
+//
+// tests/golden/libvirt.tfvars.json is copied in as main.auto.tfvars.json, so the
+// block above is fed exactly what `_deploy` writes. That is its authority, and
+// it is also its limit: the fixture sets `base_volume.create = true` and gives
+// every NIC `network` with `bridge = null`, so three expressions in shipped
+// module code are never evaluated by it -- main.tf:25's zero arm, main.tf:34's
+// fallback to var.base_volume.path, and main.tf:205's non-null bridge arm.
+//
+// The bridge arm is not merely uncovered, it is the shipped design.
+// findings.md settles the network as "bridged, static IPs from config", and
+// config.py:16 accepts exactly one of bridge/network while render.py:111-112
+// emits both with the unused one null. The tested path is the one a real RHEL 9
+// site does not take.
+//
+// **These two blocks are a weaker kind of test than the one above, and the
+// difference is worth naming.** A run-level `variables` block overrides a
+// variable wholesale rather than merging into it, so these are hand-written
+// rather than fed from the fixture, and nothing asserts they still resemble
+// what render.py emits. They carry the minimum each branch needs and no more.
+
+run "a_prebuilt_base_volume_is_used_in_place" {
+  command = apply
+
+  variables {
+    base_volume = {
+      create = false
+      name   = "golden.qcow2"
+      path   = "/var/lib/libvirt/images/golden.qcow2"
+      source = ""
+    }
+  }
+
+  assert {
+    condition     = length(libvirt_volume.base) == 0
+    error_message = "create = false still built a base volume: a second upload of an image the pool already holds"
+  }
+  assert {
+    condition = alltrue([
+      for k, v in var.vms :
+      libvirt_volume.overlay[k].backing_store.path == var.base_volume.path
+    ])
+    error_message = "the overlay does not back onto the pool's existing image when create is false: main.tf:34's fallback is not reached"
+  }
+}
+
+run "a_bridged_nic_renders_source_bridge" {
+  command = apply
+
+  variables {
+    vms = {
+      app01 = {
+        configured_address = "192.168.122.60"
+        disk_bytes         = 42949672960
+        domain_name        = "app01"
+        firmware           = "efi"
+        loader             = null
+        loader_format      = null
+        machine            = "q35"
+        marker_xml         = "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"lab-a\",\"name\":\"app01\",\"id\":\"2647c9f3-9d71-531a-b874-98a578d6c7aa\"}</vcows>"
+        memory_mib         = 4096
+        nics = [
+          {
+            bridge  = "br0"
+            mac     = "52:54:00:be:a8:60"
+            model   = "virtio"
+            network = null
+          }
+        ]
+        nvram_template = null
+        overlay_name   = "app01.qcow2"
+        seed_iso       = "/run/vcows/lab-a/app01-seed.iso"
+        seed_name      = "app01-seed.iso"
+        vcpus          = 2
+      }
+    }
+  }
+
+  assert {
+    condition     = libvirt_domain.vm["app01"].devices.interfaces[0].source.bridge.bridge == var.vms["app01"].nics[0].bridge
+    error_message = "a bridged NIC does not render <source bridge=>: the guest lands on the wrong network, or on none"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].devices.interfaces[0].source.network == null
+    error_message = "a bridged NIC also rendered <source network=>: two sources on one interface is XML libvirt will not take"
+  }
+}
