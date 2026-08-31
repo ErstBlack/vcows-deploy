@@ -286,8 +286,13 @@ storage_pool() {
     # The reason has to reach the log. The first spelling of this discarded
     # pool-start's stderr and died with "defined but will not start", which named
     # the symptom and cost a CI round trip to get behind.
+    # Not `vsh pool-info | grep -q`. lib.sh sets `pipefail`, `grep -q` exits on
+    # the first match, and virsh then dies of SIGPIPE with 141 -- so the pipeline
+    # reports failure exactly when the grep succeeded. Measured on the third CI
+    # run, where an already-active network was reported as one that would not
+    # start. Every readback here goes through a variable for that reason.
     if ! err="$(vsh pool-start "$POOL" 2>&1)"; then
-        if ! vsh pool-info "$POOL" | grep -qE 'State: *running'; then
+        if ! contains "$(vsh pool-info "$POOL" 2>&1 | tr -s ' ')" 'State: running'; then
             log "$(vsh pool-list --all 2>&1)"
             log "$(vsh pool-dumpxml "$POOL" 2>&1)"
             die "storage pool $POOL will not start: $err"
@@ -305,7 +310,11 @@ default_network() {
     # Same treatment as the pool above: the reason has to reach the log, or a
     # reader gets the symptom and another CI round trip.
     if ! err="$(vsh net-start "$NETWORK" 2>&1)"; then
-        if ! vsh net-info "$NETWORK" | grep -qE 'Active: *yes'; then
+        # `net-start` on an already-active network fails with "Requested
+        # operation is not valid", which is the normal case here: libvirtd
+        # autostarts it. The readback is what decides, and it goes through a
+        # variable for the pipefail reason given above.
+        if ! contains "$(vsh net-info "$NETWORK" 2>&1 | tr -s ' ')" 'Active: yes'; then
             log "$(vsh net-dumpxml "$NETWORK" 2>&1)"
             log "$(journalctl -u libvirtd --no-pager -n 40 2>&1 || true)"
             die "libvirt's '$NETWORK' network will not start: $err"
