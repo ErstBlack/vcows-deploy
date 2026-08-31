@@ -104,7 +104,7 @@ main() {
 
     log ""
     log "bundle  $out"
-    log "  $name  ($(du -h "$out/$name" | cut -f1))"
+    log "  $name  ($(du -h "$out/$name" | cut -f1 || true))"
     log "  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS"
     log ""
     log "on receipt:  sha256sum -c SHA256SUMS"

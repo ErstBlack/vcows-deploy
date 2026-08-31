@@ -19,7 +19,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 main() {
-    local tag builder sha
+    local tag builder sha built
     tag="$(image_tag)"
 
     [ -d "$MIRROR" ] || die "no .tools/tofu-mirror -- run 'just mirror' first"
@@ -36,11 +36,14 @@ main() {
     fi
 
     sha="$(source_revision)"
+    # Not inline in --build-arg below: there a now_utc that fails is masked and
+    # the image ships a BUILD_DATE label that is empty rather than absent. SC2312.
+    built="$(now_utc)"
 
     log "building $tag"
     "${builder[@]}" -t "$tag" \
         --build-arg GIT_SHA="$sha" \
-        --build-arg BUILD_DATE="$(now_utc)" \
+        --build-arg BUILD_DATE="$built" \
         "$REPO"
     log "built $tag"
     log "run 'just test-image' to exercise the offline gate"

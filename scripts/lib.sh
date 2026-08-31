@@ -127,12 +127,18 @@ provider_version() {
 # Paths that cannot reach the image -- docs/, tests/ -- stay out on purpose. A
 # suffix that fires for everything means nothing.
 source_revision() {
-    local provider ship sha
+    local provider ship sha dirt
     provider="$(provider_version)"
     ship=(orchestrator container licenses Containerfile .containerignore
           "docs/provider-${provider}.lock.hcl")
     sha="$(git -C "$REPO" rev-parse HEAD)"
-    if [ -n "$(git -C "$REPO" status --porcelain -- "${ship[@]}")" ]; then
+    # Assigned on its own line, then tested. Inside `[ -n "$(git ...)" ]` a git
+    # that fails is indistinguishable from a clean tree: the substitution comes
+    # back empty, the test is false, and this records a clean SHA for a dirty
+    # one -- an image claiming a revision it does not have. As a bare assignment
+    # the failure reaches the `set -e` in this file instead. SC2312.
+    dirt="$(git -C "$REPO" status --porcelain -- "${ship[@]}")"
+    if [ -n "$dirt" ]; then
         log "warning: shipped paths are modified; recording ${sha}-dirty"
         sha="${sha}-dirty"
     fi
