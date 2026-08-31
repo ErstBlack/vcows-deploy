@@ -52,7 +52,7 @@ lock_matches() {
 }
 
 main() {
-    have tofu || die "tofu not on PATH -- run scripts/install-tools.sh"
+    need tofu
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
     local version; version="$(provider_version)"
 

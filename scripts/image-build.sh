@@ -40,7 +40,7 @@ main() {
     log "building $tag"
     "${builder[@]}" -t "$tag" \
         --build-arg GIT_SHA="$sha" \
-        --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --build-arg BUILD_DATE="$(now_utc)" \
         "$REPO"
     log "built $tag"
     log "run 'just test-image' to exercise the offline gate"

@@ -63,9 +63,7 @@ scan_floor() {
 }
 
 main() {
-    have trivy || die "trivy not on PATH -- run scripts/install-tools.sh"
-    have syft  || die "syft not on PATH -- run scripts/install-tools.sh"
-    have jq    || die "jq not on PATH -- run scripts/os-deps.sh"
+    need trivy syft jq
 
     local tag out archive report sbom found new gone accepted missing
     tag="$(image_tag)"
@@ -91,7 +89,7 @@ main() {
 
     if [ "${1:-}" = "--write-baseline" ]; then
         jq -n --arg image "$tag" \
-              --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --arg generated "$(now_utc)" \
               --argjson accepted "$(printf '%s' "$found" | jq -R . | jq -s .)" \
               '{image: $image, generated: $generated,
                 note: "Findings reviewed and accepted at this image. Most live in the statically linked golang.org/x/crypto/ssh inside /usr/bin/tofu and the vendored terraform-provider-libvirt, and can only be cleared by bumping those pins. Anything not listed here fails scripts/image-scan.sh.",

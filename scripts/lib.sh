@@ -42,6 +42,35 @@ log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# `have` plus the message, for the tools whose absence should stop a script. The
+# hint has to be right, so the case is a table of which installer provides what:
+# os-deps.sh installs jq, curl, unzip, git, xorriso and shellcheck;
+# install-tools.sh installs uv, just, tofu, hadolint, trivy and syft. **gzip is
+# in neither** -- it is assumed present -- so it falls through to the bare
+# message rather than being told to run a script that would not supply it.
+#
+# A tool whose absence needs more explanation than "install it" keeps its own
+# `have ... || die`: test-image.sh's podman line says the gate needs a runtime
+# rather than a builder, which no table can express.
+need() {
+    local tool
+    for tool in "$@"; do
+        have "$tool" && continue
+        case "$tool" in
+            jq|curl|unzip|git|xorriso|shellcheck)
+                die "$tool not on PATH -- run scripts/os-deps.sh" ;;
+            uv|just|tofu|hadolint|trivy|syft)
+                die "$tool not on PATH -- run scripts/install-tools.sh" ;;
+            *)  die "$tool not on PATH" ;;
+        esac
+    done
+}
+
+# The one timestamp format this project writes: RFC 3339, UTC, second precision.
+# It reaches the image as BUILD_DATE and the CVE baseline as `generated`, and a
+# second spelling would make those two look like different clocks.
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
 # One `ARG NAME=value` out of the Containerfile. Fails loudly rather than
 # returning empty: an unset version silently becomes a URL like
 # `.../download/v/tofu__amd64.rpm`, which 404s in a way that reads like a

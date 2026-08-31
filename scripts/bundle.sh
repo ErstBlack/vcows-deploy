@@ -39,8 +39,7 @@ archive_label() {
 }
 
 main() {
-    have gzip || die "gzip not on PATH"
-    have jq   || die "jq not on PATH -- run scripts/os-deps.sh"
+    need gzip jq
 
     local scan out archive sbom report version revision worktree name
 

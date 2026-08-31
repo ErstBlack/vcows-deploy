@@ -18,7 +18,7 @@
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-have jq || die "jq not on PATH -- run scripts/os-deps.sh"
+need jq
 
 fail=0
 check() {
