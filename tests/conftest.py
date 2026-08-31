@@ -33,8 +33,14 @@ MIRROR = REPO / ".tools" / "tofu-mirror"
 
 TOFU = shutil.which("tofu")
 
+
+def _parse(raw: str) -> set[str]:
+    """Comma-separated names, no stripping. `tofu, image` demands `tofu` only."""
+    return {g for g in raw.split(",") if g}
+
+
 #: Gates the operator demanded. Comma-separated names, or `all`.
-GATES = {g for g in os.environ.get("VCOWS_GATES", "").split(",") if g}
+GATES = _parse(os.environ.get("VCOWS_GATES", ""))
 
 
 def demanded(name: str) -> bool:

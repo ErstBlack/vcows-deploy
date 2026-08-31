@@ -317,6 +317,33 @@ def test_init_runs_on_a_clock_and_apply_does_not(fake_tofu, workdir, monkeypatch
     assert child.timeouts == [None], "a clock on apply kills a resumeless upload"
 
 
+def test_output_and_version_run_on_the_short_clock(fake_tofu, workdir, monkeypatch):
+    """The other half of the same fact, and the half #17 did not pin.
+
+    `SHORT_TIMEOUT`'s docstring scopes it to "init/output/version only". The
+    test above covers `init`, which goes through `_run` and `Popen`. `outputs`
+    and `version` both reach the same constant through `_capture`, which uses
+    `subprocess.run` -- so the recording goes on the call, not on a fake
+    process. Replacing that timeout with `None` passed the whole suite.
+    """
+    seen: list[float | None] = []
+    real = tofu.subprocess.run
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tofu.subprocess, "run", recording)
+    monkeypatch.setenv("FAKE_TOFU_STDOUT", json.dumps({"terraform_version": "1.12.6"}))
+    tofu.version()
+    monkeypatch.setenv("FAKE_TOFU_STDOUT", json.dumps({"vms": {"value": {}}}))
+    tofu.outputs(workdir)
+
+    assert seen == [tofu.SHORT_TIMEOUT, tofu.SHORT_TIMEOUT], (
+        "a capture with no clock is a CLI that hangs and never writes its record"
+    )
+
+
 def test_a_missing_binary_says_so(workdir, monkeypatch):
     monkeypatch.setenv("PATH", "")
     with pytest.raises(tofu.TofuError, match="not on PATH"):

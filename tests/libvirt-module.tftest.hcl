@@ -36,7 +36,7 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   // The domain name above is the one destroy does *not* use -- discovery is by
   // marker and UUID. These two are: `_deletable` matches every candidate disk
   // against `{overlay_name(marker.name), seed_name(marker.name)}` before it will
-  // unlink anything (destroy.py:456-461). A module naming the overlay `app01`
+  // unlink anything (destroy.py:440-445). A module naming the overlay `app01`
   // rather than `app01.qcow2` deploys clean and then makes every teardown refuse
   // every disk, with nothing left but hand-deleting on the hypervisor.
   assert {
@@ -88,6 +88,14 @@ run "the_module_renders_what_the_acceptance_run_settled" {
       libvirt_volume.seed[k].pool == var.pool
     ])
     error_message = "a volume lands in a pool the config never named and preflight never checked"
+  }
+  // The base volume is the one the loop above cannot reach -- it is not per-VM --
+  // so its pool and name were asserted by nothing. It alone can land in a pool
+  // the config never named and preflight never checked, and a wrong name makes
+  // every overlay back onto an image that is not there.
+  assert {
+    condition     = libvirt_volume.base[0].pool == var.pool && libvirt_volume.base[0].name == var.base_volume.name
+    error_message = "the golden image is not created under the configured pool and name"
   }
 
   // -- the overlay ----------------------------------------------------------
@@ -146,6 +154,24 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   assert {
     condition     = libvirt_domain.vm["app02"].os.nv_ram.template == var.vms["app02"].nvram_template
     error_message = "the varstore is not templated from the configured file"
+  }
+  // app02 by name, not `for k, v in var.vms`: it is the fixture's one VM with a
+  // pinned loader, so app01's arm of every ternary here is null.
+  assert {
+    condition     = libvirt_domain.vm["app02"].os.loader == var.vms["app02"].loader && libvirt_domain.vm["app01"].os.loader == null
+    error_message = "the loader is not the configured firmware build: a constant here boots the wrong OVMF, or none"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app02"].os.loader_type == "pflash" && libvirt_domain.vm["app01"].os.loader_type == null
+    error_message = "a pinned loader must be declared pflash; anything else is not a UEFI domain"
+  }
+  // The declared format, not the extension, is what libvirt reads. Declaring a
+  // qcow2 varstore raw is the non-booting inversion of acceptance defect S6, and
+  // it is the attribute #75 dies on -- this pins what the module *emits*, which
+  // is the offline half of that problem and not the whole of it.
+  assert {
+    condition     = libvirt_domain.vm["app02"].os.nv_ram.format == var.vms["app02"].loader_format && libvirt_domain.vm["app02"].os.nv_ram.template_format == var.vms["app02"].loader_format
+    error_message = "the varstore's declared format does not follow the loader format: libvirt reads the declared format, not the extension"
   }
   assert {
     condition     = libvirt_domain.vm["app02"].os.loader_readonly == "yes"
@@ -210,6 +236,19 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   assert {
     condition     = libvirt_domain.vm["app01"].devices.interfaces[0].mac.address == var.vms["app01"].nics[0].mac
     error_message = "the NIC does not carry the derived MAC the seed's network-config matches on"
+  }
+  // Four constants in the two comprehensions above that no assertion read. Over
+  // `var.vms` so both VMs are checked: a NIC with no source gets no network at
+  // all, and a root disk declared `cdrom` is not bootable.
+  assert {
+    condition = alltrue([
+      for k, v in var.vms :
+      libvirt_domain.vm[k].devices.disks[0].device == "disk" &&
+      libvirt_domain.vm[k].devices.disks[0].driver.name == "qemu" &&
+      libvirt_domain.vm[k].devices.interfaces[0].model.type == v.nics[0].model &&
+      libvirt_domain.vm[k].devices.interfaces[0].source.network.network == v.nics[0].network
+    ])
+    error_message = "a domain's root disk or NIC is not what its tfvars asked for: a cdrom root disk does not boot, and a NIC with no source reaches no network"
   }
 
   // -- what libvirt does not supply ----------------------------------------
@@ -350,5 +389,59 @@ run "a_bridged_nic_renders_source_bridge" {
   assert {
     condition     = libvirt_domain.vm["app01"].devices.interfaces[0].source.network == null
     error_message = "a bridged NIC also rendered <source network=>: two sources on one interface is XML libvirt will not take"
+  }
+}
+
+run "a_bios_domain_is_given_no_firmware_and_no_varstore" {
+  command = apply
+
+  // The third branch the golden tfvars does not take, and the one 454ee7c's
+  // header above did not name. Both fixture VMs carry `firmware = "efi"`, so
+  // main.tf:116's null arm is never evaluated by them -- yet `bios` is a value
+  // an operator can write today (schema.py:129 is {"enum": ["efi", "bios"]}).
+  // Same caveat as the two blocks above: `variables` overrides wholesale rather
+  // than merging, so this VM is hand-written and nothing asserts it still
+  // resembles what render.py emits.
+  //
+  // This is *evaluation* coverage and nothing more. It proves main.tf produces
+  // the right value on the BIOS branch; it cannot prove libvirt echoes that
+  // value back the way the provider planned it, which is #75 and needs a real
+  // libvirtd. A green run here must not be read as having closed that.
+  variables {
+    vms = {
+      app01 = {
+        configured_address = "192.168.122.60"
+        disk_bytes         = 42949672960
+        domain_name        = "app01"
+        firmware           = "bios"
+        loader             = null
+        loader_format      = null
+        machine            = "q35"
+        marker_xml         = "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"lab-a\",\"name\":\"app01\",\"id\":\"2647c9f3-9d71-531a-b874-98a578d6c7aa\"}</vcows>"
+        memory_mib         = 4096
+        nics = [
+          {
+            bridge  = null
+            mac     = "52:54:00:be:a8:60"
+            model   = "virtio"
+            network = "default"
+          }
+        ]
+        nvram_template = null
+        overlay_name   = "app01.qcow2"
+        seed_iso       = "/run/vcows/lab-a/app01-seed.iso"
+        seed_name      = "app01-seed.iso"
+        vcpus          = 2
+      }
+    }
+  }
+
+  assert {
+    condition     = libvirt_domain.vm["app01"].os.firmware == null
+    error_message = "a bios domain still asks libvirt for efi: main.tf:116's null arm is not reached"
+  }
+  assert {
+    condition     = libvirt_domain.vm["app01"].os.nv_ram == null
+    error_message = "a bios domain carries a varstore, which is a UEFI-only device"
   }
 }
