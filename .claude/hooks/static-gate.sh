@@ -87,7 +87,7 @@ fi
 record() {
     [ -n "$cur" ] || return 0
     mkdir -p "$(dirname "$STATE")"
-    printf '%s %s\n' "$1" "$cur" > "$STATE"
+    printf '%s %s\n' "$1" "$cur" > "$STATE" || true
 }
 
 fail() {

@@ -17,7 +17,7 @@ just bundle    # -> .cache/delivery/
 ## The order is enforced, not conventional
 
 `just bundle` assembles what ships **from what `just scan` already wrote**. It
-does not build anything itself. `scripts/bundle.sh:52` checks for the archive,
+does not build anything itself. `scripts/bundle.sh` checks for the archive,
 the SBOM and the trivy report and dies with:
 
     no <name> -- run 'just scan' first, which writes it
