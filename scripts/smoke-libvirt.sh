@@ -498,6 +498,10 @@ assert_gone() {
     for vol in "$BASE_VOL" "$OVERLAY_VOL" "$SEED_VOL"; do
         check "destroy removed $vol" absent "$vols" "$vol"
     done
+    # A file rather than a libvirt object, so a path test and not an `absent` over
+    # a listing like the four above. This runs before `cleanup`, so the subject is
+    # the provider's destroy and not cleanup's own `undefine --nvram`.
+    check "destroy removed the varstore" test ! -e "$NVRAM_DIR/${DOMAIN}_VARS.fd"
 }
 
 main() {
