@@ -274,12 +274,25 @@ start_libvirtd() {
 # behaviour at a site. The runner is the site here, so standing the pool up is
 # part of preparing the host rather than part of what is under test.
 storage_pool() {
+    local err
     if ! vsh pool-info "$POOL" >/dev/null 2>&1; then
         vsh pool-define-as --name "$POOL" --type dir --target "$POOL_DIR" >/dev/null
     fi
-    vsh pool-start "$POOL" >/dev/null 2>&1 || true
-    vsh pool-info "$POOL" | grep -qE 'State: *running' \
-        || die "storage pool $POOL is defined but will not start"
+    # `pool-build` creates the target directory. Usually a no-op -- the package
+    # ships /var/lib/libvirt/images -- and not optional: a dir pool whose target
+    # is missing refuses to start, and that refusal is what the first run of this
+    # job hit.
+    vsh pool-build "$POOL" >/dev/null 2>&1 || true
+    # The reason has to reach the log. The first spelling of this discarded
+    # pool-start's stderr and died with "defined but will not start", which named
+    # the symptom and cost a CI round trip to get behind.
+    if ! err="$(vsh pool-start "$POOL" 2>&1)"; then
+        if ! vsh pool-info "$POOL" | grep -qE 'State: *running'; then
+            log "$(vsh pool-list --all 2>&1)"
+            log "$(vsh pool-dumpxml "$POOL" 2>&1)"
+            die "storage pool $POOL will not start: $err"
+        fi
+    fi
 }
 
 # The module renders `<interface type='network'><source network='default'/>`, so
