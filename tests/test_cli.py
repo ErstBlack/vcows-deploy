@@ -617,7 +617,7 @@ def test_an_empty_run_dir_still_works(backend, config, tmp_path):
 def test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence(
     backend, config, tmp_path, capsys, argv
 ):
-    """`UsageError:66-69` exists so a bad `--run-dir` is a sentence and not an
+    """`UsageError` exists so a bad `--run-dir` is a sentence and not an
     errno. The is-a-file and not-empty branches got that; the mkdir did not, and
     its message named a relative path because `resolve()` ran after it."""
     parent = tmp_path / "unwritable"
