@@ -292,6 +292,32 @@ def test_a_failed_apply_still_leaves_a_run_record(
     assert "TofuError" in capsys.readouterr().err
 
 
+def test_a_run_record_that_could_not_be_written_says_so(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """The missing half of the test above. `_guard` suppresses a failure writing
+    the record so a full disk cannot replace the exception that says what went
+    wrong -- but suppressing it is not the same as saying nothing, and an absent
+    run directory is indistinguishable from a run that never started."""
+
+    def dropped(*a, **k):
+        raise RuntimeError("the connection dropped")
+
+    def unwritable(path, payload):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    given = tmp_path / "handed-over"
+    given.mkdir()
+    monkeypatch.setattr(backend, "preflight", dropped)
+    monkeypatch.setattr(cli, "_write_json", unwritable)
+
+    assert cli.main(["deploy", config, "--run-dir", str(given)]) == 1
+    err = capsys.readouterr().err
+    assert "left no record" in err and str(given / "run.json") in err
+    assert "the connection dropped" in err, "the real failure is still the last word"
+    assert not (given / "run.json").exists()
+
+
 def test_a_deploy_that_worked_is_not_failed_by_the_version_it_records(
     backend, config, tmp_path, monkeypatch, capsys
 ):

@@ -269,9 +269,21 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
         return body()
     except BaseException as exc:
         # Suppressed, not handled: a full disk here must not replace the
-        # exception that says what actually went wrong.
-        with contextlib.suppress(OSError):
+        # exception that says what actually went wrong. Reported, though: the
+        # run directory is the whole account an air-gapped site ships back, and
+        # its absence is otherwise indistinguishable from a run that never ran.
+        try:
             _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+        except OSError as unwritable:
+            # The original invariant restated: a closed stderr must not become
+            # the exception the operator sees instead of `exc`.
+            with contextlib.suppress(OSError):
+                print(
+                    f"vcows: this run left no record -- {run.path / 'run.json'} "
+                    f"could not be written ({unwritable.strerror}). The failure "
+                    f"below is reported on this stream only.",
+                    file=sys.stderr,
+                )
         raise
 
 
