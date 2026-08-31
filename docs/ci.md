@@ -52,8 +52,14 @@ pinned provider's schema with generated values. That reaches every expression in
 the module and reaches no hypervisor, so three things it stands in for have never
 run: `virStorageVolUpload`, libvirtd parsing the domain XML the module renders,
 and define/start/undefine of that domain. `smoke` runs those against a libvirtd
-installed on the runner and asserts against `virsh dumpxml`, `virsh vol-dumpxml`
-and `qemu-img info` — what libvirtd created, not what tofu planned.
+installed on the runner and asserts against what libvirtd created, not what tofu
+planned.
+
+The job is two pieces. `scripts/smoke-libvirt.sh` builds the host and drives
+apply and destroy; `tests/test_libvirt_smoke.py` holds every assertion, behind
+`VCOWS_GATES=smoke`, and the script invokes it twice — once with the domain
+running and once after destroy. That split is `#122`, and it is why this job runs
+`just dev-env` where it used to skip it.
 
 The domain runs under TCG, so **no `/dev/kvm` is required** and the job behaves
 the same on a GitHub-hosted runner and a GitLab.com SaaS one. Getting there needs
@@ -76,10 +82,15 @@ It is also not in `just check`. It installs packages, writes `/etc/libvirt` and
 starts a system daemon, none of which belongs in a recipe a developer runs before
 pushing or in the hook that runs on every agent turn.
 
-Measured on `ubuntu-latest`: 1m05s for the job, 28 assertions, `Apply complete!
-Resources: 4 added` and `Destroy complete! Resources: 4 destroyed`. The domain
-defines and starts with `<domain type='qemu'>` on a runner where nothing has
-touched `/dev/kvm`.
+Measured on `ubuntu-latest`: `Apply complete! Resources: 4 added` and `Destroy
+complete! Resources: 4 destroyed`, with the domain defining and starting as
+`<domain type='qemu'>` on a runner where nothing has touched `/dev/kvm`.
+
+**35 assertions, in two pytest runs of 30 and 5** — measured green on run
+33439584490, 1m11s for the job. The count this file carried
+before `#122` was 28, which was already stale by two commits — `#75`'s repin and
+`#111`'s varstore check both added to it. The shell made the same 35 assertions
+out of 33 `check` lines, two of which looped.
 
 ## Which gates run, and which cannot
 
@@ -92,7 +103,13 @@ correct and `tofu, image` silently demands only `tofu`.
 | `tofu` | demanded | the mirror is rebuilt or restored first |
 | `image` | demanded, in the image job | needs a built image and podman |
 | `pycdlib` | satisfied | a runtime dependency, installed by `just dev-env` |
+| `smoke` | demanded, in the smoke job | exported by `scripts/smoke-libvirt.sh`, which builds the host it asserts about |
 | `rig` | **never** | needs a reachable hypervisor |
+
+`libvirt` is absent from that table on purpose: it is satisfied everywhere, since
+`scripts/os-deps.sh` installs `python3-libvirt` in every job that builds a venv.
+The closed set of names is `KNOWN` in `tests/test_gates.py`; this table is which
+of them CI supplies.
 
 `VCOWS_GATES=all` is never set. The rig gate needs hardware no hosted runner has;
 demanding it would either fail every run or get "fixed" by re-adding a skip,

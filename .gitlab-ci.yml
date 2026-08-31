@@ -100,14 +100,13 @@ smoke:
   # runner property no tag can express; see docs/ci.md.
   tags: [linux]
   timeout: 30m
-  cache: [*tools_cache, *mirror_cache]
-  # Not *bootstrap: that anchor ends in `just dev-env`, and
-  # scripts/smoke-libvirt.sh drives tofu and virsh and touches no Python. The two
-  # bootstrap scripts stay -- os-deps.sh brings jq for `ensure-mirror` and
-  # xorriso for the seed ISO.
+  cache: [*tools_cache, *uv_cache, *mirror_cache]
+  # *bootstrap now, where this job used to spell out the two scripts and skip
+  # `just dev-env`. The gate's assertions are tests/test_libvirt_smoke.py and the
+  # script runs them out of that venv (#122), so the anchor's third line is the
+  # one this job was missing rather than the one it had to avoid.
   script:
-    - ./scripts/os-deps.sh
-    - ./scripts/install-tools.sh
+    - *bootstrap
     - just ensure-mirror
     - just smoke-libvirt
 

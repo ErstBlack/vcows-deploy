@@ -92,8 +92,10 @@ jobs:
   # /dev/kvm and the job is the same on a GitLab.com SaaS runner.
   smoke:
     runs-on: ubuntu-latest
-    # Measured green: 1m05s, of which apt is about 24s and the whole
-    # apply-assert-destroy cycle is 10s. 30 rather than the 15 above, matching
+    # Measured green: 1m11s (run 33439584490), of which apt is about 24s and the
+    # whole apply-assert-destroy cycle is 16s. Was 1m05s and 10s before #122
+    # moved the assertions into pytest; the added `just dev-env` and two pytest
+    # startups are the difference. 30 rather than the 15 above, matching
     # the image job, because the ceiling is sized against a wedge rather than a
     # slow run -- a `tofu apply` stuck on a volume upload has no timeout of its
     # own, for the reason the check job's note gives.
@@ -112,9 +114,11 @@ jobs:
           key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
-      # No `just dev-env`. scripts/smoke-libvirt.sh drives tofu and virsh and
-      # touches no Python, so the venv this job would build is one it never
-      # reads. os-deps.sh is still needed: it brings jq for `ensure-mirror` and
-      # xorriso for the seed ISO.
+      # `just dev-env` is not optional here any more: the gate's assertions are
+      # tests/test_libvirt_smoke.py, which the script runs out of this venv
+      # (#122). os-deps.sh is needed for more than jq and xorriso for the same
+      # reason -- it also brings python3-libvirt, and --system-site-packages is
+      # what makes the binding visible to the venv.
+      - run: just dev-env
       - run: just ensure-mirror
       - run: just smoke-libvirt
