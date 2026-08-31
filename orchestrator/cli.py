@@ -120,7 +120,7 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     """
     path = (
         Path(override) if override else Path("runs") / cfg["deployment"] / _timestamp()
-    )
+    ).resolve()
     # `exist_ok` covers an existing *directory* and nothing else, so a `--run-dir`
     # naming a regular file reaches `main`'s catch-all as the raw `FileExistsError`
     # `UsageError` above exists to replace. Classified here, before the mkdir,
@@ -131,8 +131,13 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
             f"directory. Pass a --run-dir that does not exist yet, or one that "
             f"is an empty directory."
         )
-    path.mkdir(parents=True, exist_ok=True)
-    path = path.resolve()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise UsageError(
+            f"cannot create the run directory {path}: {exc.strerror}. Every run "
+            f"writes its own directory; check the mount and the UID it is owned by."
+        ) from exc
     if any(path.iterdir()):
         raise UsageError(
             f"{path} is not empty. Every run writes its own directory -- the "
@@ -148,8 +153,15 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     # `main` sets a 0o077 umask, so a directory vcows created is already private
     # and this has work to do only for one an operator handed us. Skipped when it
     # is already tight, because the chmod is the half that can fail: a bind mount
-    # owned by another UID (README's `--user`) refuses it, and that must not stop
-    # a run that is otherwise fine.
+    # owned by another UID (README's `--user`) refuses it with EACCES, and that
+    # must not stop a run that is otherwise fine.
+    #
+    # EACCES only. EROFS -- `/runs` mounted `:ro` -- is deliberately *not* caught:
+    # a run directory that cannot be chmod'ed because the filesystem is read-only
+    # cannot be written to either, and the uncaught OSError names the mount
+    # (`Read-only file system: '/runs'`). Widening this to `except OSError` was
+    # measured: it reports the mode instead of the cause and defers the failure to
+    # `run.json`, whose errno never mentions the mount.
     if path.stat().st_mode & 0o077:
         try:
             os.chmod(path, 0o700)
@@ -257,9 +269,21 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
         return body()
     except BaseException as exc:
         # Suppressed, not handled: a full disk here must not replace the
-        # exception that says what actually went wrong.
-        with contextlib.suppress(OSError):
+        # exception that says what actually went wrong. Reported, though: the
+        # run directory is the whole account an air-gapped site ships back, and
+        # its absence is otherwise indistinguishable from a run that never ran.
+        try:
             _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+        except OSError as unwritable:
+            # The original invariant restated: a closed stderr must not become
+            # the exception the operator sees instead of `exc`.
+            with contextlib.suppress(OSError):
+                print(
+                    f"vcows: this run left no record -- {run.path / 'run.json'} "
+                    f"could not be written ({unwritable.strerror}). The failure "
+                    f"below is reported on this stream only.",
+                    file=sys.stderr,
+                )
         raise
 
 
@@ -320,7 +344,7 @@ def _note_warnings(run: _Run, result: tofu.Result) -> None:
     run.extra["tofu_warnings"] += [str(d) for d in result.warnings]
 
 
-def _tofu_version(workdir: Path) -> dict | None:
+def _tofu_version(run: _Run, workdir: Path) -> dict | None:
     """What actually ran, or ``None`` -- never an exception over a good deploy.
 
     This is provenance, and it is asked for *after* the apply succeeded and
@@ -333,7 +357,15 @@ def _tofu_version(workdir: Path) -> dict | None:
     try:
         return tofu.version(workdir)
     except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
-        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
+        # Both halves, not just stderr: `tofu: null` in the shipped record reads
+        # as "vcows did not try" and means "tried and could not". The field stays
+        # `dict | None` -- a sentence in it would make it `dict | str` and break
+        # a consumer reading `record["tofu"]["terraform_version"]`.
+        problem = Problem.warning(
+            f"cannot record the tofu version ({exc})", where="tofu"
+        )
+        print(f"vcows: {problem.message}", file=sys.stderr)
+        run.extra["problems"].append(str(problem))
         return None
 
 
@@ -388,28 +420,38 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         # each step rather than after all three: a plan that warns and an apply
         # that raises is exactly the run whose warnings are worth keeping, and
         # collecting them at the end means that run records none of them.
-        inited = tofu.init(workdir)
-        _note_warnings(run, inited)
-        planned = tofu.plan(workdir, workdir / "plan.bin")
-        _note_warnings(run, planned)
-        if not planned.changes:
-            # No change summary at all is not the same fact as a plan that
-            # creates nothing. `_read_stream` returns `{}` for a stream that is
-            # missing or will not parse -- deliberately, since the exit code is
-            # the authority on success -- and without this branch that arrives
-            # as "the module proposes no creates", which sends whoever reads it
-            # to the module rather than to the file.
-            raise tofu.TofuError(
-                f"tofu plan exited 0 but reported no change summary; "
-                f"{workdir / 'plan.json'} is the stream it should be in"
-            )
-        if not planned.changes.get("add"):
-            raise tofu.TofuError(
-                f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
-            )
-        applied = tofu.apply(workdir, workdir / "plan.bin")
-        _note_warnings(run, applied)
-        raw = tofu.outputs(workdir)
+        try:
+            inited = tofu.init(workdir)
+            _note_warnings(run, inited)
+            planned = tofu.plan(workdir, workdir / "plan.bin")
+            _note_warnings(run, planned)
+            if not planned.changes:
+                # No change summary at all is not the same fact as a plan that
+                # creates nothing. `_read_stream` returns `{}` for a stream that
+                # is missing or will not parse -- deliberately, since the exit
+                # code is the authority on success -- and without this branch
+                # that arrives as "the module proposes no creates", which sends
+                # whoever reads it to the module rather than to the file.
+                raise tofu.TofuError(
+                    f"tofu plan exited 0 but reported no change summary; "
+                    f"{workdir / 'plan.json'} is the stream it should be in"
+                )
+            if not planned.changes.get("add"):
+                raise tofu.TofuError(
+                    f"plan proposes no creates for {len(creating)} VM(s); "
+                    f"refusing to apply"
+                )
+            applied = tofu.apply(workdir, workdir / "plan.bin")
+            _note_warnings(run, applied)
+            raw = tofu.outputs(workdir)
+        except tofu.TofuError as exc:
+            # The step that raised warned too, and `TofuError.result` is the only
+            # thing carrying those warnings. Without this they die with the
+            # exception -- the run whose warnings are worth most keeps none of
+            # its own.
+            if exc.result is not None:
+                _note_warnings(run, exc.result)
+            raise
 
     inventory = backend.parse_outputs(raw)
     # Names, not counts. The message below already computes the set difference and
@@ -431,7 +473,7 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         run,
         "ok",
         created=sorted(creating),
-        tofu=_tofu_version(workdir),
+        tofu=_tofu_version(run, workdir),
     )
     print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
     return 0
@@ -525,6 +567,17 @@ def _destroy(
         for problem in advisory:
             print(f"  {problem}", file=sys.stderr)
         run.extra["problems"] = [str(p) for p in advisory]
+        # The same argument `tofu.py:77-84` makes for `Result.warnings`: the run
+        # directory is the copy that outlives the terminal. `findings.md:121`
+        # mandates the report, and the `skip` row below satisfies it -- but a
+        # marked VM this teardown deliberately left alone appeared in no shipped
+        # artifact at all. The deployment name goes with it: a bare list of names
+        # drops the half of the row that explains why the VM was left.
+        run.extra["left_alone"] = {
+            e.name: e.marker.deployment or "<unset>"
+            for e in others
+            if e.marker is not None
+        }
         for e in others:
             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
             print(
@@ -655,7 +708,12 @@ def cmd_version(args: argparse.Namespace) -> int:
     _print_manifest()
     try:
         info = tofu.version()
-    except (tofu.TofuError, OSError) as exc:
+    # The same four classes `_tofu_version` names for the identical call: both
+    # sites intend "report and carry on", so the narrower tuple was a divergence
+    # and not a policy. `subprocess.TimeoutExpired` and `json.JSONDecodeError`
+    # -- a slow `tofu` and a `tofu` printing something unparseable, the two
+    # states this command is run to discover -- used to reach `main` and exit 1.
+    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
         print(f"tofu: unavailable ({exc})")
         return 0
     print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")

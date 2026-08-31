@@ -1,0 +1,451 @@
+Prototype measurement for issue #89's six findings
+captured 2026-08-31T06:20:35Z. Scratch copy only -- nothing under
+/home/ssullivan/vcows-wt/cli-records/orchestrator or /home/ssullivan/vcows-wt/cli-records/tests was modified at any point.
+
+Scratch baseline (no .tools/bin, so the tofu gate is closed): 401 passed, 35 skipped.
+
+================ THE PATCH ================
+--- orchestrator/cli.py ---
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/cli.py.orig	2026-08-31 02:02:23.963713262 -0400
++++ orchestrator/cli.py	2026-08-31 02:20:16.772577703 -0400
+@@ -320,7 +320,7 @@
+     run.extra["tofu_warnings"] += [str(d) for d in result.warnings]
+ 
+ 
+-def _tofu_version(workdir: Path) -> dict | None:
++def _tofu_version(run: _Run, workdir: Path) -> dict | None:
+     """What actually ran, or ``None`` -- never an exception over a good deploy.
+ 
+     This is provenance, and it is asked for *after* the apply succeeded and
+@@ -333,7 +333,15 @@
+     try:
+         return tofu.version(workdir)
+     except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
+-        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
++        # Both halves, not just stderr: `tofu: null` in the shipped record reads
++        # as "vcows did not try" and means "tried and could not". The field stays
++        # `dict | None` -- a sentence in it would make it `dict | str` and break
++        # a consumer reading `record["tofu"]["terraform_version"]`.
++        problem = Problem.warning(
++            f"cannot record the tofu version ({exc})", where="tofu"
++        )
++        print(f"vcows: {problem.message}", file=sys.stderr)
++        run.extra["problems"].append(str(problem))
+         return None
+ 
+ 
+@@ -388,28 +396,38 @@
+         # each step rather than after all three: a plan that warns and an apply
+         # that raises is exactly the run whose warnings are worth keeping, and
+         # collecting them at the end means that run records none of them.
+-        inited = tofu.init(workdir)
+-        _note_warnings(run, inited)
+-        planned = tofu.plan(workdir, workdir / "plan.bin")
+-        _note_warnings(run, planned)
+-        if not planned.changes:
+-            # No change summary at all is not the same fact as a plan that
+-            # creates nothing. `_read_stream` returns `{}` for a stream that is
+-            # missing or will not parse -- deliberately, since the exit code is
+-            # the authority on success -- and without this branch that arrives
+-            # as "the module proposes no creates", which sends whoever reads it
+-            # to the module rather than to the file.
+-            raise tofu.TofuError(
+-                f"tofu plan exited 0 but reported no change summary; "
+-                f"{workdir / 'plan.json'} is the stream it should be in"
+-            )
+-        if not planned.changes.get("add"):
+-            raise tofu.TofuError(
+-                f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
+-            )
+-        applied = tofu.apply(workdir, workdir / "plan.bin")
+-        _note_warnings(run, applied)
+-        raw = tofu.outputs(workdir)
++        try:
++            inited = tofu.init(workdir)
++            _note_warnings(run, inited)
++            planned = tofu.plan(workdir, workdir / "plan.bin")
++            _note_warnings(run, planned)
++            if not planned.changes:
++                # No change summary at all is not the same fact as a plan that
++                # creates nothing. `_read_stream` returns `{}` for a stream that is
++                # missing or will not parse -- deliberately, since the exit code is
++                # the authority on success -- and without this branch that arrives
++                # as "the module proposes no creates", which sends whoever reads it
++                # to the module rather than to the file.
++                raise tofu.TofuError(
++                    f"tofu plan exited 0 but reported no change summary; "
++                    f"{workdir / 'plan.json'} is the stream it should be in"
++                )
++            if not planned.changes.get("add"):
++                raise tofu.TofuError(
++                    f"plan proposes no creates for {len(creating)} VM(s); "
++                    f"refusing to apply"
++                )
++            applied = tofu.apply(workdir, workdir / "plan.bin")
++            _note_warnings(run, applied)
++            raw = tofu.outputs(workdir)
++        except tofu.TofuError as exc:
++            # The step that raised warned too, and `TofuError.result` is the only
++            # thing carrying those warnings. Without this they die with the
++            # exception -- the run whose warnings are worth most keeps none of
++            # its own.
++            if exc.result is not None:
++                _note_warnings(run, exc.result)
++            raise
+ 
+     inventory = backend.parse_outputs(raw)
+     # Names, not counts. The message below already computes the set difference and
+@@ -431,7 +449,7 @@
+         run,
+         "ok",
+         created=sorted(creating),
+-        tofu=_tofu_version(workdir),
++        tofu=_tofu_version(run, workdir),
+     )
+     print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
+     return 0
+@@ -525,6 +543,16 @@
+         for problem in advisory:
+             print(f"  {problem}", file=sys.stderr)
+         run.extra["problems"] = [str(p) for p in advisory]
++        # The same argument `tofu.py:77-84` makes for `Result.warnings`: the run
++        # directory is the copy that outlives the terminal. `findings.md:121`
++        # mandates the report, and the `skip` row below satisfies it -- but a
++        # marked VM this teardown deliberately left alone appeared in no shipped
++        # artifact at all.
++        run.extra["left_alone"] = {
++            e.name: e.marker.deployment or "<unset>"
++            for e in others
++            if e.marker is not None
++        }
+         for e in others:
+             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
+             print(
+@@ -549,7 +577,7 @@
+ 
+         try:
+             out = backend.destroy(cfg, session, targets)
+-        except Exception as exc:
++        except BaseException as exc:
+             # The teardown with a fatal problem is the run with the most to
+             # record, and it is the one that reaches `_guard` as an exception
+             # rather than a return value -- so the `destroyed`/`skipped` record
+--- orchestrator/backends/libvirt/schema.py ---
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/schema.py.orig	2026-08-31 02:17:44.620593760 -0400
++++ orchestrator/backends/libvirt/schema.py	2026-08-31 02:17:44.675743891 -0400
+@@ -244,8 +244,7 @@
+         where = f"vms[{i}]"
+         structural = _check_vm_structure(vm, where)
+         problems += structural
+-        if structural:
+-            # The checks below index into fields the schema just rejected.
++        if structural and not _nic_checks_are_safe(vm):
+             continue
+         problems += _check_firmware(vm, where)
+         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
+@@ -256,6 +255,24 @@
+     return problems
+ 
+ 
++def _nic_checks_are_safe(vm: dict) -> bool:
++    """Whether `_check_firmware` and `_check_nics` can read this VM unguarded.
++
++    Normally `_check_vm_structure` passing is what makes that safe. When it did
++    not pass, the question is narrower: are the fields *these* checks index still
++    the right shape. `_check_nics` reads `vm["nics"]` and, through `mac_of`,
++    `vm["name"]`; `_check_firmware` uses `.get` throughout. A `vcpus` out of range
++    or an unexpected key says nothing about any of them, and skipping anyway costs
++    the operator the edit round trip `config.py:117-119` rules out.
++    """
++    return (
++        isinstance(vm, dict)
++        and isinstance(vm.get("name"), str)
++        and isinstance(vm.get("nics"), list)
++        and all(isinstance(nic, dict) for nic in vm["nics"])
++    )
++
++
+ def _check_image_digest(cfg: dict) -> list[Problem]:
+     """The declared ``image.sha256``, actually computed.
+ 
+@@ -347,7 +364,16 @@
+     """R-D: the URI is ours to assemble, not the operator's to decorate."""
+     where = "target.libvirt.uri"
+     uri = target["uri"]
+-    parts = urlsplit(uri)
++    try:
++        parts = urlsplit(uri)
++    except ValueError as exc:
++        return [
++            Problem.error(
++                f"{uri!r} is not a URL ({exc}); vcows assembles the connection "
++                f"URI from these fields and cannot parse this one",
++                where=where,
++            )
++        ]
+ 
+     problems: list[Problem] = []
+     if parts.scheme != "qemu+ssh":
+--- orchestrator/backends/libvirt/destroy.py ---
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/destroy.py.orig	2026-08-31 02:17:44.615593739 -0400
++++ orchestrator/backends/libvirt/destroy.py	2026-08-31 02:19:04.923932128 -0400
+@@ -495,67 +495,76 @@
+ 
+     out = Outcome()
+     try:
+-        mask = undefine_mask(session.getLibVersion())
+-    except libvirt.libvirtError as exc:
+-        out.problems.append(
+-            Problem.error(
+-                f"could not ask this host its libvirt version "
+-                f"({exc.get_error_message()}), so the undefine flags cannot be "
+-                f"chosen; nothing was torn down",
+-                where="storage",
++        try:
++            mask = undefine_mask(session.getLibVersion())
++        except libvirt.libvirtError as exc:
++            out.problems.append(
++                Problem.error(
++                    f"could not ask this host its libvirt version "
++                    f"({exc.get_error_message()}), so the undefine flags cannot be "
++                    f"chosen; nothing was torn down",
++                    where="storage",
++                )
+             )
+-        )
+-        raise DestroyError(out) from exc
+-    _refresh_pools(session, out, targets)
++            raise DestroyError(out) from exc
++        _refresh_pools(session, out, targets)
+ 
+-    claimed = _claimed_elsewhere(session, out, targets)
+-    if claimed is None:
+-        out.problems.append(
+-            Problem.error(
+-                "could not list this host's domains, so a recorded disk path "
+-                "cannot be checked against what else claims it; nothing was "
+-                "torn down",
+-                where="storage",
++        claimed = _claimed_elsewhere(session, out, targets)
++        if claimed is None:
++            out.problems.append(
++                Problem.error(
++                    "could not list this host's domains, so a recorded disk path "
++                    "cannot be checked against what else claims it; nothing was "
++                    "torn down",
++                    where="storage",
++                )
+             )
+-        )
+-        raise DestroyError(out)
++            raise DestroyError(out)
+ 
+-    for target in targets:
+-        # Whether the disks below are being deleted against a live document or
+-        # against the preflight snapshot alone. It changes what the evidence is
+-        # worth, so it changes what gets reported.
+-        vanished = False
+-        try:
+-            dom = session.lookupByUUIDString(target.id)
+-        except libvirt.libvirtError as exc:
+-            if exc.get_error_code() != ERR_NO_DOMAIN:
+-                # We have been told nothing about this domain, so we know nothing
+-                # about what it owns. Deleting its recorded disks on the strength
+-                # of a failed lookup is the one thing this branch must not do.
+-                _fail(out, target.name, "look up", exc)
+-                continue
+-            # Already gone. Its disks may not be, so they are still resolved
+-            # below -- from the preflight snapshot, which is why `_deletable`
+-            # rather than the snapshot decides what may go.
+-            vanished = True
+-            out.skipped.append(target.name)
+-        else:
+-            fresh = _reverify(dom, target, out)
+-            if fresh is None:
+-                continue
+-            target = fresh
+-            if not _stop(dom, target.name, out):
+-                continue
+-            if not _undefine(dom, target.name, mask, out):
+-                continue
+-            out.destroyed.append(target.name)
++        for target in targets:
++            # Whether the disks below are being deleted against a live document or
++            # against the preflight snapshot alone. It changes what the evidence is
++            # worth, so it changes what gets reported.
++            vanished = False
++            try:
++                dom = session.lookupByUUIDString(target.id)
++            except libvirt.libvirtError as exc:
++                if exc.get_error_code() != ERR_NO_DOMAIN:
++                    # We have been told nothing about this domain, so we know nothing
++                    # about what it owns. Deleting its recorded disks on the strength
++                    # of a failed lookup is the one thing this branch must not do.
++                    _fail(out, target.name, "look up", exc)
++                    continue
++                # Already gone. Its disks may not be, so they are still resolved
++                # below -- from the preflight snapshot, which is why `_deletable`
++                # rather than the snapshot decides what may go.
++                vanished = True
++                out.skipped.append(target.name)
++            else:
++                fresh = _reverify(dom, target, out)
++                if fresh is None:
++                    continue
++                target = fresh
++                if not _stop(dom, target.name, out):
++                    continue
++                if not _undefine(dom, target.name, mask, out):
++                    continue
++                out.destroyed.append(target.name)
+ 
+-        for path in target.disks:
+-            if _deletable(path, target, claimed, out):
+-                if vanished:
+-                    _deleted_on_name_alone(out, target, path)
+-                _delete_volume(session, path, target.name, out)
++            for path in target.disks:
++                if _deletable(path, target, claimed, out):
++                    if vanished:
++                        _deleted_on_name_alone(out, target, path)
++                    _delete_volume(session, path, target.name, out)
+ 
+-    if out.failed:
+-        raise DestroyError(out)
+-    return out
++        if out.failed:
++            raise DestroyError(out)
++        return out
++    except DestroyError:
++        raise
++    except BaseException as exc:
++        # A Ctrl-C between the undefine and the volume deletes leaves `out`
++        # populated and attached to nothing. `DestroyError` is the only path
++        # that carries it today, and an interrupt does not take that path.
++        exc.outcome = out  # ty: ignore[unresolved-attribute]
++        raise
+
+================ ruff / format / ty ================
+$ .venv/bin/ruff check orchestrator/
+All checks passed!
+$ .venv/bin/ruff format --check orchestrator/
+15 files already formatted
+$ .venv/bin/ty check orchestrator/
+All checks passed!
+
+NOTE ty: '# type: ignore[attr-defined]' is NOT honoured by ty -- it reports
+error[unresolved-attribute]: Unresolved attribute `outcome` on type `BaseException`.
+The suppression that works is '# ty: ignore[unresolved-attribute]'.
+
+NOTE ruff: reindenting the tofu block under RX-B1's try: pushes
+'plan proposes no creates for {…} VM(s); refusing to apply' past 88 columns.
+It has to be rewrapped in the same commit or E501 fails the gate.
+
+================ ALL SIX, MEASURED THROUGH THE SAME HARNESS ================
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py -p no:randomly
+error: TofuError: tofu apply failed (exit 1): error: apply blew up
+  app01                create  does not exist
+  app02                create  does not exist
+RX-B1 outcome        = failed
+RX-B1 tofu_warnings  = ['warning: init warned', 'warning: plan warned', 'warning: apply warned about a deprecated argument']
+RX-B1 error          = TofuError: tofu apply failed (exit 1): error: apply blew up
+RX-B1 apply's own warning present in the whole record?  True
+RX-B1 record keys    = ['backend', 'command', 'decisions', 'deployment', 'error', 'finished', 'outcome', 'problems', 'started', 'tofu_warnings', 'vcows']
+.RX-B6 rc            = 0
+RX-B6 record[tofu]  = None
+RX-B6 record[problems] = ['warning [tofu]: cannot record the tofu version (tofu version failed (exit 1))']
+RX-B6 record keys   = ['backend', 'command', 'created', 'decisions', 'deployment', 'finished', 'outcome', 'problems', 'started', 'tofu', 'tofu_warnings', 'vcows']
+RX-B6 stderr        = vcows: cannot record the tofu version (tofu version failed (exit 1))
+RX-B6 reason in record?  True
+RX-B6 tofu.version def line   = def version(workdir: Path | None = None) -> dict:
+RX-B6 tofu.version return ann = dict  (unpatched, read at test entry)
+RX-B6 _tofu_version return ann = dict | None
+.interrupted
+error: Failed: could not delete volume
+  app01                destroy app01
+RX-B2 KI  rc= 1
+RX-B2 KI  outcome= failed destroyed= ['app01'] skipped= ['/pool/app02-seed.iso'] error= Interrupted: 
+RX-B2 KI  problems= ['error [storage]: could not delete volume']
+  app01                destroy app01
+RX-B2 Exc rc= 1
+RX-B2 Exc outcome= failed destroyed= ['app01'] skipped= ['/pool/app02-seed.iso'] error= Failed: could not delete volume
+RX-B2 Exc problems= ['error [storage]: could not delete volume']
+.RX-B2 libvirt raised            = KeyboardInterrupt
+RX-B2 libvirt getattr(exc,'outcome') = Outcome(destroyed=['app01'], skipped=[], problems=[])
+RX-B2 libvirt domain log        = ['destroy', 'undefine:55']
+RX-B2 libvirt pool.deleted      = []
+.RX-B2 _guard source:
+def _guard(run: _Run, body: Callable[[], int]) -> int:
+    """Run one verb's body, and leave a record whatever it does.
+
+    ``BaseException``, so a Ctrl-C mid-teardown -- the run with the most to say and
+    the least chance of saying it -- writes one too. The exception then continues
+    to ``main``, which owns the message and the exit code; a failure writing the
+    record must not replace it with a worse one.
+    """
+    try:
+        return body()
+    except BaseException as exc:
+        # Suppressed, not handled: a full disk here must not replace the
+        # exception that says what actually went wrong.
+        with contextlib.suppress(OSError):
+            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+        raise
+
+.RX-B3 rc          = 0
+RX-B3 stdout rows =
+   |   elsewhere            skip    belongs to deployment 'lab-b', not 'lab-a'
+   |   app01                destroy app01
+   | destroyed 1 object(s)
+RX-B3 record      = {
+  "backend": "fake",
+  "command": "destroy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "destroyed": [
+    "app01"
+  ],
+  "finished": "20260831T062037Z",
+  "left_alone": {
+    "elsewhere": "lab-b"
+  },
+  "outcome": "ok",
+  "problems": [],
+  "skipped": [],
+  "started": "20260831T062037Z",
+  "vcows": "0.1.0.0"
+}
+RX-B3 'elsewhere' anywhere in run.json?  True
+RX-B3 'lab-b' anywhere in run.json?      True
+.
+6 passed in 0.90s
+
+================ RX-C1 and RX-C2 through the real CLI ================
+--- validate c-vcpus0.yaml ---
+  error [vms[0].vcpus]: 0 is less than the minimum of 1
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+--- validate c-typo.yaml ---
+  error [vms[0]]: Additional properties are not allowed ('cpus' was unexpected)
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+--- validate c-control.yaml ---
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+--- validate c-gw27.yaml ---
+  error [vms[0].nics[0].gateway]: 'not-an-ip' does not appear to be an IPv4 or IPv6 address
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+--- validate c-ipv6.yaml ---
+  error [target.libvirt.uri]: 'qemu+ssh://[2001:db8::1/system' is not a URL (Invalid IPv6 URL); vcows assembles the connection URI from these fields and cannot parse this one
+  error [vms[0].vcpus]: 0 is less than the minimum of 1
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+
+(the three credential/image warnings every run emits are filtered out above.
+ Every one of these configs carries a fatal error, so the CLI exits 1 in all
+ five arms, patched or not. RX-C1.txt and RX-C2.txt hold the unfiltered runs
+ against the unpatched tree.)
+
+================ suite, patched ================
+$ .venv/bin/python -m pytest -q
+401 passed, 35 skipped in 8.64s
+401 -> 401: no existing test moved. The six regression tests are still to be written.
+
+================ restore ================
+scratch orchestrator/ restored, identical to aed962d

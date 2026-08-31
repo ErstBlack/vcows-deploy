@@ -1,0 +1,44 @@
+RX-B1 / issue #89 -- a failing tofu step's own warnings are dropped
+reverified at aed962d, 2026-08-31T06:05:56Z
+Harness: an unmodified copy of orchestrator/ + tests/ in a scratch dir,
+driven with /home/ssullivan/vcows-wt/cli-records/.venv/bin/python. Copy verified identical:
+$ diff -r -x __pycache__ /home/ssullivan/vcows-wt/cli-records/orchestrator /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/repo/orchestrator
+(no output: identical)
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "410,412p"
+410:        applied = tofu.apply(workdir, workdir / "plan.bin")
+411:        _note_warnings(run, applied)
+412:        raw = tofu.outputs(workdir)
+$ grep -n "" orchestrator/tofu.py | sed -n "87,92p"
+87:class TofuError(Exception):
+88:    """A tofu invocation failed, or produced something we refuse to continue on."""
+89:
+90:    def __init__(self, message: str, result: Result | None = None):
+91:        self.result = result
+92:        super().__init__(message)
+
+================ dead-reader check: TofuError.result has no production reader ================
+$ grep -rn "\.result\b" --include=*.py orchestrator tests   (worktree)
+/home/ssullivan/vcows-wt/cli-records/orchestrator/tofu.py:91:        self.result = result
+/home/ssullivan/vcows-wt/cli-records/tests/test_tofu_driver.py:186:    assert caught.value.result is not None
+/home/ssullivan/vcows-wt/cli-records/tests/test_tofu_driver.py:187:    (error,) = caught.value.result.errors
+
+================ REPRODUCTION ================
+init warns, plan warns, apply raises TofuError carrying a Result with one
+warning and one error, through cli.main(["deploy", cfg]).
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b1 -p no:randomly
+error: TofuError: tofu apply failed (exit 1): error: apply blew up
+  app01                create  does not exist
+  app02                create  does not exist
+RX-B1 outcome        = failed
+RX-B1 tofu_warnings  = ['warning: init warned', 'warning: plan warned']
+RX-B1 error          = TofuError: tofu apply failed (exit 1): error: apply blew up
+RX-B1 apply's own warning present in the whole record?  False
+RX-B1 record keys    = ['backend', 'command', 'decisions', 'deployment', 'error', 'finished', 'outcome', 'problems', 'started', 'tofu_warnings', 'vcows']
+.
+1 passed in 0.55s
+exit=0
+
+VERDICT: RX-B1 REPRODUCES. Both earlier steps' warnings are recorded;
+the raising step's own warning is absent from the whole serialised record.

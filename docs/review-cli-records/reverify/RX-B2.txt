@@ -1,0 +1,116 @@
+RX-B2 / issue #89 -- Ctrl-C during destroy records no destroyed/skipped
+reverified at aed962d, 2026-08-31T06:07:07Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "248,263p;550,564p"
+248:def _guard(run: _Run, body: Callable[[], int]) -> int:
+249:    """Run one verb's body, and leave a record whatever it does.
+250:
+251:    ``BaseException``, so a Ctrl-C mid-teardown -- the run with the most to say and
+252:    the least chance of saying it -- writes one too. The exception then continues
+253:    to ``main``, which owns the message and the exit code; a failure writing the
+254:    record must not replace it with a worse one.
+255:    """
+256:    try:
+257:        return body()
+258:    except BaseException as exc:
+259:        # Suppressed, not handled: a full disk here must not replace the
+260:        # exception that says what actually went wrong.
+261:        with contextlib.suppress(OSError):
+262:            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+263:        raise
+550:        try:
+551:            out = backend.destroy(cfg, session, targets)
+552:        except Exception as exc:
+553:            # The teardown with a fatal problem is the run with the most to
+554:            # record, and it is the one that reaches `_guard` as an exception
+555:            # rather than a return value -- so the `destroyed`/`skipped` record
+556:            # below never runs for it. `getattr` rather than catching the
+557:            # backend's own error type: core stays backend-agnostic, and a
+558:            # backend that carries no outcome simply records nothing extra.
+559:            partial = getattr(exc, "outcome", None)
+560:            if partial is not None:
+561:                run.extra["destroyed"] = sorted(partial.destroyed)
+562:                run.extra["skipped"] = sorted(partial.skipped)
+563:                run.extra["problems"] += [str(p) for p in partial.problems]
+564:            raise
+
+================ 1. REPRODUCTION, core half ================
+A KeyboardInterrupt subclass carrying a populated Outcome, vs a plain
+Exception carrying the identical Outcome, both from backend.destroy.
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b2_core_half -p no:randomly
+interrupted
+error: Failed: could not delete volume
+  app01                destroy app01
+RX-B2 KI  rc= 1
+RX-B2 KI  outcome= failed destroyed= <ABSENT> skipped= <ABSENT> error= Interrupted: 
+RX-B2 KI  problems= []
+  app01                destroy app01
+RX-B2 Exc rc= 1
+RX-B2 Exc outcome= failed destroyed= ['app01'] skipped= ['/pool/app02-seed.iso'] error= Failed: could not delete volume
+RX-B2 Exc problems= ['error [storage]: could not delete volume']
+.
+1 passed in 0.77s
+
+================ 2. REPRODUCTION, libvirt half ================
+KeyboardInterrupt raised from inside vol.delete, after the domain was
+already destroyed and undefined. Real destroy.destroy() against tests/fake_libvirt.
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b2_libvirt_half -p no:randomly
+RX-B2 libvirt raised            = KeyboardInterrupt
+RX-B2 libvirt getattr(exc,'outcome') = <ABSENT>
+RX-B2 libvirt domain log        = ['destroy', 'undefine:55']
+RX-B2 libvirt pool.deleted      = []
+.
+1 passed in 0.50s
+
+================ 3. THE OBVIOUS FIX, TESTED ================
+Mutation: cli.py:552  except Exception  ->  except BaseException, alone.
+$ sed -n "552p" orchestrator/cli.py   # before
+        except Exception as exc:
+$ sed -n "552p" orchestrator/cli.py   # after
+        except BaseException as exc:
+
+-- arm A: an exception that DOES carry .outcome (not what destroy.py raises) --
+RX-B2 KI  rc= 1
+RX-B2 KI  outcome= failed destroyed= ['app01'] skipped= ['/pool/app02-seed.iso'] error= Interrupted: 
+RX-B2 KI  problems= ['error [storage]: could not delete volume']
+RX-B2 Exc rc= 1
+RX-B2 Exc outcome= failed destroyed= ['app01'] skipped= ['/pool/app02-seed.iso'] error= Failed: could not delete volume
+RX-B2 Exc problems= ['error [storage]: could not delete volume']
+
+-- arm B: a plain KeyboardInterrupt with no .outcome -- what destroy.py leaves --
+$ .venv/bin/python /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/t_b2_mut.py
+RX-B2 MUT plain-KI rc= 1
+RX-B2 MUT plain-KI outcome= failed destroyed= <ABSENT> skipped= <ABSENT>
+
+$ restore
+cli.py restored, identical
+
+================ 4. THE DOCSTRING-CONTRADICTION FRAMING ================
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b2_docstring_claim -p no:randomly
+RX-B2 _guard source:
+def _guard(run: _Run, body: Callable[[], int]) -> int:
+    """Run one verb's body, and leave a record whatever it does.
+
+    ``BaseException``, so a Ctrl-C mid-teardown -- the run with the most to say and
+    the least chance of saying it -- writes one too. The exception then continues
+    to ``main``, which owns the message and the exit code; a failure writing the
+    record must not replace it with a worse one.
+    """
+    try:
+        return body()
+    except BaseException as exc:
+        # Suppressed, not handled: a full disk here must not replace the
+        # exception that says what actually went wrong.
+        with contextlib.suppress(OSError):
+            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+        raise
+
+.
+1 passed in 0.56s
+
+VERDICT: RX-B2 REPRODUCES on both halves.
+The warning HOLDS: except BaseException at :552 alone captures nothing from
+the libvirt backend, because destroy.py attaches out only via DestroyError.
+The docstring-contradiction framing is FALSE: _guard catches BaseException
+at :258 and writes the record it promises.

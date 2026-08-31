@@ -1,0 +1,104 @@
+RX-G1 / issue #85 -- reverification transcript
+worktree /home/ssullivan/vcows-wt/cli-records at aed962d; image localhost/vcows-deploy:0.1.0.0 (84dcf01a718d, revision 672a500)
+captured 2026-08-31T06:05:20Z. URI qemu+ssh://vcows@hypervisor.invalid/system
+
+================ ANCHORS at aed962d ================
+$ grep -n "" orchestrator/cli.py | sed -n "63p;128p;134,135p;314p;491p"
+63:class UsageError(Exception):
+128:    if path.exists() and not path.is_dir():
+134:    path.mkdir(parents=True, exist_ok=True)
+135:    path = path.resolve()
+314:    run = _Run(_run_dir(cfg, args.run_dir), "deploy", cfg, started)
+491:    run = _Run(_run_dir(cfg, args.run_dir), "destroy", cfg, started)
+
+================ EACCES arm: --user 4242, default run dir ================
+--- verb: deploy ---
+$ podman run --rm --user 4242 \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 deploy /config.yaml
+vcows: could not write /.ssh/config: [Errno 13] Permission denied: '/.ssh'. This run's ssh_keyfile and known_hosts were not installed, so the connection will use whatever ssh finds on its own -- likely failing with a host key or permission error that does not mention this.
+error: PermissionError: [Errno 13] Permission denied: 'runs/lab-a'
+exit=1
+--- verb: destroy --yes ---
+$ podman run --rm --user 4242 \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 destroy --yes /config.yaml
+vcows: could not write /.ssh/config: [Errno 13] Permission denied: '/.ssh'. This run's ssh_keyfile and known_hosts were not installed, so the connection will use whatever ssh finds on its own -- likely failing with a host key or permission error that does not mention this.
+error: PermissionError: [Errno 13] Permission denied: 'runs/lab-a'
+exit=1
+--- verb: preflight ---
+$ podman run --rm --user 4242 \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 preflight /config.yaml
+vcows: could not write /.ssh/config: [Errno 13] Permission denied: '/.ssh'. This run's ssh_keyfile and known_hosts were not installed, so the connection will use whatever ssh finds on its own -- likely failing with a host key or permission error that does not mention this.
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+================ EROFS arm: /runs mounted :ro, no --user ================
+--- verb: deploy ---
+$ podman run --rm \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:ro,Z \
+    localhost/vcows-deploy:0.1.0.0 deploy /config.yaml
+error: OSError: [Errno 30] Read-only file system: 'runs/lab-a'
+exit=1
+--- verb: destroy --yes ---
+$ podman run --rm \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:ro,Z \
+    localhost/vcows-deploy:0.1.0.0 destroy --yes /config.yaml
+error: OSError: [Errno 30] Read-only file system: 'runs/lab-a'
+exit=1
+--- verb: preflight ---
+$ podman run --rm \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:ro,Z \
+    localhost/vcows-deploy:0.1.0.0 preflight /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+NOTE: WORKDIR is / (Containerfile:223), so the default layout
+      Path('runs')/deployment/timestamp resolves to /runs/lab-a/<ts>.
+      Both errno families therefore hit the SAME mkdir, at cli.py:134.
+
+================ test coverage: no test exercises a failing mkdir ================
+$ grep -n "mkdir" tests/test_cli.py
+69:    mirror.mkdir()
+410:    source.mkdir()
+422:    (source / ".terraform" / "providers").mkdir(parents=True)
+427:    workdir.mkdir()
+437:    source.mkdir()
+476:    used.mkdir()
+507:    mount.mkdir()
+751:    given.mkdir(mode=0o755)
+764:    given.mkdir(mode=0o755)
+
+$ grep -n "def test.*run_dir" tests/test_cli.py
+191:def test_the_run_directory_is_not_world_readable(backend, config, offline, tmp_path):
+466:def test_a_non_empty_run_dir_is_refused_before_anything_connects(
+486:def test_a_run_dir_that_is_a_file_is_refused_in_a_sentence(
+503:def test_an_empty_run_dir_still_works(backend, config, tmp_path):
+746:def test_a_run_dir_handed_to_us_is_made_private(backend, config, tmp_path):
+757:def test_a_run_dir_that_cannot_be_made_private_says_which_mode_it_wanted(
+776:def test_nothing_in_the_run_directory_is_readable_by_anyone_else(
+
+The two mkdir(mode=0o755) at :751 and :764 are fixture setup for the chmod
+tests; :769 monkeypatches cli.os.chmod, not the mkdir. No failing-mkdir test.
+
+VERDICT: RX-G1 / #85 REPRODUCES. Both errno families, both mutating verbs,
+         relative path 'runs/lab-a' in every message. preflight unaffected.

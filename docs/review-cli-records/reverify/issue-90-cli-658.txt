@@ -1,0 +1,104 @@
+issue #90, item 'orchestrator/cli.py:658' -- cmd_version catches two of four
+reverified at aed962d, 2026-08-31T06:08:37Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "333,337p;653,662p"
+333:    try:
+334:        return tofu.version(workdir)
+335:    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
+336:        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
+337:        return None
+653:def cmd_version(args: argparse.Namespace) -> int:
+654:    print(f"vcows-deploy {VERSION}")
+655:    _print_manifest()
+656:    try:
+657:        info = tofu.version()
+658:    except (tofu.TofuError, OSError) as exc:
+659:        print(f"tofu: unavailable ({exc})")
+660:        return 0
+661:    print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")
+662:    return 0
+
+$ grep -n "" orchestrator/tofu.py | sed -n "238,264p;273,281p"   # what version() can raise
+238:def _capture(cmd: str, workdir: Path | None = None) -> dict:
+239:    """One short ``tofu <cmd> -json``, captured rather than inherited.
+240:
+241:    ``run`` rather than the ``Popen`` above: nothing here is long enough for the
+242:    Ctrl-C unwinding that paragraph is about, and these are the two places we
+243:    want the bytes rather than the view. ``workdir`` is optional because
+244:    ``version`` answers without one.
+245:    """
+246:    completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
+247:        [
+248:            _binary(),
+249:            *([f"-chdir={workdir.resolve()}"] if workdir else []),
+250:            cmd,
+251:            "-json",
+252:        ],
+253:        env=_env(),
+254:        capture_output=True,
+255:        text=True,
+256:        timeout=SHORT_TIMEOUT,
+257:        check=False,
+258:    )
+259:    if completed.returncode != 0:
+260:        raise TofuError(
+261:            f"tofu {cmd} failed (exit {completed.returncode}): "
+262:            f"{completed.stderr.strip()}"
+263:        )
+264:    return json.loads(completed.stdout or "{}")
+273:def version(workdir: Path | None = None) -> dict:
+274:    """``terraform_version``, ``platform`` and the resolved ``provider_selections``.
+275:
+276:    The R5 build manifest records what was *built*; this records what actually ran,
+277:    which is the only one of the two a runtime can observe. ``provider_selections``
+278:    is empty unless this is asked inside an initialised directory, which is why
+279:    ``workdir`` is here at all.
+280:    """
+281:    return _capture("version", workdir)
+
+_capture can raise all four: _binary() -> TofuError; subprocess.run(timeout=)
+-> TimeoutExpired (SubprocessError); OSError from the exec; json.loads ->
+JSONDecodeError (ValueError).
+
+================ REPRODUCTION ================
+$ .venv/bin/python /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/t90.py
+error: TimeoutExpired: Command '['tofu', 'version']' timed out after 30 seconds
+error: JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+=== class relationships ===
+TimeoutExpired is SubprocessError: True
+TimeoutExpired is TofuError/OSError: False
+JSONDecodeError is ValueError: True
+JSONDecodeError is TofuError/OSError: False
+
+=== behaviour of cmd_version for each of the four ===
+vcows-deploy 0.1.0.0
+tofu: unavailable (boom)
+TofuError          -> main() returned 0
+vcows-deploy 0.1.0.0
+tofu: unavailable ([Errno 2] No such file or directory: 'tofu')
+OSError            -> main() returned 0
+vcows-deploy 0.1.0.0
+TimeoutExpired     -> main() returned 1
+vcows-deploy 0.1.0.0
+JSONDecodeError    -> main() returned 1
+exit=0
+
+================ ORDERING: _print_manifest runs first ================
+cli.py:654 prints VERSION, :655 calls _print_manifest(), :656 calls tofu.version().
+Above, 'vcows-deploy 0.1.0.0' precedes the error in all four arms. Outside the
+image MANIFEST does not exist and _print_manifest returns silently (cli.py:642-643);
+inside the image it prints:
+$ podman run --rm localhost/vcows-deploy:0.1.0.0 version
+vcows-deploy 0.1.0.0
+image   672a500a5f3db394e91a3b91fb383517e504246d built 2026-08-31T03:52:16Z
+base    quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+provider registry.opentofu.org/dmacvicar/libvirt 0.9.8
+packages 160 from 115 sources
+tofu 1.12.6 on linux_amd64
+exit=0
+
+VERDICT: #90's claim HOLDS. Four exceptions at :335, two at :658.
+TimeoutExpired and JSONDecodeError escape to main's catch-all -> exit 1.
+_print_manifest has already run, so the recorded regression (cli.py:636-638)
+does not recur; the consequence is the exit code only.

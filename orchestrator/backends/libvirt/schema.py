@@ -244,8 +244,7 @@ def validate(cfg: dict) -> list[Problem]:
         where = f"vms[{i}]"
         structural = _check_vm_structure(vm, where)
         problems += structural
-        if structural:
-            # The checks below index into fields the schema just rejected.
+        if structural and not _nic_checks_are_safe(vm):
             continue
         problems += _check_firmware(vm, where)
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
@@ -254,6 +253,28 @@ def validate(cfg: dict) -> list[Problem]:
     problems += _check_image_digest(cfg)
     problems += _check_volume_names(cfg)
     return problems
+
+
+def _nic_checks_are_safe(vm: object) -> bool:
+    """Whether `_check_firmware` and `_check_nics` can read this VM unguarded.
+
+    Normally `_check_vm_structure` passing is what makes that safe. When it did
+    not pass, the question is narrower: are the fields *these* checks index still
+    the right shape. `_check_nics` reads `vm["nics"]` and, through `mac_of`,
+    `vm["name"]`; `_check_firmware` uses `.get` throughout. A `vcpus` out of range
+    or an unexpected key says nothing about any of them, and skipping anyway costs
+    the operator the edit round trip `config.py:117-119` rules out.
+
+    ``object`` and not ``dict``: the first clause is the one that matters when a
+    VM is not a mapping at all, and annotating the parameter as the thing it is
+    testing for would make that clause unreachable by declaration.
+    """
+    return (
+        isinstance(vm, dict)
+        and isinstance(vm.get("name"), str)
+        and isinstance(vm.get("nics"), list)
+        and all(isinstance(nic, dict) for nic in vm["nics"])
+    )
 
 
 def _check_image_digest(cfg: dict) -> list[Problem]:
@@ -269,7 +290,7 @@ def _check_image_digest(cfg: dict) -> list[Problem]:
     12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
     page cache does not help; with no ``sha256`` declared the call returns in
     8 microseconds. ``config.load`` runs the offline checks for every verb
-    (``cli.py:271``, ``:301``, ``:312``, ``:485``), so ``destroy`` pays it even
+    (``cli.py:295``, ``:325``, ``:336``, ``:531``), so ``destroy`` pays it even
     though it reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
     touches ``cfg["image"]``.
 
@@ -347,7 +368,21 @@ def _check_target(target: dict) -> list[Problem]:
     """R-D: the URI is ours to assemble, not the operator's to decorate."""
     where = "target.libvirt.uri"
     uri = target["uri"]
-    parts = urlsplit(uri)
+    try:
+        parts = urlsplit(uri)
+    except ValueError as exc:
+        # `_check_target` is the first thing `validate` runs, so an unhandled
+        # `ValueError` here unwound past every other check and past
+        # `config.load`'s "every problem rather than the first". Returning early
+        # is right rather than merely convenient: every remaining check reads
+        # `parts`, so there is nothing further to say about this URI.
+        return [
+            Problem.error(
+                f"{uri!r} is not a URL ({exc}); vcows assembles the connection "
+                f"URI from these fields and cannot parse this one",
+                where=where,
+            )
+        ]
 
     problems: list[Problem] = []
     if parts.scheme != "qemu+ssh":
