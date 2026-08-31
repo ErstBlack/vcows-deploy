@@ -76,6 +76,11 @@ It is also not in `just check`. It installs packages, writes `/etc/libvirt` and
 starts a system daemon, none of which belongs in a recipe a developer runs before
 pushing or in the hook that runs on every agent turn.
 
+Measured on `ubuntu-latest`: 1m05s for the job, 28 assertions, `Apply complete!
+Resources: 4 added` and `Destroy complete! Resources: 4 destroyed`. The domain
+defines and starts with `<domain type='qemu'>` on a runner where nothing has
+touched `/dev/kvm`.
+
 ## Which gates run, and which cannot
 
 `VCOWS_GATES` turns a named gate's skip into a failure. It is comma-separated

@@ -92,10 +92,11 @@ jobs:
   # /dev/kvm and the job is the same on a GitLab.com SaaS runner.
   smoke:
     runs-on: ubuntu-latest
-    # 30 rather than the 15 above, matching the image job: this one installs
-    # packages, starts a daemon and defines a domain. Sized against a wedge
-    # rather than a slow run, for the reason the check job's note gives -- a
-    # `tofu apply` stuck on a volume upload has no timeout of its own.
+    # Measured green: 1m05s, of which apt is about 24s and the whole
+    # apply-assert-destroy cycle is 10s. 30 rather than the 15 above, matching
+    # the image job, because the ceiling is sized against a wedge rather than a
+    # slow run -- a `tofu apply` stuck on a volume upload has no timeout of its
+    # own, for the reason the check job's note gives.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
