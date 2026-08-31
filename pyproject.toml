@@ -134,9 +134,11 @@ select = [
     "UP",       # pyupgrade
     "B",        # bugbear
     "SIM",      # simplify
-    # The 12 hits today are all reviewed and carry a `# noqa` naming the reason:
-    # six parse libvirt's own XMLDesc output, three are argv-list subprocess
-    # calls, three are internal-invariant asserts. The rule earns its place by
+    # The 10 hits in `orchestrator/` today are all reviewed and carry a `# noqa`
+    # naming the reason: six parse libvirt's own XMLDesc output, two are
+    # argv-list subprocess calls, two are internal-invariant asserts.
+    # `container/` carries four more (one S603, two S607, one S606), so the
+    # scope is what makes the figure reproducible. The rule earns its place by
     # catching the *next* one, not by re-litigating these.
     "S",        # flake8-bandit
     "RUF",
