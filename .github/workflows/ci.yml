@@ -84,3 +84,37 @@ jobs:
       - run: just ensure-mirror
       - run: just verify-provider
       - run: just test-tofu
+
+  # The end-to-end gate. `tofu` above reads the module through
+  # `mock_provider "libvirt" {}`; this one applies it to a libvirtd installed on
+  # the runner, and asserts against `virsh dumpxml` and `qemu-img info` rather
+  # than against the plan. The domain runs under TCG, so nothing here needs
+  # /dev/kvm and the job is the same on a GitLab.com SaaS runner.
+  smoke:
+    runs-on: ubuntu-latest
+    # Measured green: 1m05s, of which apt is about 24s and the whole
+    # apply-assert-destroy cycle is 10s. 30 rather than the 15 above, matching
+    # the image job, because the ceiling is sized against a wedge rather than a
+    # slow run -- a `tofu apply` stuck on a volume upload has no timeout of its
+    # own, for the reason the check job's note gives.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      # Keyed on main.tf and with no restore-keys, for the reason spelled out
+      # in the tofu job above.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/tofu-mirror
+          key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      # No `just dev-env`. scripts/smoke-libvirt.sh drives tofu and virsh and
+      # touches no Python, so the venv this job would build is one it never
+      # reads. os-deps.sh is still needed: it brings jq for `ensure-mirror` and
+      # xorriso for the seed ISO.
+      - run: just ensure-mirror
+      - run: just smoke-libvirt

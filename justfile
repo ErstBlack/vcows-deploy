@@ -89,6 +89,13 @@ verify-provider:
 test-tofu:
     VCOWS_GATES=tofu .venv/bin/python -m pytest -q -rs
 
+# Apply the module against a real libvirtd under TCG, assert against what
+# libvirtd created, and destroy it. Deliberately not in `check`: it installs
+# packages, writes /etc/libvirt and starts a system daemon. Needs the provider
+# mirror, so `just ensure-mirror` comes first.
+smoke-libvirt:
+    ./scripts/smoke-libvirt.sh
+
 # Build the container image.
 image:
     ./scripts/image-build.sh

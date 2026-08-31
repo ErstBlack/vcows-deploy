@@ -79,6 +79,40 @@ tofu:
     - just verify-provider
     - just test-tofu
 
+# The end-to-end gate. `tofu` above reads the module through a mocked provider;
+# this one applies it to a libvirtd installed on the runner and asserts against
+# `virsh dumpxml`. The domain runs under TCG, so no /dev/kvm is required and this
+# job is the same one .github/workflows/ci.yml runs -- which is the point, since
+# GitLab.com's shared runners have no /dev/kvm to offer.
+smoke:
+  stage: check
+  # Explicit rather than inherited, because this job's requirement is stricter
+  # than the other `linux` jobs': it starts a system daemon and writes
+  # /etc/libvirt, so a Docker-executor runner has to be privileged. That is a
+  # runner property no tag can express; see docs/ci.md.
+  tags: [linux]
+  timeout: 30m
+  cache:
+    - key:
+        prefix: tools
+        files: [scripts/install-tools.sh, Containerfile]
+      paths: [.tools/bin]
+    # Keyed on main.tf and not on docs/provider-<v>.lock.hcl, for the reason the
+    # tofu job above gives.
+    - key:
+        prefix: tofu-mirror
+        files: [orchestrator/backends/libvirt/tofu/main.tf]
+      paths: [.tools/tofu-mirror]
+  # Not *bootstrap: that anchor ends in `just dev-env`, and
+  # scripts/smoke-libvirt.sh drives tofu and virsh and touches no Python. The two
+  # bootstrap scripts stay -- os-deps.sh brings jq for `ensure-mirror` and
+  # xorriso for the seed ISO.
+  script:
+    - ./scripts/os-deps.sh
+    - ./scripts/install-tools.sh
+    - just ensure-mirror
+    - just smoke-libvirt
+
 image:
   stage: image
   tags: [podman]
