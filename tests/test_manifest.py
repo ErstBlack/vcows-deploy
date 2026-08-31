@@ -86,6 +86,28 @@ def test_the_remaining_arg_still_agrees_with_the_lock():
     assert declared.group(1) == "0.9.8"
 
 
+def test_the_containerfile_states_the_provider_version_once():
+    """What makes the docstring above true. The lock `COPY` used to spell the
+    version out, and `just verify-provider` reads neither that line nor the
+    header comment -- so a bump that satisfied all four of its checks could still
+    bake the previous lock, which `container/manifest.py` would then report as
+    the provider (#118). Interpolating the `COPY` source removed the record; this
+    stops it coming back."""
+    text = (REPO / "Containerfile").read_text()
+    declared = re.search(r"^ARG PROVIDER_VERSION=(\S+)$", text, re.M)
+    assert declared is not None
+    version = declared.group(1)
+
+    stated = [line for line in text.splitlines() if version in line]
+    assert stated == [f"ARG PROVIDER_VERSION={version}"], (
+        f"the Containerfile states {version} in more than one place: {stated}"
+    )
+    assert re.findall(r"provider-\d+\.\d+\.\d+\.lock\.hcl", text) == [], (
+        "the lock filename carries a literal version again; interpolate "
+        "${PROVIDER_VERSION} instead"
+    )
+
+
 @pytest.mark.parametrize(
     "text",
     [
