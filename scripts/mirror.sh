@@ -51,14 +51,10 @@ lock_matches() {
     fi
 }
 
-module_version() {
-    sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1
-}
-
 main() {
     have tofu || die "tofu not on PATH -- run scripts/install-tools.sh"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local version; version="$(module_version)"
+    local version; version="$(provider_version)"
 
     local mode="${1:-}"
     if [ "$mode" = "--ensure" ]; then

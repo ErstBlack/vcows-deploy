@@ -40,8 +40,7 @@ main() {
     local zip index_h1 index_zh zip_sha
 
     # 1. The module is the source of truth for which version is pinned.
-    mod_version="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1)"
-    [ -n "$mod_version" ] || die "no exact version pin in $MODULE/main.tf"
+    mod_version="$(provider_version)"
     log "provider version per main.tf: $mod_version"
 
     # 2. Containerfile.
