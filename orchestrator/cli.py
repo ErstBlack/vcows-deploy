@@ -120,7 +120,7 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     """
     path = (
         Path(override) if override else Path("runs") / cfg["deployment"] / _timestamp()
-    )
+    ).resolve()
     # `exist_ok` covers an existing *directory* and nothing else, so a `--run-dir`
     # naming a regular file reaches `main`'s catch-all as the raw `FileExistsError`
     # `UsageError` above exists to replace. Classified here, before the mkdir,
@@ -131,8 +131,13 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
             f"directory. Pass a --run-dir that does not exist yet, or one that "
             f"is an empty directory."
         )
-    path.mkdir(parents=True, exist_ok=True)
-    path = path.resolve()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise UsageError(
+            f"cannot create the run directory {path}: {exc.strerror}. Every run "
+            f"writes its own directory; check the mount and the UID it is owned by."
+        ) from exc
     if any(path.iterdir()):
         raise UsageError(
             f"{path} is not empty. Every run writes its own directory -- the "

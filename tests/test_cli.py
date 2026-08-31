@@ -511,6 +511,25 @@ def test_an_empty_run_dir_still_works(backend, config, tmp_path):
     assert (mount / "run.json").is_file()
 
 
+@pytest.mark.parametrize("argv", [["deploy"], ["destroy", "--yes"]])
+def test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence(
+    backend, config, tmp_path, capsys, argv
+):
+    """`UsageError:66-69` exists so a bad `--run-dir` is a sentence and not an
+    errno. The is-a-file and not-empty branches got that; the mkdir did not, and
+    its message named a relative path because `resolve()` ran after it."""
+    parent = tmp_path / "unwritable"
+    parent.mkdir(mode=0o555)
+    wanted = parent / "run"
+
+    assert cli.main([argv[0], config, "--run-dir", str(wanted), *argv[1:]]) == 1
+    assert backend.sessions == [], "the refusal must land before a connection"
+    err = capsys.readouterr().err
+    assert "PermissionError" not in err
+    assert "cannot create the run directory" in err
+    assert str(wanted) in err, "the absolute path the operator can act on"
+
+
 # -- destroy ----------------------------------------------------------------
 
 
