@@ -155,6 +155,10 @@ def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
     found: list[Existing] = []
     by_mac: dict[str, str] = {}
     problems: list[Problem] = []
+    # The twin of destroy._claimed_elsewhere. Deliberately not shared: that one
+    # skips its own targets before the read, and its warning names a different
+    # cost -- which this module's docstring requires it to. #42 measured the
+    # merge and rejected it; the nine identical lines are all boilerplate.
     for dom in conn.listAllDomains(0):
         name = "<unnamed>"
         try:

@@ -358,6 +358,9 @@ def _claimed_elsewhere(
         domains = conn.listAllDomains(0)
     except libvirt.libvirtError:
         return None
+    # The twin of preflight._domains. Deliberately not shared: the filter below
+    # runs before the read, and a shared iterator would have to move it after,
+    # warning about a domain this teardown is about to delete. #42.
     for dom in domains:
         name = "<unnamed>"
         try:
