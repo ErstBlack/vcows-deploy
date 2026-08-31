@@ -124,15 +124,29 @@ main() {
     fi
 
     # The other direction. One or two accepted ids disappearing is ordinary --
-    # a pin bump fixed them, and the baseline should be trimmed. *All* of them
+    # a pin bump fixed them, and the baseline should be trimmed. *Most* of them
     # disappearing at once is not a clean image; it is a scan that did not read
     # this image, and scan_floor's structural checks cannot catch it because the
     # report is well-formed and simply about something else.
+    #
+    # **A proportion, and the proportion is measured.** trivy emits one Results
+    # entry per analyser x target. This image has three, in two disjoint
+    # families: os-pkgs over the rocky layer, and lang-pkgs over the two Go
+    # binaries. Measured against the real report, rocky shares no id with either
+    # binary, so an analyser that stops running takes 45 or 56 of the 100 with
+    # it -- a large slice, and never the whole set. Equality needs *both*
+    # families to fail at once, and a report with no Results at all is
+    # scan_floor's job already, so the equality this used to test sat where
+    # nothing realistic lands. `* 3` first fires at 34 of 100: below the 45 an
+    # emptied gobinary analyser costs, and 33 clear of the 1 a real scan reports
+    # today. Halving was measured and rejected -- it first fires at 51, above
+    # the 45 it exists to catch. Multiplication rather than `accepted / 3` so
+    # the firing point does not depend on how integer division rounds.
     gone="$(jq -r '.gone[]' <<<"$delta")"
     accepted="$(jq '.accepted' <<<"$delta")"
     missing="$(jq '.gone | length' <<<"$delta")"
-    if [ "$accepted" -gt 0 ] && [ "$missing" -eq "$accepted" ]; then
-        die "none of the $accepted accepted findings are present -- the scan did not read this image"
+    if [ "$accepted" -gt 0 ] && [ $((missing * 3)) -gt "$accepted" ]; then
+        die "$missing of $accepted accepted findings are absent -- more than a third of the baseline vanished at once. That is a scan that did not read this image, not a clean one."
     fi
     if [ -n "$gone" ]; then
         log "baseline entries no longer found ($missing of $accepted; stale, or fixed by a pin bump):"
