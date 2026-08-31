@@ -50,7 +50,7 @@ Rootless podman. The image sets no `USER`: under rootless podman container root
 *is* the invoking user, which is what makes a bind-mounted run directory and a
 0600 SSH key work without a UID-mapping dance.
 
-**`--user` works, and it needs two things lined up, not one.** Measured with
+**`--user` works, and it needs three things lined up, not one.** Measured with
 `--user 4242`:
 
 * podman synthesises a passwd entry whose home is `/`, and `/` is not writable.
@@ -60,12 +60,28 @@ Rootless podman. The image sets no `USER`: under rootless podman container root
   `HOME` does not help. Give it a writable home (`--passwd-entry`) or mount your
   own config at the passwd home's `.ssh/config`.
 * the mounted 0600 key is owned by the mapped host UID, so uid 4242 cannot read
-  it: `Load key ...: Permission denied`. `:U` on that mount fixes it, at the
-  cost of chowning your host copy.
+  it: `Load key ...: Permission denied`.
+* the run directory mount is owned by that same UID and is `0755`, so uid 4242
+  cannot create `runs/<deployment>/<timestamp>` inside it. `deploy` and `destroy`
+  stop before connecting, with `vcows: cannot create the run directory
+  /runs/<deployment>/<timestamp>: Permission denied`, and write nothing.
+  `validate` and `preflight` create no run directory and are unaffected, so a
+  clean `preflight` says nothing about `deploy`.
 
-With both, `preflight` and `deploy` run clean. With neither, a run directory on
-a foreign-UID mount also stays `0755` and vcows tells you what that costs rather
-than failing — the seed ISOs in it carry `user_data` verbatim.
+The last two are one problem — a mount owned by the wrong UID — with two remedies
+that are **not** equivalent:
+
+* `--userns=keep-id:uid=4242,gid=0` maps your own UID to 4242 inside the
+  container, so both mounts already have the owner they need. Nothing on the host
+  is chowned, and the run directory comes back owned by you. It sets the
+  container UID itself, so `--user` becomes redundant; the writable home is still
+  needed. Measured with `--passwd-entry`: all four verbs behave.
+* `:U` on the key mount and on the run directory mount chowns those *host* paths
+  to the subuid backing 4242. It also works, and it charges both sides. Your key
+  copy stops being yours, and so does the output: `./runs/<deployment>` lands
+  `drwx------` owned by a subuid, so `ls`, `cat` and `rm -rf` all answer
+  `Permission denied`, and reading back the `run.json` an air-gapped site ships
+  home takes `podman unshare`.
 
 ## Using it
 
