@@ -83,6 +83,31 @@ that are **not** equivalent:
   `Permission denied`, and reading back the `run.json` an air-gapped site ships
   home takes `podman unshare`.
 
+**`--run-dir` on that same mount writes no record at all.** The third bullet
+above is the default path, where vcows creates a subdirectory inside the mount
+and cannot. `--run-dir /runs` names the mount itself, which already exists and is
+empty, so nothing stops it — only the `0700` is refused, and that is deliberately
+a warning. The run goes ahead and dies on the first thing it writes:
+
+```
+vcows: cannot make /runs 0700; it stays 0755. This run's seed ISOs carry
+       user_data verbatim, and anyone who can read that directory can read them.
+vcows: this run left no record -- /runs/run.json could not be written
+       (Permission denied). The failure below is reported on this stream only.
+error: PermissionError: [Errno 13] Permission denied: '/runs/run.json'
+```
+
+No `run.json` and no `manifest.json` are written. **`deploy` and `destroy` are
+not symmetric here.** Everything `deploy` puts in the run directory — the seed
+ISOs, the staged module, the tfvars — it writes before `tofu apply`, so it fails
+with nothing created on the hypervisor. `destroy` writes nothing until the
+teardown is over, so the VMs are gone, no record says they were, and the exit
+code is 1, which reads as a teardown that failed. An air-gapped site ships the
+run directory home as its whole account of what happened; this one has nothing to
+send.
+
+`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above.
+
 ## Using it
 
 ```bash
