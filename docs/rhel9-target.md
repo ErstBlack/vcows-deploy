@@ -46,8 +46,8 @@ and that is what made the varstore question unanswerable for as long as it was.
 
 ### C1 — `<os firmware='efi'>` beside a pinned loader (review 2.15)
 
-**Needs 9.0/9.1 EUS.** `main.tf:114-125` emits `firmware = "efi"` *and* a pinned
-`loader`/`loader_format`/`loader_readonly` together. On libvirt 12.0.0 the pin is
+**Needs 9.0/9.1 EUS.** `main.tf`'s `os` block emits `firmware = "efi"` *and* a
+pinned `loader`/`loader_format`/`loader_readonly` together. On libvirt 12.0.0 the pin is
 honoured exactly — measured 2026-08-29: `app02` came back carrying its configured
 `OVMF_CODE_4M.qcow2` and named template with `secure-boot` and `enrolled-keys`
 both `no`, while the autoselected `app01` got the secboot build with both `yes`.
@@ -70,9 +70,9 @@ whenever a loader is set, and 2.15 drops to a schema fix.
 ### C2 — the raw `.fd` varstore
 
 **Needs any current 9.x.** Rocky 9 and Rocky 10 `edk2-ovmf` ship raw `.fd`
-templates; this rig has only qcow2, so the `.fd` half of `main.tf:133` —
-`_VARS.${loader_format == "qcow2" ? "qcow2" : "fd"}` — was rendered against no
-real template until 2026-08-31.
+templates; this rig has only qcow2, so the `.fd` half of `main.tf`'s `nv_ram`
+suffix expression — `_VARS.${loader_format == "qcow2" ? "qcow2" : "fd"}` — was
+rendered against no real template until 2026-08-31.
 
 **Partly closed.** `scripts/smoke-libvirt.sh` now pins a raw `.fd` loader and
 template on every CI run and asserts the rendered `<nvram template='…_VARS.fd'>`
@@ -144,11 +144,11 @@ differs, the transport split may be narrower or wider than documented.
 **Needs any 9.x.** Each of these is one line in `main.tf` that has only ever been
 validated against QEMU 10.2.2:
 
-* `type_machine` passthrough (`:112`) — an alias like `q35` resolves to whatever
+* `type_machine` passthrough — an alias like `q35` resolves to whatever
   `pc-q35-*` the target has. Confirm it defines.
-* `discard = "unmap"` on the overlay driver (`:181`, added in S10).
-* `rngs = [{ model = "virtio", backend = { random = "/dev/urandom" } }]` (`:232`,
-  added in S10).
+* `discard = "unmap"` on the overlay driver (added in S10).
+* `rngs = [{ model = "virtio", backend = { random = "/dev/urandom" } }]` (added
+  in S10).
 
 ### C9 — the storage cache precondition, on a second host
 

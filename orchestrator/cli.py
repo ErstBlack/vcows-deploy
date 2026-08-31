@@ -567,8 +567,9 @@ def _destroy(
         for problem in advisory:
             print(f"  {problem}", file=sys.stderr)
         run.extra["problems"] = [str(p) for p in advisory]
-        # The same argument `tofu.py:77-84` makes for `Result.warnings`: the run
-        # directory is the copy that outlives the terminal. `findings.md:121`
+        # The same argument `Result.warnings` in `tofu.py` makes: the run
+        # directory is the copy that outlives the terminal. `findings.md`'s
+        # "reported as found and skipped, with their deployment names" rule
         # mandates the report, and the `skip` row below satisfies it -- but a
         # marked VM this teardown deliberately left alone appeared in no shipped
         # artifact at all. The deployment name goes with it: a bare list of names

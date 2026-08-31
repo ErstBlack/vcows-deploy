@@ -176,9 +176,10 @@ HCL
     # One VM, `firmware = "efi"` with a raw .fd loader and varstore template
     # pinned beside it -- the app02 shape from tests/golden/libvirt.tfvars.json
     # in RHEL's format rather than Fedora's. That is the branch #75 died on, and
-    # the branch the delivery target takes (variables.tf:60-66 -- "RHEL ships a
-    # raw .fd"). Before #75 it had never been applied against a real libvirtd
-    # anywhere: not here, not on the rig, not in the acceptance run.
+    # the branch the delivery target takes (variables.tf's loader comment --
+    # "RHEL ships a raw .fd"). Before #75 it had never been applied against a
+    # real libvirtd anywhere: not here, not on the rig, not in the acceptance
+    # run.
     #
     # **This replaced the autoselect shape** -- loader, loader_format and
     # nvram_template all null, app01's -- and the swap gives up real coverage,
@@ -509,7 +510,7 @@ main() {
     # Assigned rather than inline: inline, an `id` that fails puts an empty
     # string in a numeric test, the test is false, the re-exec is skipped, and
     # every virsh below fails against root's socket saying nothing about why.
-    # As an assignment the failure reaches lib.sh:16's `set -e`. SC2312.
+    # As an assignment the failure reaches lib.sh's `set -euo pipefail`. SC2312.
     uid="$(id -u)"
     if [ "$uid" -ne 0 ]; then
         have sudo || die "this gate needs root or sudo: it starts libvirtd and writes /etc/libvirt"

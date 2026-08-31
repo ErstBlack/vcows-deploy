@@ -473,8 +473,8 @@ def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
     new disks unlinked, reported as ``destroyed``, with no problem recorded.
 
     A warning rather than an error: this must not stop the teardown, and
-    ``preflight.py:23-24`` requires a skip to name the object and what the skip
-    cost. This is the same obligation for a delete taken on less.
+    ``preflight``'s module docstring requires a skip to name the object and what
+    the skip cost. This is the same obligation for a delete taken on less.
     """
     out.problems.append(
         Problem.warning(

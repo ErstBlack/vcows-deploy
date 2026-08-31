@@ -63,10 +63,11 @@ main() {
     # verdict to the bytes the gate accepted, so a stamp left by an earlier pass
     # cannot vouch for an image.tar written since -- by a second scan that died
     # after rewriting it, or by a hand copy. sha256sum over 444 MB is 2.0s
-    # against gzip -9's 86s at :114, and it is deliberately not folded into the
-    # :119 that computes the same digest for the delivery: one is an artifact a
-    # site checks, one is an internal verdict, and coupling them would let a
-    # change to the stamp reshape a file README.md describes to sites.
+    # against the delivery `gzip -9`'s 86s, and it is deliberately not folded
+    # into the `sha256sum image.tar` that writes image.tar.sha256 for the
+    # delivery: one is an artifact a site checks, one is an internal verdict,
+    # and coupling them would let a change to the stamp reshape a file
+    # README.md describes to sites.
     #
     # Fatal, unlike the revision warning below, because the two answer questions
     # of different shapes. "Is this archive the current tree?" has a legitimate

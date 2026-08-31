@@ -73,6 +73,6 @@ same commit.
 The x/crypto fix that would clear nine HIGH findings exists only on unreleased
 main -- 0.9.8 is the latest tag. There is no version to bump to that improves the
 scan. The baseline accepts those findings on reachability instead
-(`render.py:61` uses `qemu+sshcmd`, whose dialer execs OpenSSH and never enters
-`x/crypto/ssh`). Check whether that is still true before assuming a bump is
-worth doing: the monthly rebuild is when to ask.
+(`render.py`'s `connection_uri(target, "sshcmd")` builds a URI whose dialer
+execs OpenSSH and never enters `x/crypto/ssh`). Check whether that is still true
+before assuming a bump is worth doing: the monthly rebuild is when to ask.

@@ -36,9 +36,10 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   // The domain name above is the one destroy does *not* use -- discovery is by
   // marker and UUID. These two are: `_deletable` matches every candidate disk
   // against `{overlay_name(marker.name), seed_name(marker.name)}` before it will
-  // unlink anything (destroy.py:440-445). A module naming the overlay `app01`
-  // rather than `app01.qcow2` deploys clean and then makes every teardown refuse
-  // every disk, with nothing left but hand-deleting on the hypervisor.
+  // unlink anything (destroy.py's `owned` set). A module naming the overlay
+  // `app01` rather than `app01.qcow2` deploys clean and then makes every
+  // teardown refuse every disk, with nothing left but hand-deleting on the
+  // hypervisor.
   assert {
     condition = alltrue([
       for k, v in var.vms :
@@ -71,8 +72,9 @@ run "the_module_renders_what_the_acceptance_run_settled" {
   // Its own block rather than a clause in the sizing `alltrue` above, whose
   // message is about wrong numbers: `type = "qemu"` is TCG, so every VM
   // defines, boots, completes cloud-init and the deploy reports success --
-  // unaccelerated, with nothing anywhere saying so. main.tf:88 is the only
-  // place the value is decided; no config field, no output, no XML read.
+  // unaccelerated, with nothing anywhere saying so. `type = "kvm"` on
+  // `libvirt_domain.vm` is the only place the value is decided; no config
+  // field, no output, no XML read.
   // scripts/smoke-libvirt.sh cannot carry this: that job runs deliberately
   // without /dev/kvm and asserts a `type = "qemu"` it overrode itself.
   assert {
@@ -325,14 +327,15 @@ run "the_module_renders_what_the_acceptance_run_settled" {
 // block above is fed exactly what `_deploy` writes. That is its authority, and
 // it is also its limit: the fixture sets `base_volume.create = true` and gives
 // every NIC `network` with `bridge = null`, so three expressions in shipped
-// module code are never evaluated by it -- main.tf:25's zero arm, main.tf:34's
-// fallback to var.base_volume.path, and main.tf:209's non-null bridge arm.
+// module code are never evaluated by it -- `libvirt_volume.base`'s `count` zero
+// arm, `local.base_path`'s fallback to var.base_volume.path, and the non-null
+// arm of the `source.bridge` ternary in the domain's `interfaces` block.
 //
 // The bridge arm is not merely uncovered, it is the shipped design.
 // findings.md settles the network as "bridged, static IPs from config", and
-// config.py:16 accepts exactly one of bridge/network while render.py:111-112
-// emits both with the unused one null. The tested path is the one a real RHEL 9
-// site does not take.
+// config.py's module docstring names the "exactly one of bridge/network" check
+// while render.py's `_nic` emits both with the unused one null. The tested
+// path is the one a real RHEL 9 site does not take.
 //
 // **These two blocks are a weaker kind of test than the one above, and the
 // difference is worth naming.** A run-level `variables` block overrides a
@@ -361,7 +364,7 @@ run "a_prebuilt_base_volume_is_used_in_place" {
       for k, v in var.vms :
       libvirt_volume.overlay[k].backing_store.path == var.base_volume.path
     ])
-    error_message = "the overlay does not back onto the pool's existing image when create is false: main.tf:34's fallback is not reached"
+    error_message = "the overlay does not back onto the pool's existing image when create is false: local.base_path's fallback is not reached"
   }
 }
 
@@ -412,8 +415,9 @@ run "a_bios_domain_is_given_no_firmware_and_no_varstore" {
 
   // The third branch the golden tfvars does not take, and the one 454ee7c's
   // header above did not name. Both fixture VMs carry `firmware = "efi"`, so
-  // main.tf:116's null arm is never evaluated by them -- yet `bios` is a value
-  // an operator can write today (schema.py:129 is {"enum": ["efi", "bios"]}).
+  // the null arm of main.tf's `firmware` ternary is never evaluated by them --
+  // yet `bios` is a value an operator can write today (schema.py's `firmware`
+  // is {"enum": ["efi", "bios"]}).
   // Same caveat as the two blocks above: `variables` overrides wholesale rather
   // than merging, so this VM is hand-written and nothing asserts it still
   // resembles what render.py emits.
@@ -453,7 +457,7 @@ run "a_bios_domain_is_given_no_firmware_and_no_varstore" {
 
   assert {
     condition     = libvirt_domain.vm["app01"].os.firmware == null
-    error_message = "a bios domain still asks libvirt for efi: main.tf:116's null arm is not reached"
+    error_message = "a bios domain still asks libvirt for efi: the null arm of main.tf's `firmware` ternary is not reached"
   }
   assert {
     condition     = libvirt_domain.vm["app01"].os.nv_ram == null
@@ -465,9 +469,10 @@ run "a_raw_loader_declares_no_format_libvirt_would_drop" {
   command = apply
 
   // The fourth branch the golden tfvars does not take. app02 pins `qcow2`, so
-  // the raw arm of main.tf:142's ternary and the `.fd` arm of main.tf:133's
-  // suffix are evaluated by nothing else in this suite -- and raw is the RHEL
-  // shape (variables.tf:60-66), the one the tool is being built for. Same caveat
+  // the raw arm of main.tf's `nv_ram.format` ternary and the `.fd` arm of its
+  // `nv_ram` suffix are evaluated by nothing else in this suite -- and raw is
+  // the RHEL shape (variables.tf's loader comment), the one the tool is being
+  // built for. Same caveat
   // as the three blocks above: `variables` overrides wholesale rather than
   // merging, so this VM is hand-written and nothing asserts it still resembles
   // what render.py emits.
@@ -515,7 +520,8 @@ run "a_raw_loader_declares_no_format_libvirt_would_drop" {
     condition     = libvirt_domain.vm["app03"].os.nv_ram.template_format == null
     error_message = "the module declares a varstore template_format: libvirt never echoes one back, for any value, so the apply dies after the volumes exist (#75)"
   }
-  // main.tf:133's `.fd` arm, and the offline half of docs/rhel9-target.md's C2.
+  // The `.fd` arm of main.tf's `nv_ram` suffix, and the offline half of
+  // docs/rhel9-target.md's C2.
   // A hardcoded .fd was the old bug here; a hardcoded .qcow2 would be the same
   // bug inverted, and only a raw fixture can tell the two apart.
   assert {

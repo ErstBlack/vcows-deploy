@@ -77,8 +77,8 @@ def _sources() -> list[Path]:
     return sorted(p for p in TESTS.glob("*.py") if p.name not in IMPLEMENTATION)
 
 
-#: `skipif` is here because it is the exact idiom `gate()` itself returns
-#: (conftest.py:59), so it is the form a developer copying house style writes --
+#: `skipif` is here because it is the exact idiom `gate()` in `conftest.py`
+#: itself returns, so it is the form a developer copying house style writes --
 #: and one written by hand goes straight past the mechanism. `xfail` is here
 #: because it is worse than a skip: the test runs, fails, and reports green.
 #: Trailing attribute paths, not full dotted names: `import pytest as _pt` and
@@ -222,7 +222,8 @@ def test_a_demanded_require_that_is_missing_fails(monkeypatch):
     `pytest.raises(pytest.fail.Exception)` propagates and skips the *enclosing*
     test, so with `require()`'s demanded branch deleted this converted itself
     from a failure into a skip and the run stayed exit 0. That is the shape
-    conftest.py:7 exists to prevent, in the file that enforces it."""
+    conftest.py's module docstring exists to prevent, in the file that enforces
+    it."""
     monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
     try:
         with pytest.raises(pytest.fail.Exception, match=REASON):
