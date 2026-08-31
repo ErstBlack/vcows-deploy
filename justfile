@@ -14,12 +14,33 @@ default:
 
 # --system-site-packages is not optional: the libvirt binding is an RPM, PyPI
 # ships sdist only, and without the flag `import libvirt` fails everywhere.
-# `--group dev` rather than `.[dev]`, which is not an extra this project has.
+#
+# The export is how uv.lock reaches an install. `uv pip install -e . --group dev`
+# resolved against the `>=` bounds in pyproject.toml and read the lock never, so
+# a ruff or pytest release could turn a green PR red for reasons unrelated to the
+# PR. `uv sync` still cannot express the two flags above -- that argument is
+# unchanged -- but exporting the lock into this venv needs neither of them.
+#
+# `--locked` rather than `--frozen`: it also asserts uv.lock still matches
+# pyproject.toml, so editing a bound without re-locking stops here, with uv
+# naming the fix, instead of installing a set the lock does not describe.
+#
+# **A file rather than a pipe, and that is the whole reason for the third line.**
+# `uv export --locked ... | uv pip install -r -` takes the pipeline's exit status
+# from the install, so a refused `--locked` made this recipe print a warning that
+# no dependencies were found on stdin and **exit 0 having installed nothing** --
+# measured. just runs each line in its own shell and stops on the first failure,
+# so three lines check what one pipe did not. .venv/ is disposable and recreated
+# by the first line, so the export needs no cleanup and no temp directory.
+#
+# The `dev` group is uv's default here, verified byte-identical with an explicit
+# `--group dev`, so no group argument is carried.
 
-# Create .venv with the system libvirt binding visible, and install dev tools.
+# Create .venv with the system libvirt binding visible, and install from uv.lock.
 dev-env:
     uv venv --python /usr/bin/python3 --system-site-packages
-    uv pip install -e . --group dev
+    uv export --locked --format requirements-txt -o .venv/requirements.txt
+    uv pip install -r .venv/requirements.txt
 
 # Install the OS packages the suite needs (python3-libvirt, xorriso).
 os-deps:
