@@ -58,17 +58,27 @@ ok = re.compile(r"just [a-z][a-z-]*|\./scripts/(os-deps|install-tools)\.sh")
 uses_ok = re.compile(r"actions/[a-z-]+@[0-9a-f]{40}")
 bad = []
 
+def lines(value):
+    """Every command string under one `script:`, however deeply YAML nests it.
+
+    A sequence alias splices a *list* into the list: `- *bootstrap` under
+    `script:` parses to `[[...three commands...], "just check"]`, not to four
+    strings. Matching only `isinstance(item, str)` therefore drops the whole
+    anchor with no diagnostic, which is the shape all four GitLab jobs use.
+    """
+    if isinstance(value, str):
+        yield from value.strip().splitlines()
+    elif isinstance(value, list):
+        for item in value:
+            yield from lines(item)
+
+
 def commands(node):
     """Every shell command in a workflow, from either platform's shape."""
     if isinstance(node, dict):
         for key, value in node.items():
             if key in ("run", "script", "before_script", "after_script"):
-                if isinstance(value, str):
-                    yield from value.strip().splitlines()
-                elif isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, str):
-                            yield from item.strip().splitlines()
+                yield from lines(value)
             else:
                 yield from commands(value)
     elif isinstance(node, list):

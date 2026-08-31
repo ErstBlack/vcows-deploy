@@ -43,6 +43,8 @@ jobs:
     # work minus `just test-image`, so it gets the image job's ceiling.
     timeout-minutes: 30
     steps:
+      # Full history, for the reason spelled out beside the same setting in
+      # image.yml: nothing in the build path needs it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0

@@ -57,8 +57,10 @@ jobs:
     # why every job carries one.
     timeout-minutes: 30
     steps:
-      # Full history: image-build.sh computes the -dirty suffix from
-      # `git status --porcelain` over the shipped paths.
+      # Not needed by anything measured: source_revision (lib.sh:129) calls only
+      # `rev-parse HEAD` and `status --porcelain`, and a --depth 1 clone gives
+      # both. Kept because full history costs ~100ms on this repo and a shallow
+      # default is the harder thing to notice going wrong.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
