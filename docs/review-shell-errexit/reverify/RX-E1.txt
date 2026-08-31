@@ -1,0 +1,275 @@
+# RX-E1.txt — issue #76, install-tools.sh installs a mismatched binary
+#
+# Reverification of the 2026-08-31 review's finding against aed962d, on branch
+# lane/shell-errexit. Captured output, not prose: each block is the command, the
+# real stdout+stderr, then its exit status.
+#
+# Worktree : /home/ssullivan/vcows-wt/shell-errexit  (aed962d)
+# Scratch  : /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1
+# Date     : 2026-08-31T06:08:28Z
+#
+# No file in the worktree was modified. Every mutation below is in a fresh
+# `git clone` of the worktree under the scratch dir.
+==============================================================================
+PREAMBLE — where this ran, and the .tools/bin safety check
+==============================================================================
+
+$ git -C /home/ssullivan/vcows-wt/shell-errexit rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+
+$ ls -la /home/ssullivan/vcows-wt/shell-errexit/.tools
+total 8
+drwxr-xr-x.  3 ssullivan ssullivan   50 Aug 31 01:31 .
+drwxr-xr-x. 16 ssullivan ssullivan 4096 Aug 31 01:34 ..
+lrwxrwxrwx.  1 ssullivan ssullivan   39 Aug 31 01:31 bin -> /home/ssullivan/vcows-deploy/.tools/bin
+drwxr-xr-x.  3 ssullivan ssullivan   35 Aug 29 19:56 tofu-mirror
+-rw-r--r--.  1 ssullivan ssullivan  247 Aug 28 22:23 tofurc
+
+# ^ .tools/bin is a SYMLINK into the live repo. Every scratch tree below is a
+# fresh `git clone` of the worktree, which does not carry .tools at all, plus a
+# real (initially empty) .tools/bin created by hand. Nothing was ever written
+# through the symlink.
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head/.tools
+total 4
+drwxr-xr-x.  4 ssullivan ssullivan   36 Aug 31 01:55 .
+drwxr-xr-x. 13 ssullivan ssullivan 4096 Aug 31 01:56 ..
+drwxr-xr-x.  2 ssullivan ssullivan    6 Aug 31 01:55 bin
+drwxr-xr-x.  2 ssullivan ssullivan    6 Aug 31 01:55 tofu-mirror
+
+$ ls -la /home/ssullivan/vcows-deploy/.tools/bin   # the live one, after everything
+total 441924
+drwxr-xr-x. 2 ssullivan ssullivan        61 Aug 31 01:02 .
+drwxr-xr-x. 4 ssullivan ssullivan        50 Aug 29 22:27 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 141178250 Aug 29 22:47 cosign
+-rwxr-xr-x. 1 ssullivan ssullivan  55661096 Aug 29 19:48 hadolint
+-rwxr-xr-x. 1 ssullivan ssullivan  87220386 Aug 27 12:25 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 168456354 Aug 14 07:03 trivy
+
+$ sha256sum /home/ssullivan/vcows-deploy/.tools/bin/*
+4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  /home/ssullivan/vcows-deploy/.tools/bin/cosign
+c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /home/ssullivan/vcows-deploy/.tools/bin/hadolint
+abca2def61de9952fa06d3977bb1e064818facb9badfce502b450d3d6846a91f  /home/ssullivan/vcows-deploy/.tools/bin/syft
+d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791  /home/ssullivan/vcows-deploy/.tools/bin/trivy
+
+==============================================================================
+0 — ENVIRONMENT and CITATIONS at aed962d
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && git diff --stat 672a500..HEAD -- scripts/install-tools.sh; echo '(empty = install-tools.sh unchanged since the review pin)'
+(empty = install-tools.sh unchanged since the review pin)
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '19,20p;40p;58,60p;63,69p;115p;140,151p;157p' scripts/install-tools.sh
+# Containerfile without adding a digest below is a hard failure, which is the
+# intended way to find out.
+        *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
+# Verified download into a scratch dir. The digest check is `sha256sum -c -`
+# rather than a string compare so a truncated download fails here instead of
+# unpacking into something surprising.
+    want="$(digest "${tool}:${version}")"
+    src="$(url "$tool" "$version")"
+    [ -n "$src" ] || die "$tool: no download URL -- add a case arm to url()"
+    file="$dest/$(basename "$src")"
+    curl -fsSL --retry 3 -o "$file" "$src"
+    echo "${want}  ${file}" | sha256sum -c - >/dev/null
+    printf '%s\n' "$file"
+    file="$(fetch "$tool" "$version" "$tmp")"
+expose_on_path() {
+    local dir=/usr/local/bin sudo="" tool
+    [ -w "$dir" ] || sudo=sudo
+    for tool in "$TOOLS_BIN"/*; do
+        [ -x "$tool" ] || continue
+        $sudo ln -sf "$tool" "$dir/$(basename "$tool")" 2>/dev/null || {
+            log "  note: could not link $(basename "$tool") into $dir;"
+            log "        add $TOOLS_BIN to PATH yourself"
+            return 0
+        }
+    done
+}
+    tofu_version="$(containerfile_arg TOFU_VERSION)"
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '55,67p' scripts/lib.sh
+need() {
+    local tool
+    for tool in "$@"; do
+        have "$tool" && continue
+        case "$tool" in
+            jq|curl|unzip|git|xorriso|shellcheck)
+                die "$tool not on PATH -- run scripts/os-deps.sh" ;;
+            uv|just|tofu|hadolint|trivy|syft)
+                die "$tool not on PATH -- run scripts/install-tools.sh" ;;
+            *)  die "$tool not on PATH" ;;
+        esac
+    done
+}
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -rn 'inherit_errexit' scripts/
+EXIT=1
+
+$ sha256sum /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/hadolint-linux-x86_64 /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/tofu_1.12.6_linux_amd64.zip
+f26d56084497e876c92dc0e1ca20aaa48ca5e8390d87be521cbc9bb2776c0858  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/hadolint-linux-x86_64
+d1aed8a6775d56c3805af72f91b3d6be5873dadec09a29b544b8f816be7e1e8a  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/tofu_1.12.6_linux_amd64.zip
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -n 'hadolint:2.15.1\|tofu:1.12.6' scripts/install-tools.sh
+36:        hadolint:2.15.1)  echo c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 ;;
+39:        tofu:1.12.6)      echo 5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8 ;;
+EXIT=0
+
+==============================================================================
+HARNESS — the whole diff against the real install-tools.sh
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && diff scripts/install-tools.sh scripts/_it.sh
+48c48
+<         hadolint)   echo "https://github.com/hadolint/hadolint/releases/download/v${2}/hadolint-linux-x86_64" ;;
+---
+>         hadolint)   echo "file:///home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/hadolint-linux-x86_64" ;;
+54c54
+<         tofu)       echo "https://github.com/opentofu/opentofu/releases/download/v${2}/tofu_${2}_linux_amd64.zip" ;;
+---
+>         tofu)       echo "file:///home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/serve/tofu_1.12.6_linux_amd64.zip" ;;
+169d168
+< main "$@"
+EXIT=1
+
+==============================================================================
+LENS 1 — mismatched bytes, at aed962d, no inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && bash drive.sh
+  hadolint 2.15.1: downloading
+sha256sum: WARNING: 1 computed checksum did NOT match
+install_one hadolint rc=0
+  tofu 1.12.6: downloading
+sha256sum: WARNING: 1 computed checksum did NOT match
+install_one tofu rc=0
+--- .tools/bin ---
+total 8
+drwxr-xr-x. 2 ssullivan ssullivan 34 Aug 31 01:59 .
+drwxr-xr-x. 4 ssullivan ssullivan 36 Aug 31 01:55 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 44 Aug 31 01:59 hadolint
+-rwxr-xr-x. 1 ssullivan ssullivan 40 Jan  1  1980 tofu
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && sha256sum .tools/bin/hadolint .tools/bin/tofu
+f26d56084497e876c92dc0e1ca20aaa48ca5e8390d87be521cbc9bb2776c0858  .tools/bin/hadolint
+2fac844f17d8e5bab9b61cfbb56133796075fd9ceef480b0aba47cdde1e117bc  .tools/bin/tofu
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && ./.tools/bin/hadolint; ./.tools/bin/tofu
+MALICIOUS-HADOLINT
+MALICIOUS-TOFU
+EXIT=0
+
+# ^ compare against the pins: hadolint c7187db9..., tofu-zip 5dc43da4...
+
+==============================================================================
+LENS 1b — fetch() alone: mismatched arm and unpinned arm
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && bash drive2.sh
+sha256sum: WARNING: 1 computed checksum did NOT match
+fetch rc=0 file=[/tmp/tmp.wYAjlUQOsa/hadolint-linux-x86_64]
+error: no pinned digest for tofu:9.9.9 -- add it from the project's published checksums file
+sha256sum: 'standard input': no properly formatted checksum lines found
+unpinned fetch rc=0 file=[/tmp/tmp.wYAjlUQOsa/tofu_1.12.6_linux_amd64.zip]
+reached end of script
+EXIT=0
+
+==============================================================================
+THE #76 SUBSUMPTION MEASUREMENT — identical tree, plus 'shopt -s inherit_errexit' in lib.sh
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && sed -i 's/^set -euo pipefail$/set -euo pipefail\nshopt -s inherit_errexit/' scripts/lib.sh && sed -n '16,18p' scripts/lib.sh
+set -euo pipefail
+shopt -s inherit_errexit
+IFS=$'\n\t'
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && rm -rf .tools/bin && mkdir -p .tools/bin && bash drive.sh
+  hadolint 2.15.1: downloading
+sha256sum: WARNING: 1 computed checksum did NOT match
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && ls -la .tools/bin
+total 0
+drwxr-xr-x. 2 ssullivan ssullivan  6 Aug 31 01:59 .
+drwxr-xr-x. 4 ssullivan ssullivan 36 Aug 31 01:59 ..
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1 && bash drive2.sh
+sha256sum: WARNING: 1 computed checksum did NOT match
+EXIT=1
+
+==============================================================================
+AND THE REAL SCRIPT, END TO END, WITH inherit_errexit — install-tools.sh unmodified except url()
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1full && FORCE=1 bash -c 'source scripts/lib.sh; :' && echo sourced-ok
+sourced-ok
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1full && bash one.sh
+  hadolint 2.15.1: downloading
+sha256sum: WARNING: 1 computed checksum did NOT match
+EXIT=1
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1full && ls -la .tools/bin
+total 0
+drwxr-xr-x. 2 ssullivan ssullivan  6 Aug 31 01:55 .
+drwxr-xr-x. 4 ssullivan ssullivan 36 Aug 31 01:55 ..
+EXIT=0
+
+==============================================================================
+CONTROL — same end-to-end run WITHOUT inherit_errexit
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1ctl && bash one.sh
+  hadolint 2.15.1: downloading
+sha256sum: WARNING: 1 computed checksum did NOT match
+REACHED THE LINE AFTER install_one
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/c/e1ctl && ls -la .tools/bin && ./.tools/bin/hadolint
+total 4
+drwxr-xr-x. 2 ssullivan ssullivan 22 Aug 31 01:59 .
+drwxr-xr-x. 4 ssullivan ssullivan 36 Aug 31 01:55 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 44 Aug 31 01:59 hadolint
+MALICIOUS-HADOLINT
+EXIT=0
+
+==============================================================================
+REACHABILITY at aed962d — who calls install-tools.sh
+==============================================================================
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -rn './scripts/install-tools.sh' justfile .github/workflows/ .gitlab-ci.yml README.md
+justfile:51:    ./scripts/install-tools.sh
+.github/workflows/ci.yml:50:      - run: ./scripts/install-tools.sh
+.github/workflows/ci.yml:79:      - run: ./scripts/install-tools.sh
+.github/workflows/ci.yml:114:      - run: ./scripts/install-tools.sh
+.github/workflows/image.yml:70:      - run: ./scripts/install-tools.sh
+.github/workflows/scheduled.yml:62:      - run: ./scripts/install-tools.sh
+.gitlab-ci.yml:38:  - ./scripts/install-tools.sh
+.gitlab-ci.yml:112:    - ./scripts/install-tools.sh
+README.md:306:./scripts/install-tools.sh  # pinned uv, tofu, just, hadolint, trivy, syft
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && grep -rn 'install-tools\|install_tools' tests/
+tests/conftest.py:84:    "run `just mirror` to build one, or `scripts/install-tools.sh` first "
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L1/repo-head && sed -n '6,10p' .github/workflows/ci.yml
+# The image job lives in image.yml because it needs a path filter, which GitHub
+# expresses per workflow rather than per job. No third-party actions: the pinned
+# tool downloads in scripts/install-tools.sh verify their own digests, which is
+# the standard the Containerfile already holds itself to.
+name: ci
+EXIT=0
