@@ -1,0 +1,380 @@
+RX-E6 reverification transcript -- issue #79, scripts/bundle.sh:50-52
+captured 2026-08-31T06:10:49Z on Linux 6.12.0-211.49.1.el10_2.x86_64
+worktree under reverification: /home/ssullivan/vcows-wt/scan-bundle @ aed962d
+
+TWO scratch repos, both running scripts/ byte-identical to aed962d (proved by diff -r below):
+  e6a  detached at aed962d  -- the tree is at HEAD; bundle.sh:62-65's revision warning FIRES
+  e6b  detached at bbd96ba  -- the tree matches the archive's own recorded revision; the warning is SILENT
+
+CORRECTION to the brief this reverification was given: the archive in
+/home/ssullivan/vcows-deploy/.cache/scan/ does NOT carry revision 672a500.
+Its org.opencontainers.image.revision label is bbd96bab86fdf4badeb6072c43218b953f56fe31,
+created 2026-08-30T23:40:29Z, a commit on branch issues-32-28-44 that is not an ancestor of 672a500.
+Eight image-shipped files differ between bbd96ba and aed962d (listed at the end of this file).
+That does not affect what is reproduced here -- bundle.sh has no scan-verdict input regardless of
+which commit the archive was built from -- but it is why e6b exists.
+
+fakes:   podman / trivy / syft in <scratch>/.tools/bin, a freshly created real directory in each repo.
+         The worktree's own .tools/bin is a symlink to /home/ssullivan/vcows-deploy/.tools/bin and
+         was never written to; the four real binaries there are untouched.
+         fake podman save -> cp of the real 444 MB docker-archive
+         fake syft       -> cp of the real 7.0 MB SBOM
+         fake trivy      -> the real 2.4 MB report with ONE finding injected, CVE-2099-99999
+not run: scripts/image-scan.sh --write-baseline, just image, just scan, just smoke-libvirt
+
+===================================================================================
+############ scratch repo e6a ############
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+EXIT=0
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a status --porcelain
+
+EXIT=0
+
+$ diff -r /home/ssullivan/vcows-wt/scan-bundle/scripts /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/scripts   # code under test must be aed962d's
+
+EXIT=0
+
+$ diff /home/ssullivan/vcows-wt/scan-bundle/docs/cve-baseline.json /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/docs/cve-baseline.json
+
+EXIT=0
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.tools/bin   # a freshly created real directory, never the worktree's symlink
+total 12
+drwxr-xr-x. 2 ssullivan ssullivan  45 Aug 31 02:01 .
+drwxr-xr-x. 3 ssullivan ssullivan  17 Aug 31 01:57 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 324 Aug 31 02:01 podman
+-rwxr-xr-x. 1 ssullivan ssullivan 247 Aug 31 02:01 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 252 Aug 31 02:01 trivy
+EXIT=0
+
+$ rm -rf /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache
+
+EXIT=0
+
+--- step 1 of the documented procedure, README.md:261-264 ---
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a && ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/scan/sbom.spdx.json
+findings not in docs/cve-baseline.json:
+  CVE-2099-99999
+error: 1 new finding(s)
+EXIT=1
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/scan
+total 443408
+drwxr-xr-x. 2 ssullivan ssullivan        63 Aug 31 02:05 .
+drwxr-xr-x. 3 ssullivan ssullivan        18 Aug 31 02:05 ..
+-rw-r--r--. 1 ssullivan ssullivan 444655616 Aug 31 02:05 image.tar
+-rw-r--r--. 1 ssullivan ssullivan   7024523 Aug 31 02:05 sbom.spdx.json
+-rw-r--r--. 1 ssullivan ssullivan   2363573 Aug 31 02:05 trivy.json
+EXIT=0
+
+$ ls -A /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/scan   # every file the failed scan left behind
+image.tar
+sbom.spdx.json
+trivy.json
+EXIT=0
+
+$ cmp /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/scan/image.tar /home/ssullivan/vcows-deploy/.cache/scan/image.tar
+
+EXIT=0
+
+--- step 2, run afterwards exactly as README.md:261-264 documents ---
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a && ./scripts/bundle.sh
+warning: the archive was built at bbd96bab86fdf4badeb6072c43218b953f56fe31 but the tree is at aed962d48ee85641ef9580515b698c50881a271d
+         run 'just image && just scan' to bundle the current tree
+compressing image.tar -> vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+
+bundle  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery
+  vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz  (144M)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0   (wall 86s)
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery
+total 156464
+drwxr-xr-x. 2 ssullivan ssullivan       164 Aug 31 02:06 .
+drwxr-xr-x. 4 ssullivan ssullivan        34 Aug 31 02:05 ..
+-rw-r--r--. 1 ssullivan ssullivan        76 Aug 31 02:06 image.tar.sha256
+-rw-r--r--. 1 ssullivan ssullivan   7024523 Aug 31 02:06 sbom.spdx.json
+-rw-r--r--. 1 ssullivan ssullivan       376 Aug 31 02:06 SHA256SUMS
+-rw-r--r--. 1 ssullivan ssullivan   2363573 Aug 31 02:06 trivy.json
+-rw-r--r--. 1 ssullivan ssullivan 150814968 Aug 31 02:06 vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+EXIT=0
+
+$ du -sb /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery
+160203516	/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery && sha256sum -c SHA256SUMS
+vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz: OK
+sbom.spdx.json: OK
+trivy.json: OK
+image.tar.sha256: OK
+EXIT=0
+
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache/delivery/SHA256SUMS
+d6250b3f32c6f7b32b31572b7df2b0d3b834e819fb3424c29179b04d966ee7bc  vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+bdf2ef9a71864150119cd399aad13df70e0911f13d458626f68f1a90bc753b54  sbom.spdx.json
+a23c734e89ed9b64f7174f68ec020aa97b3506a5a1a4e7a126485e7689c8a1e7  trivy.json
+0363778822412282877e11f3ac0eb1a73c00256ee70e59206f6b9297ee46ed58  image.tar.sha256
+EXIT=0
+
+$ jq -c '[.Results[]?.Vulnerabilities[]?.VulnerabilityID]|unique|map(select(startswith("CVE-2099")))' <delivery>/trivy.json
+["CVE-2099-99999"]
+EXIT=0
+
+$ tar -xOf image.tar "$(… .[0].Config)" | jq -c '.config.Labels|{version,revision}'
+{"version":"0.1.0.0","revision":"bbd96bab86fdf4badeb6072c43218b953f56fe31","created":"2026-08-30T23:40:29Z"}
+EXIT=0
+
+$ rm -rf /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6a/.cache   # reclaim ~600 MB
+
+EXIT=0
+
+===================================================================================
+############ scratch repo e6b ############
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b rev-parse HEAD
+bbd96bab86fdf4badeb6072c43218b953f56fe31
+EXIT=0
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b status --porcelain
+ M scripts/bundle.sh
+ M scripts/image-build.sh
+ M scripts/image-scan.sh
+ M scripts/install-tools.sh
+ M scripts/lib.sh
+ M scripts/lint.sh
+ M scripts/mirror.sh
+ M scripts/os-deps.sh
+ M scripts/verify-provider.sh
+?? scripts/smoke-libvirt.sh
+EXIT=0
+
+$ diff -r /home/ssullivan/vcows-wt/scan-bundle/scripts /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/scripts   # code under test must be aed962d's
+
+EXIT=0
+
+$ diff /home/ssullivan/vcows-wt/scan-bundle/docs/cve-baseline.json /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/docs/cve-baseline.json
+
+EXIT=0
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.tools/bin   # a freshly created real directory, never the worktree's symlink
+total 12
+drwxr-xr-x. 2 ssullivan ssullivan  45 Aug 31 02:04 .
+drwxr-xr-x. 3 ssullivan ssullivan  17 Aug 31 02:04 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 324 Aug 31 02:04 podman
+-rwxr-xr-x. 1 ssullivan ssullivan 247 Aug 31 02:04 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 252 Aug 31 02:04 trivy
+EXIT=0
+
+$ rm -rf /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache
+
+EXIT=0
+
+--- step 1 of the documented procedure, README.md:261-264 ---
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b && ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/scan/sbom.spdx.json
+findings not in docs/cve-baseline.json:
+  CVE-2099-99999
+error: 1 new finding(s)
+EXIT=1
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/scan
+total 443408
+drwxr-xr-x. 2 ssullivan ssullivan        63 Aug 31 02:06 .
+drwxr-xr-x. 3 ssullivan ssullivan        18 Aug 31 02:06 ..
+-rw-r--r--. 1 ssullivan ssullivan 444655616 Aug 31 02:06 image.tar
+-rw-r--r--. 1 ssullivan ssullivan   7024523 Aug 31 02:06 sbom.spdx.json
+-rw-r--r--. 1 ssullivan ssullivan   2363573 Aug 31 02:06 trivy.json
+EXIT=0
+
+$ ls -A /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/scan   # every file the failed scan left behind
+image.tar
+sbom.spdx.json
+trivy.json
+EXIT=0
+
+$ cmp /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/scan/image.tar /home/ssullivan/vcows-deploy/.cache/scan/image.tar
+
+EXIT=0
+
+--- step 2, run afterwards exactly as README.md:261-264 documents ---
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b && ./scripts/bundle.sh
+compressing image.tar -> vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+
+bundle  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery
+  vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz  (144M)
+  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS
+
+on receipt:  sha256sum -c SHA256SUMS
+             gunzip -c vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz | podman load
+
+not signed -- see 'Why signing was removed' in docs/ci.md
+EXIT=0   (wall 86s)
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery
+total 156464
+drwxr-xr-x. 2 ssullivan ssullivan       164 Aug 31 02:08 .
+drwxr-xr-x. 4 ssullivan ssullivan        34 Aug 31 02:06 ..
+-rw-r--r--. 1 ssullivan ssullivan        76 Aug 31 02:08 image.tar.sha256
+-rw-r--r--. 1 ssullivan ssullivan   7024523 Aug 31 02:08 sbom.spdx.json
+-rw-r--r--. 1 ssullivan ssullivan       376 Aug 31 02:08 SHA256SUMS
+-rw-r--r--. 1 ssullivan ssullivan   2363573 Aug 31 02:08 trivy.json
+-rw-r--r--. 1 ssullivan ssullivan 150814968 Aug 31 02:08 vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+EXIT=0
+
+$ du -sb /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery
+160203516	/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery && sha256sum -c SHA256SUMS
+vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz: OK
+sbom.spdx.json: OK
+trivy.json: OK
+image.tar.sha256: OK
+EXIT=0
+
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache/delivery/SHA256SUMS
+d6250b3f32c6f7b32b31572b7df2b0d3b834e819fb3424c29179b04d966ee7bc  vcows-deploy-0.1.0.0-bbd96bab86fdf4badeb6072c43218b953f56fe31.tar.gz
+bdf2ef9a71864150119cd399aad13df70e0911f13d458626f68f1a90bc753b54  sbom.spdx.json
+a23c734e89ed9b64f7174f68ec020aa97b3506a5a1a4e7a126485e7689c8a1e7  trivy.json
+0363778822412282877e11f3ac0eb1a73c00256ee70e59206f6b9297ee46ed58  image.tar.sha256
+EXIT=0
+
+$ jq -c '[.Results[]?.Vulnerabilities[]?.VulnerabilityID]|unique|map(select(startswith("CVE-2099")))' <delivery>/trivy.json
+["CVE-2099-99999"]
+EXIT=0
+
+$ tar -xOf image.tar "$(… .[0].Config)" | jq -c '.config.Labels|{version,revision}'
+{"version":"0.1.0.0","revision":"bbd96bab86fdf4badeb6072c43218b953f56fe31","created":"2026-08-30T23:40:29Z"}
+EXIT=0
+
+$ rm -rf /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e6b/.cache   # reclaim ~600 MB
+
+EXIT=0
+
+===================================================================================
+############ archive provenance ############
+
+$ git -C /home/ssullivan/vcows-wt/scan-bundle log --oneline -1 bbd96bab86fdf4badeb6072c43218b953f56fe31
+bbd96ba Copy the entrypoint with --chmod instead of a following RUN chmod
+EXIT=0
+
+$ git -C ... branch -a --contains bbd96ba
+  issues-32-28-44
+  remotes/origin/issues-32-28-44
+EXIT=0
+
+$ git -C ... merge-base --is-ancestor bbd96ba 672a500
+EXIT=1
+
+$ git -C ... diff --name-only bbd96ba aed962d -- orchestrator container licenses Containerfile .containerignore
+container/entrypoint.py
+orchestrator/backends/libvirt/__init__.py
+orchestrator/backends/libvirt/destroy.py
+orchestrator/backends/libvirt/preflight.py
+orchestrator/backends/libvirt/schema.py
+orchestrator/cli.py
+orchestrator/qcow2.py
+orchestrator/tofu.py
+EXIT=0
+
+$ git -C ... diff --name-only 672a500 aed962d -- orchestrator container licenses Containerfile .containerignore
+EXIT=0
+
+############ bundle.sh drift, 672a500 -> aed962d ############
+
+$ git -C ... diff 672a500 aed962d -- scripts/bundle.sh
+diff --git a/scripts/bundle.sh b/scripts/bundle.sh
+index e0c66a2..f326611 100755
+--- a/scripts/bundle.sh
++++ b/scripts/bundle.sh
+@@ -104,7 +104,7 @@ main() {
+ 
+     log ""
+     log "bundle  $out"
+-    log "  $name  ($(du -h "$out/$name" | cut -f1))"
++    log "  $name  ($(du -h "$out/$name" | cut -f1 || true))"
+     log "  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS"
+     log ""
+     log "on receipt:  sha256sum -c SHA256SUMS"
+EXIT=0
+
+$ sed -n '41,56p' /home/ssullivan/vcows-wt/scan-bundle/scripts/bundle.sh
+main() {
+    need gzip jq
+
+    local scan out archive sbom report version revision worktree name
+
+    scan="$REPO/.cache/scan"
+    archive="$scan/image.tar"
+    sbom="$scan/sbom.spdx.json"
+    report="$scan/trivy.json"
+    for f in "$archive" "$sbom" "$report"; do
+        [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
+    done
+
+    version="$(archive_label "$archive" org.opencontainers.image.version)"
+    revision="$(archive_label "$archive" org.opencontainers.image.revision)"
+    name="vcows-deploy-${version}-${revision}.tar.gz"
+EXIT=0
+
+$ sed -n '58,66p' /home/ssullivan/vcows-wt/scan-bundle/scripts/bundle.sh
+    # Not fatal. Delivering an older image on purpose is legitimate; delivering
+    # one by accident because a rebuild was skipped is the thing worth saying out
+    # loud, and the filename records which it was either way.
+    worktree="$(source_revision)"
+    if [ "$revision" != "$worktree" ]; then
+        log "warning: the archive was built at $revision but the tree is at $worktree"
+        log "         run 'just image && just scan' to bundle the current tree"
+    fi
+
+EXIT=0
+
+############ cost of binding a verdict to the archive digest ############
+
+$ time sha256sum /home/ssullivan/vcows-deploy/.cache/scan/image.tar   # bundle.sh:93 already pays this once
+bff0f9cf46bd3300d3eff9363520e7800a583a5d338c0713587edea3f10f3465  /home/ssullivan/vcows-deploy/.cache/scan/image.tar
+
+real	0m2.020s
+user	0m1.874s
+sys	0m0.122s
+EXIT=0
+
+############ baseline: just check at aed962d, worktree ############
+
+$ cd /home/ssullivan/vcows-wt/scan-bundle && just check
+./scripts/lint.sh
+lint
+All checks passed!
+  ok    ruff check
+49 files already formatted
+  ok    ruff format
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+all gates pass
+.venv/bin/ty check
+All checks passed!
+.venv/bin/python -m pytest -q -rs 
+=========================== short test summary info ============================
+SKIPPED [10] tests/test_image.py: set VCOWS_IMAGE to a built image (e.g. localhost/vcows-deploy:0.1.0.0) and install podman to run the container gate; build it with `just image`. buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and per-run isolation, and `buildah run` provides none of the three
+SKIPPED [15] tests/test_libvirt_rig.py: set VCOWS_RIG_URI to a reachable libvirt URI to run the rig gate
+411 passed, 25 skipped in 32.87s
+JUST CHECK EXIT=0
+

@@ -73,6 +73,21 @@ main() {
     report="$out/trivy.json"
     sbom="$out/sbom.spdx.json"
 
+    # **The verdict has to outlive this process.** Everything this script writes
+    # -- archive at :92, report and SBOM at :95-96 -- is on disk and complete
+    # before the baseline is read at :128, so a passing .cache/scan and a failing
+    # one are byte-identical apart from what is inside trivy.json, and nothing
+    # reads that for a verdict. README.md:262-264 documents `just scan` and
+    # `just bundle` as separate commands, so the second routinely runs in a
+    # different shell, where an exit status is not available to be asked. The
+    # answer therefore has to be a file, in the directory that is already the
+    # interface between the two scripts.
+    #
+    # Cleared here rather than in save_archive so that a crash anywhere after
+    # this point -- in podman, trivy, syft, scan_floor, or either baseline check
+    # -- leaves no stamp behind for bundle.sh to find.
+    rm -f "$out/PASSED"
+
     log "saving $tag"
     save_archive "$tag" "$archive"
 
@@ -124,21 +139,52 @@ main() {
     fi
 
     # The other direction. One or two accepted ids disappearing is ordinary --
-    # a pin bump fixed them, and the baseline should be trimmed. *All* of them
+    # a pin bump fixed them, and the baseline should be trimmed. *Most* of them
     # disappearing at once is not a clean image; it is a scan that did not read
     # this image, and scan_floor's structural checks cannot catch it because the
     # report is well-formed and simply about something else.
+    #
+    # **A proportion, and the proportion is measured.** trivy emits one Results
+    # entry per analyser x target. This image has three, in two disjoint
+    # families: os-pkgs over the rocky layer, and lang-pkgs over the two Go
+    # binaries. Measured against the real report, rocky shares no id with either
+    # binary, so an analyser that stops running takes 45 or 56 of the 100 with
+    # it -- a large slice, and never the whole set. Equality needs *both*
+    # families to fail at once, and a report with no Results at all is
+    # scan_floor's job already, so the equality this used to test sat where
+    # nothing realistic lands. `* 3` first fires at 34 of 100: below the 45 an
+    # emptied gobinary analyser costs, and 33 clear of the 1 a real scan reports
+    # today. Halving was measured and rejected -- it first fires at 51, above
+    # the 45 it exists to catch. Multiplication rather than `accepted / 3` so
+    # the firing point does not depend on how integer division rounds.
+    #
+    # Proportional rather than a constant, so trimming the baseline is not also
+    # a threshold edit. Those numbers were measured at 100 accepted ids. At the
+    # 99 that remain after CVE-2026-58055 -- a rocky id, so it came out of both
+    # partial losses -- the same two scenarios are 44 and 55, and the firing
+    # point is still 34, because `-gt` makes 33 * 3 = 99 not enough.
     gone="$(jq -r '.gone[]' <<<"$delta")"
     accepted="$(jq '.accepted' <<<"$delta")"
     missing="$(jq '.gone | length' <<<"$delta")"
-    if [ "$accepted" -gt 0 ] && [ "$missing" -eq "$accepted" ]; then
-        die "none of the $accepted accepted findings are present -- the scan did not read this image"
+    if [ "$accepted" -gt 0 ] && [ $((missing * 3)) -gt "$accepted" ]; then
+        die "$missing of $accepted accepted findings are absent -- more than a third of the baseline vanished at once. That is a scan that did not read this image, not a clean one."
     fi
     if [ -n "$gone" ]; then
         log "baseline entries no longer found ($missing of $accepted; stale, or fixed by a pin bump):"
         printf '%s\n' "$gone" | sed 's/^/  /' >&2
     fi
     log "no findings outside the baseline"
+
+    # The last act of a passing run, and the only thing that writes this file.
+    # It holds `sha256sum image.tar` output -- one line, one format bundle.sh
+    # already produces at :119 -- so the verdict is bound to the bytes it was
+    # reached about and cannot be inherited by an archive a later run wrote. No
+    # timestamp: delivering an older image on purpose is legitimate, so an age
+    # limit would refuse a bundle for a reason that is not the CVE verdict.
+    #
+    # --write-baseline returns at :116, above this and below the rm, so
+    # recording what is there now never authorises a bundle.
+    ( cd "$out" && sha256sum image.tar ) > "$out/PASSED"
 }
 
 main "$@"

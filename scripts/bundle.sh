@@ -51,6 +51,32 @@ main() {
         [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
     done
 
+    # The loop above asks whether `just scan` *ran*. This asks whether it
+    # *passed*, which is a different question and used to have no answer here. A
+    # scan that dies on a new finding leaves all three files above complete and
+    # current, because image-scan.sh writes them before it reads the baseline;
+    # the bundle that resulted was correctly named, internally consistent and
+    # verified by its own SHA256SUMS, with the rejected id sitting inside the
+    # trivy.json it shipped.
+    #
+    # The digest in the stamp is what makes it mean something. It binds the
+    # verdict to the bytes the gate accepted, so a stamp left by an earlier pass
+    # cannot vouch for an image.tar written since -- by a second scan that died
+    # after rewriting it, or by a hand copy. sha256sum over 444 MB is 2.0s
+    # against gzip -9's 86s at :114, and it is deliberately not folded into the
+    # :119 that computes the same digest for the delivery: one is an artifact a
+    # site checks, one is an internal verdict, and coupling them would let a
+    # change to the stamp reshape a file README.md describes to sites.
+    #
+    # Fatal, unlike the revision warning below, because the two answer questions
+    # of different shapes. "Is this archive the current tree?" has a legitimate
+    # no -- that is why :85-90 only warns. "Did the CVE gate accept this
+    # archive?" does not.
+    [ -f "$scan/PASSED" ] ||
+        die "no PASSED stamp in .cache/scan -- 'just scan' has not accepted this archive. Run it and read what it says before bundling."
+    ( cd "$scan" && sha256sum -c --status PASSED ) ||
+        die "the PASSED stamp in .cache/scan does not describe image.tar -- re-run 'just scan'"
+
     version="$(archive_label "$archive" org.opencontainers.image.version)"
     revision="$(archive_label "$archive" org.opencontainers.image.revision)"
     name="vcows-deploy-${version}-${revision}.tar.gz"

@@ -1,0 +1,428 @@
+RX-E5 reverification transcript -- issue #83, scripts/image-scan.sh:134
+captured 2026-08-31T06:01:32Z on Linux 6.12.0-211.49.1.el10_2.x86_64
+worktree under reverification: /home/ssullivan/vcows-wt/scan-bundle @ aed962d
+scratch:   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5   (git clone --no-hardlinks, detached at aed962d)
+           /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5c  (copy of e5, the ONLY place a candidate patch was applied)
+fakes:     podman / trivy / syft in <scratch>/.tools/bin, a freshly created real directory.
+           The worktree's own .tools/bin is a symlink to /home/ssullivan/vcows-deploy/.tools/bin and was never written to.
+inputs:    docs/cve-baseline.json as committed at aed962d (100 accepted ids, read only)
+           /home/ssullivan/vcows-deploy/.cache/scan/trivy.json, the real Phase 0 report (read only)
+not run:   scripts/image-scan.sh --write-baseline, just image, just scan, just smoke-libvirt
+
+############ 0. provenance ############
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+EXIT=0
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 status --porcelain
+EXIT=0
+
+$ sed -n 126,141p /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/scripts/image-scan.sh
+    # The other direction. One or two accepted ids disappearing is ordinary --
+    # a pin bump fixed them, and the baseline should be trimmed. *All* of them
+    # disappearing at once is not a clean image; it is a scan that did not read
+    # this image, and scan_floor's structural checks cannot catch it because the
+    # report is well-formed and simply about something else.
+    gone="$(jq -r '.gone[]' <<<"$delta")"
+    accepted="$(jq '.accepted' <<<"$delta")"
+    missing="$(jq '.gone | length' <<<"$delta")"
+    if [ "$accepted" -gt 0 ] && [ "$missing" -eq "$accepted" ]; then
+        die "none of the $accepted accepted findings are present -- the scan did not read this image"
+    fi
+    if [ -n "$gone" ]; then
+        log "baseline entries no longer found ($missing of $accepted; stale, or fixed by a pin bump):"
+        printf '%s\n' "$gone" | sed 's/^/  /' >&2
+    fi
+    log "no findings outside the baseline"
+EXIT=0
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 diff --stat 672a500 aed962d -- scripts/image-scan.sh
+ scripts/image-scan.sh | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+EXIT=0
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 diff 672a500 aed962d -- scripts/image-scan.sh
+diff --git a/scripts/image-scan.sh b/scripts/image-scan.sh
+index 36a0ce5..aa006e1 100755
+--- a/scripts/image-scan.sh
++++ b/scripts/image-scan.sh
+@@ -92,17 +92,17 @@ main() {
+ 
+     if [ "${1:-}" = "--write-baseline" ]; then
+         jq -n --arg image "$tag" \
+-              --arg generated "$(now_utc)" \
++              --arg generated "$(now_utc || true)" \
+               --argjson accepted "$found" \
+               '{image: $image, generated: $generated,
+                 note: "Findings reviewed and accepted at this image. Most live in the statically linked golang.org/x/crypto/ssh inside /usr/bin/tofu and the vendored terraform-provider-libvirt, and can only be cleared by bumping those pins. Anything not listed here fails scripts/image-scan.sh.",
+                 accepted: $accepted}' > "$BASELINE"
+-        log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found") accepted findings"
++        log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found" || true) accepted findings"
+         return
+     fi
+ 
+     if [ ! -f "$BASELINE" ]; then
+-        log "no docs/cve-baseline.json yet -- $(jq 'length' <<<"$found") findings, none classified"
++        log "no docs/cve-baseline.json yet -- $(jq 'length' <<<"$found" || true) findings, none classified"
+         die "run 'scripts/image-scan.sh --write-baseline' once the pins are settled"
+     fi
+ 
+@@ -120,7 +120,7 @@ main() {
+     if [ -n "$new" ]; then
+         log "findings not in docs/cve-baseline.json:"
+         printf '%s\n' "$new" | sed 's/^/  /' >&2
+-        die "$(jq '.new | length' <<<"$delta") new finding(s)"
++        die "$(jq '.new | length' <<<"$delta" || true) new finding(s)"
+     fi
+ 
+     # The other direction. One or two accepted ids disappearing is ordinary --
+EXIT=0
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.tools/bin      # constraint: a real directory, never the worktree symlink
+total 12
+drwxr-xr-x. 2 ssullivan ssullivan  45 Aug 31 01:57 .
+drwxr-xr-x. 3 ssullivan ssullivan  17 Aug 31 01:57 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 272 Aug 31 01:57 podman
+-rwxr-xr-x. 1 ssullivan ssullivan 271 Aug 31 01:57 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 287 Aug 31 01:57 trivy
+EXIT=0
+
+$ jq .accepted | length /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/docs/cve-baseline.json
+100
+EXIT=0
+
+############ 1. the guard at 0 of 100 present (100 gone) ############
+
+$ jq -c '[.Results[]?.Vulnerabilities[]?.VulnerabilityID]|unique|length' $FAKE_REPORT
+0
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 && ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/sbom.spdx.json
+error: none of the 100 accepted findings are present -- the scan did not read this image
+EXIT=1
+
+############ 2. the guard at 1 of 100 present (99 gone) -- the defect ############
+
+$ jq -c '[.Results[]?.Vulnerabilities[]?.VulnerabilityID]|unique' $FAKE_REPORT
+["CVE-2026-11822"]
+EXIT=0
+
+$ cd /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5 && ./scripts/image-scan.sh    # full stderr, 99 gone ids
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/sbom.spdx.json
+baseline entries no longer found (99 of 100; stale, or fixed by a pin bump):
+  CVE-2026-11824
+  CVE-2026-11940
+  CVE-2026-11979
+  CVE-2026-15588
+  CVE-2026-25680
+  CVE-2026-25681
+  CVE-2026-27136
+  CVE-2026-27145
+  CVE-2026-28390
+  CVE-2026-32952
+  CVE-2026-33814
+  CVE-2026-33818
+  CVE-2026-33845
+  CVE-2026-33846
+  CVE-2026-34180
+  CVE-2026-34181
+  CVE-2026-34182
+  CVE-2026-34183
+  CVE-2026-35177
+  CVE-2026-3832
+  CVE-2026-3833
+  CVE-2026-39821
+  CVE-2026-39822
+  CVE-2026-39824
+  CVE-2026-39827
+  CVE-2026-39828
+  CVE-2026-39829
+  CVE-2026-39830
+  CVE-2026-39831
+  CVE-2026-39832
+  CVE-2026-39833
+  CVE-2026-39834
+  CVE-2026-39835
+  CVE-2026-39882
+  CVE-2026-39883
+  CVE-2026-41411
+  CVE-2026-42009
+  CVE-2026-42010
+  CVE-2026-42011
+  CVE-2026-42012
+  CVE-2026-42013
+  CVE-2026-42014
+  CVE-2026-42015
+  CVE-2026-42502
+  CVE-2026-42504
+  CVE-2026-42505
+  CVE-2026-42506
+  CVE-2026-42507
+  CVE-2026-42508
+  CVE-2026-42764
+  CVE-2026-42766
+  CVE-2026-42767
+  CVE-2026-42768
+  CVE-2026-42769
+  CVE-2026-42770
+  CVE-2026-45186
+  CVE-2026-45445
+  CVE-2026-45446
+  CVE-2026-45447
+  CVE-2026-46483
+  CVE-2026-46595
+  CVE-2026-46597
+  CVE-2026-46598
+  CVE-2026-46600
+  CVE-2026-47162
+  CVE-2026-47167
+  CVE-2026-50163
+  CVE-2026-5260
+  CVE-2026-52858
+  CVE-2026-5419
+  CVE-2026-54371
+  CVE-2026-54411
+  CVE-2026-55693
+  CVE-2026-56852
+  CVE-2026-56853
+  CVE-2026-56854
+  CVE-2026-56858
+  CVE-2026-56859
+  CVE-2026-56860
+  CVE-2026-56862
+  CVE-2026-56864
+  CVE-2026-56865
+  CVE-2026-57455
+  CVE-2026-57456
+  CVE-2026-58010
+  CVE-2026-58011
+  CVE-2026-58012
+  CVE-2026-58013
+  CVE-2026-58014
+  CVE-2026-58015
+  CVE-2026-58055
+  CVE-2026-59856
+  CVE-2026-59858
+  CVE-2026-7383
+  CVE-2026-8927
+  CVE-2026-9076
+  GHSA-hrxh-6v49-42gf
+  GHSA-xmrv-pmrh-hhx2
+  GO-2026-5932
+no findings outside the baseline
+EXIT=0
+
+############ 3. sweep: present k of 100, unmodified image-scan.sh at aed962d ############
+
+present   gone     EXIT   last log line
+100       0        0      no findings outside the baseline
+99        1        0      no findings outside the baseline
+90        10       0      no findings outside the baseline
+75        25       0      no findings outside the baseline
+56        44       0      no findings outside the baseline
+55        45       0      no findings outside the baseline
+51        49       0      no findings outside the baseline
+50        50       0      no findings outside the baseline
+45        55       0      no findings outside the baseline
+44        56       0      no findings outside the baseline
+34        66       0      no findings outside the baseline
+33        67       0      no findings outside the baseline
+26        74       0      no findings outside the baseline
+25        75       0      no findings outside the baseline
+11        89       0      no findings outside the baseline
+10        90       0      no findings outside the baseline
+5         95       0      no findings outside the baseline
+2         98       0      no findings outside the baseline
+1         99       0      no findings outside the baseline
+0         100      1      error: none of the 100 accepted findings are present -- the scan did not read this image
+
+############ 4. the three analyser-loss scenarios, driven from the REAL Phase 0 trivy.json ############
+
+$ sha256sum /home/ssullivan/vcows-deploy/.cache/scan/trivy.json
+f690d0e12c9c2b2473d6c12991b27ae92215a832f9eedbcf75e768610357237f  /home/ssullivan/vcows-deploy/.cache/scan/trivy.json
+EXIT=0
+
+--- ALL : os-pkgs=60 lang-pkgs=39 lang-pkgs=21 ---
+$ FAKE_REPORT=real-ALL.json ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/sbom.spdx.json
+baseline entries no longer found (1 of 100; stale, or fixed by a pin bump):
+no findings outside the baseline
+EXIT=0
+
+--- OS_ONLY : os-pkgs=60 lang-pkgs=0 lang-pkgs=0 ---
+$ FAKE_REPORT=real-OS_ONLY.json ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/sbom.spdx.json
+baseline entries no longer found (45 of 100; stale, or fixed by a pin bump):
+no findings outside the baseline
+EXIT=0
+
+--- GO_ONLY : os-pkgs=0 lang-pkgs=39 lang-pkgs=21 ---
+$ FAKE_REPORT=real-GO_ONLY.json ./scripts/image-scan.sh
+saving localhost/vcows-deploy:0.1.0.0
+scanning
+  report /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/trivy.json
+  sbom   /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5/.cache/scan/sbom.spdx.json
+baseline entries no longer found (56 of 100; stale, or fixed by a pin bump):
+no findings outside the baseline
+EXIT=0
+
+############ 5. candidate thresholds, patched ONLY in the scratch copy /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5c ############
+
+$ ls -la /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L2/e5c/.tools/bin
+total 12
+drwxr-xr-x. 2 ssullivan ssullivan  45 Aug 31 01:57 .
+drwxr-xr-x. 3 ssullivan ssullivan  17 Aug 31 01:57 ..
+-rwxr-xr-x. 1 ssullivan ssullivan 272 Aug 31 01:57 podman
+-rwxr-xr-x. 1 ssullivan ssullivan 271 Aug 31 01:57 syft
+-rwxr-xr-x. 1 ssullivan ssullivan 287 Aug 31 01:57 trivy
+EXIT=0
+
+===== candidate N2 =====
+$ sed -n '134p' $C/scripts/image-scan.sh
+    if [ "$accepted" -gt 0 ] && [ $((missing * 2)) -gt "$accepted" ]; then
+EXIT=0
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions $C/scripts/image-scan.sh
+EXIT=0
+  gone-count at which the guard first fires, and the three real-report scenarios:
+    first FAIL at gone=51 of 100
+    real ALL      EXIT=0  no findings outside the baseline
+    real OS_ONLY  EXIT=0  no findings outside the baseline
+    real GO_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+
+===== candidate N3 =====
+$ sed -n '134p' $C/scripts/image-scan.sh
+    if [ "$accepted" -gt 0 ] && [ $((missing * 3)) -gt "$accepted" ]; then
+EXIT=0
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions $C/scripts/image-scan.sh
+EXIT=0
+  gone-count at which the guard first fires, and the three real-report scenarios:
+    first FAIL at gone=34 of 100
+    real ALL      EXIT=0  no findings outside the baseline
+    real OS_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+    real GO_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+
+===== candidate N4 =====
+$ sed -n '134p' $C/scripts/image-scan.sh
+    if [ "$accepted" -gt 0 ] && [ $((missing * 4)) -gt "$accepted" ]; then
+EXIT=0
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions $C/scripts/image-scan.sh
+EXIT=0
+  gone-count at which the guard first fires, and the three real-report scenarios:
+    first FAIL at gone=26 of 100
+    real ALL      EXIT=0  no findings outside the baseline
+    real OS_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+    real GO_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+
+===== candidate N10 =====
+$ sed -n '134p' $C/scripts/image-scan.sh
+    if [ "$accepted" -gt 0 ] && [ $((missing * 10)) -gt "$accepted" ]; then
+EXIT=0
+$ shellcheck -x -s bash -o check-extra-masked-returns -o check-unassigned-uppercase -o quote-safe-variables -o avoid-nullary-conditions $C/scripts/image-scan.sh
+EXIT=0
+  gone-count at which the guard first fires, and the three real-report scenarios:
+    first FAIL at gone=11 of 100
+    real ALL      EXIT=0  no findings outside the baseline
+    real OS_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+    real GO_ONLY  EXIT=1  error: none of the 100 accepted findings are present -- the scan did not read this image
+
+
+############ 6. issue #90's two docs/cve-baseline.json items ############
+
+$ cat ~/.cache/trivy/db/metadata.json
+{"Version":2,"NextUpdate":"2026-08-31T19:01:43.110911954Z","UpdatedAt":"2026-08-30T19:01:43.110912224Z","DownloadedAt":"2026-08-30T22:14:32.797100358Z"}
+
+EXIT=0
+
+$ jq -r '.generated' docs/cve-baseline.json
+2026-08-30T02:35:19Z
+EXIT=0
+
+$ date -u +%Y-%m-%dT%H:%M:%SZ ; trivy image --quiet --input /home/ssullivan/vcows-deploy/.cache/scan/image.tar --format json --output <scratch>/trivy-today.json
+2026-08-31T06:11:53Z
+(real trivy 0.68.x from /home/ssullivan/vcows-deploy/.tools/bin, output written to scratch only)
+EXIT=0
+
+$ jq -r '"CreatedAt: \(.CreatedAt)  ArtifactName: \(.ArtifactName)"' <scratch>/trivy-today.json
+CreatedAt: 2026-08-31T02:11:55.148970059-04:00  ArtifactName: /home/ssullivan/vcows-deploy/.cache/scan/image.tar
+EXIT=0
+
+$ jq -r '.Results[] | "  \(.Target)  \(...|unique|length) uniq"' <scratch>/trivy-today.json
+  /home/ssullivan/vcows-deploy/.cache/scan/image.tar (rocky 10.2)  55 uniq
+  opt/tofu/plugin-cache/registry.opentofu.org/dmacvicar/libvirt/0.9.8/linux_amd64/terraform-provider-libvirt_v0.9.8  37 uniq
+  usr/bin/tofu  18 uniq
+EXIT=0
+
+$ <overlap arithmetic over today's report>
+per-target: rocky=55 provider=37 tofu=18  sum=110
+distinct union = 99
+ids on >1 target = 11
+  CVE-2026-25680, CVE-2026-25681, CVE-2026-27136, CVE-2026-39821, CVE-2026-42502, CVE-2026-42506, CVE-2026-46600, CVE-2026-56852, CVE-2026-56854, GHSA-hrxh-6v49-42gf, GO-2026-5932
+rocky∩provider=0  rocky∩tofu=0  provider∩tofu=11
+EXIT=0
+
+$ <delta of today's report against the committed 100-id baseline>
+{"accepted":100,"found":99,"new":[],"gone":["CVE-2026-58055"]}
+EXIT=0
+
+$ <group count strings vs today's report: uniq ids, HIGH entries, HIGH uniq ids>
+/home/ssullivan/vcows-deploy/.cache/scan/image.tar (rocky 
+   entries=60  uniq=55  HIGHentries=44  HIGHuniq=42
+opt/tofu/plugin-cache/registry.opentofu.org/dmacvicar/libv
+   entries=39  uniq=37  HIGHentries=27  HIGHuniq=25
+usr/bin/tofu
+   entries=21  uniq=18  HIGHentries=10  HIGHuniq=10
+EXIT=0
+
+$ <provider stdlib HIGH, the provider/stdlib group's claim of 11>
+stdlib HIGH entries=11  uniq=11
+EXIT=0
+
+$ <CVE-2026-58055's sorted neighbours in accepted, and their target/package today>
+    "CVE-2026-58014",
+    "CVE-2026-58015",
+    "CVE-2026-58055",
+    "CVE-2026-59856",
+    "CVE-2026-59858",
+    "CVE-2026-7383",
+CVE-2026-58013   os-pkgs/glib2 2.80.4-12.el10_2.13
+CVE-2026-58014   os-pkgs/glib2 2.80.4-12.el10_2.13
+CVE-2026-58015   os-pkgs/glib2 2.80.4-12.el10_2.13
+CVE-2026-59856   os-pkgs/vim-data 2:9.1.083-9.el10_2.2
+EXIT=0
+
+$ <did any pin move between 4eb378b and aed962d?>
+BASE_DIGEST        unchanged
+TOFU_VERSION       unchanged
+TOFU_RPM_SHA256    unchanged
+PROVIDER_VERSION   unchanged
+PROVIDER_SHA256    unchanged
+EXIT=0
+
+$ git diff --stat 672a500 aed962d -- docs/cve-baseline.json
+(empty = byte-identical)
+EXIT=0
+
+$ grep -n 'note\|accepted\|rationale' docs/cve-baseline.json | head -5
+4:  "note": "Findings reviewed and accepted at this image. `scripts/image-scan.sh` fails on anything NOT listed here, so
+5:  "rationale": {
+48:  "accepted": [
+EXIT=0
+
+$ grep -n render.py:61 anchor -- the x/crypto acceptance
+        "uri": connection_uri(target, "sshcmd"),
+EXIT=0
+
