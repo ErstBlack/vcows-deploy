@@ -1,0 +1,321 @@
+================================================================
+ #90, the two items this lane owns -- verification transcript
+ Date: 2026-08-31T02:06:00-04:00   HEAD: aed962d48ee85641ef9580515b698c50881a271d
+================================================================
+
+---------------- item 1: destroy.py:474 cites preflight.py:39-42 ----------------
+
+$ awk 'NR>=472 && NR<=476' orchestrator/backends/libvirt/destroy.py
+472: 
+473:     A warning rather than an error: this must not stop the teardown, and
+474:     ``preflight.py:39-42`` requires a skip to name the object and what the skip
+475:     cost. This is the same obligation for a delete taken on less.
+476:     """
+
+$ awk 'NR>=36 && NR<=45' orchestrator/backends/libvirt/preflight.py   # what :39-42 IS today
+36: 
+37: import os
+38: from collections.abc import Iterator
+39: from contextlib import contextmanager
+40: from typing import Any
+41: from xml.etree import ElementTree as ET
+42: 
+43: from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
+44: from ..base import Discovered, Existing, Problem
+45: from .errors import (
+
+$ awk 'NR>=21 && NR<=26' orchestrator/backends/libvirt/preflight.py   # where the rule actually is
+21: Nothing this file cannot read is skipped in silence. Every check here decides on
+22: what it found, so an absent domain reads as no MAC collision, an absent volume as
+23: no orphan, and an unreadable lease list as a free address. A skip is therefore
+24: always a ``Problem`` naming the object and what the skip cost, and every
+25: ``libvirtError`` is matched against a code from ``errors`` rather than assumed to
+26: be the benign one.
+
+# The claim to test: :39-42 was ALREADY the import block when 2f8ebe2 wrote the citation.
+
+$ git show 2f8ebe2:orchestrator/backends/libvirt/preflight.py | sed -n '36,45p'   # at the commit
+36: 
+37: import os
+38: from collections.abc import Iterator
+39: from contextlib import contextmanager
+40: from typing import Any
+41: from xml.etree import ElementTree as ET
+42: 
+43: from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
+44: from ..base import Discovered, Existing, Problem
+45: from .errors import (
+
+$ git show 2f8ebe2^:orchestrator/backends/libvirt/preflight.py | sed -n '36,45p'  # at its parent
+36: 
+37: import os
+38: from collections.abc import Iterator
+39: from contextlib import contextmanager
+40: from typing import Any
+41: from xml.etree import ElementTree as ET
+42: 
+43: from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
+44: from ..base import Discovered, Existing, Problem
+45: from .errors import (
+
+$ git show 2f8ebe2:orchestrator/backends/libvirt/preflight.py | sed -n '20,27p'   # the rule, at the commit
+20: 
+21: Nothing this file cannot read is skipped in silence. Every check here decides on
+22: what it found, so an absent domain reads as no MAC collision, an absent volume as
+23: no orphan, and an unreadable lease list as a free address. A skip is therefore
+24: always a ``Problem`` naming the object and what the skip cost, and every
+25: ``libvirtError`` is matched against a code from ``errors`` rather than assumed to
+26: be the benign one.
+27: 
+
+$ git log -1 --format=%B 2f8ebe2 | grep -n 'preflight.py:'
+64:preflight.py:39-42 already requires a skip to name the object and what the
+
+$ git log -1 --format=%B e4371ff | grep -n 'preflight.py:'
+23:`preflight.py:28-33` all along. `preflight's` rather than `this module's`
+70:ET.ParseError)` appears at preflight.py:164 and :294 and destroy.py:235,
+76:preflight.py:39-42 governs here and requires the opposite: a skip must name
+
+$ git log -1 --format=%B df60f74 | grep -c 'preflight.py:'
+0
+
+$ git log --format='%h %s' -S'preflight.py:39-42' -- orchestrator/backends/libvirt/destroy.py
+2f8ebe2 The four remaining bugs: an unverified digest, a silent delete, a docstring the image contradicted, two unread records (#12, #9, #13, #11) (#69)
+
+$ grep -rn 'preflight.py:39-42' orchestrator/ tests/ docs/ scripts/ 2>/dev/null
+orchestrator/backends/libvirt/destroy.py:474:    ``preflight.py:39-42`` requires a skip to name the object and what the skip
+docs/review-2026-08-31/finders/A-destroy-path.md:136:The docstring cites "``preflight.py:39-42`` requires a skip to name the object and
+docs/review-2026-08-31/verify/AB-lows.md:28:`orchestrator/backends/libvirt/destroy.py:474` reads "``preflight.py:39-42``
+docs/review-2026-08-31/verify/AB-lows.md:30:`preflight.py:39-42` is four import lines:
+docs/review-2026-08-31/verify/AB-lows.md:46:`e4371ff` carry `preflight.py:39-42` in their commit bodies for this same rule,
+docs/review-destroy-warning/reverify/RX-A1.txt:27:474:     ``preflight.py:39-42`` requires a skip to name the object and what the skip
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:6:---------------- item 1: destroy.py:474 cites preflight.py:39-42 ----------------
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:11:474:     ``preflight.py:39-42`` requires a skip to name the object and what the skip
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:72:64:preflight.py:39-42 already requires a skip to name the object and what the
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:77:76:preflight.py:39-42 governs here and requires the opposite: a skip must name
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:82:$ git log --format='%h %s' -S'preflight.py:39-42' -- orchestrator/backends/libvirt/destroy.py
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:85:$ grep -rn 'preflight.py:39-42' orchestrator/ tests/ docs/ scripts/ 2>/dev/null
+docs/review-destroy-warning/reverify/RX-A2-and-90.txt:86:orchestrator/backends/libvirt/destroy.py:474:    ``preflight.py:39-42`` requires a skip to name the object and what
+
+---------------- item 2: destroy.py:462-464, the vanished branch's justification ----------------
+
+$ awk 'NR>=459 && NR<=476' orchestrator/backends/libvirt/destroy.py
+459: def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
+460:     """Report a delete taken against the preflight snapshot rather than a domain.
+461: 
+462:     The vanished branch is deliberate and stays: a domain gone between preflight
+463:     and teardown still has its disks collected, which is what makes a teardown
+464:     interrupted between undefine and delete finishable by re-running (df60f74).
+465: 
+466:     But the evidence is weaker there and said so nowhere. With no live document
+467:     to re-read, ``_deletable``'s two remaining guards are "no existing domain
+468:     claims this path" and a basename match, and a volume created *after*
+469:     preflight ran satisfies both by construction -- so a second operator who
+470:     destroys and re-deploys inside the first operator's confirm prompt has the
+471:     new disks unlinked, reported as ``destroyed``, with no problem recorded.
+472: 
+473:     A warning rather than an error: this must not stop the teardown, and
+474:     ``preflight.py:39-42`` requires a skip to name the object and what the skip
+475:     cost. This is the same obligation for a delete taken on less.
+476:     """
+
+$ awk 'NR>=14 && NR<=19' orchestrator/backends/libvirt/destroy.py   # the module docstring's crash window
+14: * **Destroy, then undefine. Never the reverse.** ``qemuDomainUndefineFlags`` unlinks
+15:   ``/etc/libvirt/qemu/<name>.xml`` -- where the marker lives -- *before* flipping the
+16:   domain transient, with no rollback. Undefining a running domain therefore leaves a
+17:   VM running with no persistent config and no owner, invisible to every future
+18:   preflight. The crash window this ordering does have is the safe one: between the
+19:   two calls the domain is off, still defined, still marked, and a re-run finishes it.
+
+$ awk 'NR>=159 && NR<=172' tests/test_libvirt_destroy.py   # the test docstring #90 names
+159: def test_a_domain_already_gone_still_has_its_disks_collected():
+160:     """The crash window between destroy and undefine, resumed. Also the case where
+161:     somebody undefined it by hand and left the qcow2 behind."""
+162:     pool = FakePool("images", {"app01.qcow2": ""})
+163:     conn = FakeConnection(domains=[], pools=[pool])
+164:     ghost = Existing(
+165:         name="app01",
+166:         id="00000000-0000-0000-0000-000000000000",
+167:         marker=Marker.for_vm("app01", "lab-a"),
+168:         disks=("/pool/app01.qcow2",),
+169:     )
+170:     d.destroy({}, conn, [ghost])
+171:     assert pool.deleted == ["app01.qcow2"]
+172: 
+
+$ awk 'NR>=144 && NR<=150' orchestrator/backends/libvirt/preflight.py   # the only source of targets
+144: def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
+145:     """Every domain on the host, a MAC -> domain-name index, and what it missed.
+146: 
+147:     A domain that will not read is skipped rather than fatal: one broken foreign
+148:     domain would otherwise stop every deploy on a shared host, and it is not this
+149:     deployment's to fix. Skipped *and reported*, because this walk is where a MAC
+150:     collision and an unmarked name clash are found -- a domain nobody could read
+
+$ grep -n 'listAllDomains' orchestrator/backends/libvirt/preflight.py
+162:    for dom in conn.listAllDomains(0):
+
+$ awk 'NR>=505 && NR<=511' orchestrator/cli.py   # cmd_destroy's targets come from discovered.vms and nowhere else
+505:         marked = [e for e in discovered.vms if e.marker is not None]
+506:         targets = [
+507:             e
+508:             for e in marked
+509:             if e.marker is not None and e.marker.deployment == deployment
+510:         ]
+511:         others = [e for e in marked if e not in targets]
+
+# Reachability, by construction: the world :462-464 names, through the real preflight().
+$ PYTHONPATH=$S/repro .venv/bin/python a2.py
+preflight vms       = ()
+preflight problem   = warning [image.source_qcow2]: golden image '/images/golden.qcow2' is not readable (No such file or directory), so the copy already on the host cannot be verified against it.
+preflight problem   = error [app01]: volume 'app01.qcow2' exists but no domain on this host references it. A create interrupted before its domain was defined leaves exactly this, and so may a volume belonging to another deployment sharing this pool: names are the undecorated logical name (D16), so vcows cannot tell the two apart. Establish which it is before removing it.
+destroy targets     = []
+
+So: no target -> the `for target in targets` loop never runs -> the
+vanished branch is never entered on a re-run after an undefine.
+The leaked overlay is still named, by orphan_volumes, above.
+exit=0
+
+$ git log -1 --format=%B df60f74 | grep -n -A2 'crash-window resume is deliberately'
+41:   The crash-window resume is deliberately preserved. A domain that is gone
+42-   still has its disks collected, which is what makes a teardown interrupted
+43-   between undefine and delete finishable by re-running.
+
+$ git log -1 --format=%B 2f8ebe2 | sed -n '54,66p'
+The deletion itself stays. It is the crash-window resume from df60f74: a
+domain gone between preflight and teardown still has its disks collected,
+which is what makes a teardown interrupted between undefine and delete
+finishable by re-running. Dropping those disks is a guaranteed leak, which
+is worse than the race it would close. The defect is that the weaker
+evidence was silent, not that the deletion is unbounded.
+
+So the branch is tracked and every delete taken in it carries a warning
+naming the path, the domain, and what the evidence actually was.
+Problem.warning rather than error: a teardown must not stop for this, and
+preflight.py:39-42 already requires a skip to name the object and what the
+skip cost -- the same obligation for a delete taken on less.
+
+
+$ grep -n 'crash-window resume\|crash window' orchestrator/backends/base.py orchestrator/backends/libvirt/destroy.py tests/test_libvirt_destroy.py
+orchestrator/backends/libvirt/destroy.py:18:  preflight. The crash window this ordering does have is the safe one: between the
+tests/test_libvirt_destroy.py:160:    """The crash window between destroy and undefine, resumed. Also the case where
+tests/test_libvirt_destroy.py:175:    """#9. The deletion stays -- it is the crash-window resume above -- but with
+orchestrator/backends/base.py:211:    A domain already gone is a crash-window resume; a volume that would not
+
+---------------- the proposed corrections, applied in scratch and gated ----------------
+$ diff -u destroy.py.fixedA2 destroy.py.final     # the two #90 edits, on top of the #81 patch
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.fixedA2	2026-08-31 02:07:38.047037515 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.final	2026-08-31 02:12:24.794246105 -0400
+@@ -459,9 +459,11 @@
+ def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
+     """Report a delete taken against the preflight snapshot rather than a domain.
+ 
+-    The vanished branch is deliberate and stays: a domain gone between preflight
+-    and teardown still has its disks collected, which is what makes a teardown
+-    interrupted between undefine and delete finishable by re-running (df60f74).
++    The vanished branch is deliberate and stays: dropping a gone domain's
++    recorded disks is a guaranteed leak, which is worse than the race collecting
++    them opens (df60f74, 2f8ebe2). It is not the post-undefine crash window --
++    an undefined domain is in no ``listAllDomains``, so ``preflight`` yields no
++    target for it and ``orphan_volumes`` names that leak instead.
+ 
+     But the evidence is weaker there and said so nowhere. With no live document
+     to re-read, ``_deletable``'s two remaining guards are "no existing domain
+@@ -471,7 +473,7 @@
+     new disks unlinked, reported as ``destroyed``, with no problem recorded.
+ 
+     A warning rather than an error: this must not stop the teardown, and
+-    ``preflight.py:39-42`` requires a skip to name the object and what the skip
++    ``preflight.py:23-24`` requires a skip to name the object and what the skip
+     cost. This is the same obligation for a delete taken on less.
+     """
+     out.problems.append(
+exit=1
+
+$ diff -u test_libvirt_destroy.py.fixed test_libvirt_destroy.py.final
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/test_libvirt_destroy.py.fixed	2026-08-31 02:02:04.496631184 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/test_libvirt_destroy.py.final	2026-08-31 02:12:24.798246122 -0400
+@@ -157,8 +157,11 @@
+ 
+ 
+ def test_a_domain_already_gone_still_has_its_disks_collected():
+-    """The crash window between destroy and undefine, resumed. Also the case where
+-    somebody undefined it by hand and left the qcow2 behind."""
++    """A domain that vanished between preflight and this teardown still has its
++    recorded disks collected: another operator's destroy inside our confirm
++    window, or somebody who undefined it by hand and left the qcow2. Not the
++    destroy/undefine crash window -- that leaves the domain defined, and it
++    resumes through the live branch."""
+     pool = FakePool("images", {"app01.qcow2": ""})
+     conn = FakeConnection(domains=[], pools=[pool])
+     ghost = Existing(
+@@ -172,7 +175,7 @@
+ 
+ 
+ def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
+-    """#9. The deletion stays -- it is the crash-window resume above -- but with
++    """#9. The deletion stays -- it is the same vanished target as above -- but with
+     no live document to re-read, `_deletable`'s two remaining guards are "no
+     existing domain claims this path" and a basename match, and a volume created
+     after preflight ran satisfies both by construction.
+exit=1
+
+$ .venv/bin/ruff check orchestrator/backends/libvirt/destroy.py tests/test_libvirt_destroy.py
+All checks passed!
+exit=0
+
+$ .venv/bin/ruff format --check <same two>
+2 files already formatted
+exit=0
+
+$ .venv/bin/ty check --python <worktree venv>
+All checks passed!
+exit=0
+
+$ .venv/bin/python -m pytest -q
+ss....                                                                   [100%]
+403 passed, 35 skipped in 7.98s
+exit=0
+
+$ # lines over 88 columns in the two files (all pre-existing noqa pragmas, which ruff exempts)
+orchestrator/backends/libvirt/destroy.py: 234: 154
+orchestrator/backends/libvirt/destroy.py: 370: 161
+orchestrator/backends/libvirt/destroy.py: 400: 157
+
+$ # surface, measured
+destroy.py   item1 + item2A : +6 / -4
+test file    item2B + item2C: +6 / -3
+
+---------------- the finding #90 missed: base.py:211 ----------------
+$ awk 'NR>=208 && NR<=216' orchestrator/backends/base.py
+208:     skipped: list[str] = field(default_factory=list)
+209:     """Objects this run did not remove. Not an error, and not nothing either.
+210: 
+211:     A domain already gone is a crash-window resume; a volume that would not
+212:     resolve is a leak. Neither carries a fatal ``Problem`` -- a skip never stops a
+213:     teardown, so the rest of the targets are still attempted -- and both make the
+214:     exit code non-zero, because something vcows was asked to remove is still
+215:     there.
+216:     """
+
+$ grep -n 'skipped.append' orchestrator/backends/libvirt/destroy.py
+211:            out.skipped.append(path)
+409:        out.skipped.append(target.name)
+431:        out.skipped.append(path)
+446:        out.skipped.append(path)
+541:            out.skipped.append(target.name)
+
+$ awk 'NR>=537 && NR<=542' orchestrator/backends/libvirt/destroy.py   # the appender base.py:211 describes
+537:             # Already gone. Its disks may not be, so they are still resolved
+538:             # below -- from the preflight snapshot, which is why `_deletable`
+539:             # rather than the snapshot decides what may go.
+540:             vanished = True
+541:             out.skipped.append(target.name)
+542:         else:
+
+$ grep -rn 'base.py:211\|crash-window resume' docs/review-2026-08-31/
+(no hits -- no 08-31 finder or verifier looked at base.py)
+
+================================================================
+ end of capture
+================================================================

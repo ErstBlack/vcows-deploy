@@ -459,9 +459,11 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
 def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
     """Report a delete taken against the preflight snapshot rather than a domain.
 
-    The vanished branch is deliberate and stays: a domain gone between preflight
-    and teardown still has its disks collected, which is what makes a teardown
-    interrupted between undefine and delete finishable by re-running (df60f74).
+    The vanished branch is deliberate and stays: dropping a gone domain's
+    recorded disks is a guaranteed leak, which is worse than the race collecting
+    them opens (df60f74, 2f8ebe2). It is not the post-undefine crash window --
+    an undefined domain is in no ``listAllDomains``, so ``preflight`` yields no
+    target for it and ``orphan_volumes`` names that leak instead.
 
     But the evidence is weaker there and said so nowhere. With no live document
     to re-read, ``_deletable``'s two remaining guards are "no existing domain
@@ -471,7 +473,7 @@ def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
     new disks unlinked, reported as ``destroyed``, with no problem recorded.
 
     A warning rather than an error: this must not stop the teardown, and
-    ``preflight.py:39-42`` requires a skip to name the object and what the skip
+    ``preflight.py:23-24`` requires a skip to name the object and what the skip
     cost. This is the same obligation for a delete taken on less.
     """
     out.problems.append(
@@ -552,9 +554,13 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
 
         for path in target.disks:
             if _deletable(path, target, claimed, out):
-                if vanished:
-                    _deleted_on_name_alone(out, target, path)
+                # After the call, not before it. `_delete_volume` has three
+                # outcomes and only one of them is a delete; the warning is a
+                # report of the delete, so it has to know which one happened.
+                before = len(out.destroyed)
                 _delete_volume(session, path, target.name, out)
+                if vanished and len(out.destroyed) > before:
+                    _deleted_on_name_alone(out, target, path)
 
     if out.failed:
         raise DestroyError(out)

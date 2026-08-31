@@ -1,0 +1,811 @@
+================================================================
+ RX-A1 reverification -- issue #81, worktree destroy-warning
+ Date: 2026-08-31T02:04:40-04:00
+ Host: rocky-runner   |   no libvirt connection is opened anywhere below
+================================================================
+
+---------------- 0. anchors ----------------
+$ git rev-parse HEAD
+aed962d48ee85641ef9580515b698c50881a271d
+exit=0
+
+$ git status --porcelain
+exit=0
+
+$ git diff --stat 672a500 HEAD -- orchestrator/   # review pin -> HEAD
+exit=0  (no output = orchestrator/ unchanged since the review pin)
+
+$ awk 'NR>=553 && NR<=557' orchestrator/backends/libvirt/destroy.py
+553:         for path in target.disks:
+554:             if _deletable(path, target, claimed, out):
+555:                 if vanished:
+556:                     _deleted_on_name_alone(out, target, path)
+557:                 _delete_volume(session, path, target.name, out)
+
+$ awk 'NR>=473 && NR<=475' orchestrator/backends/libvirt/destroy.py   # the #90 citation
+473:     A warning rather than an error: this must not stop the teardown, and
+474:     ``preflight.py:39-42`` requires a skip to name the object and what the skip
+475:     cost. This is the same obligation for a delete taken on less.
+
+$ awk 'NR>=462 && NR<=464' orchestrator/backends/libvirt/destroy.py   # the #90 vanished-branch sentence
+462:     The vanished branch is deliberate and stays: a domain gone between preflight
+463:     and teardown still has its disks collected, which is what makes a teardown
+464:     interrupted between undefine and delete finishable by re-running (df60f74).
+
+---------------- 1. scratch copy ----------------
+$ ls /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro       # orchestrator/ tests/ container/ + root files; .tools EXCLUDED
+a1_cli.py a1.py a2.py container Containerfile .containerignore docs .github .gitignore .gitlab-ci.yml .hypothesis justfile licenses orchestrator .pre-commit-config.yaml pyproject.toml .pytest_cache .python-version README.md .ruff_cache scripts tests uv.lock 
+
+$ ls -d /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/.tools
+ls: cannot access '/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/.tools': No such file or directory
+exit=2  (absent by design -- .tools/bin in the worktree is a symlink)
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -c import orchestrator, tests.fake_libvirt as f; print('orchestrator ->', orchestrator.__file__); print('fake_libvirt ->', f.__file__)
+orchestrator -> /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/orchestrator/__init__.py
+fake_libvirt -> /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/tests/fake_libvirt.py
+exit=0
+
+---------------- 2. BEFORE: five shapes through the real destroy.destroy() ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a1.py
+# destroy.py under test: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/orchestrator/backends/libvirt/destroy.py
+
+== shape 1: operator B already removed domain AND both volumes ==
+pool.deleted = []
+destroyed    = []
+skipped      = ['app01', '/pool/app01.qcow2', '/pool/app01-seed.iso']
+problem      = warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+problem      = warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+failed       = False
+
+== shape 1-ordinary: ghost target, both volumes STILL PRESENT ==
+pool.deleted = ['app01.qcow2', 'app01-seed.iso']
+destroyed    = ['/pool/app01.qcow2', '/pool/app01-seed.iso']
+skipped      = ['app01']
+problem      = warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+problem      = warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+failed       = False
+
+== shape 2: ghost target, vol.delete raises code 38 ==
+str(DestroyError):
+  error [app01]: could not delete /pool/app01.qcow2: cannot unlink file '/pool/app01.qcow2': Permission denied
+  error [app01]: could not delete /pool/app01-seed.iso: cannot unlink file '/pool/app01-seed.iso': Permission denied
+    skipped: app01
+    warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+    warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+outcome.destroyed = []
+outcome.skipped   = ['app01']
+pool.deleted      = []
+
+== crash-window resume (domain off, still defined, still marked) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+  dom.log = ['undefine:55']
+
+== live target (the ordinary, non-vanished path) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+exit=0
+
+---------------- 3. BEFORE: shape 1 through cli.main(['destroy', ..., '--yes']) ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a1_cli.py
+  warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+  warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+3 object(s) were not removed by this run; /tmp/tmpaxn3o88x/runs/run.json names them
+  app01                destroy app01
+  app01                skipped, not removed by this run
+  /pool/app01.qcow2    skipped, not removed by this run
+  /pool/app01-seed.iso skipped, not removed by this run
+destroyed 0 object(s)
+
+cli.main exit code = 1
+
+--- run.json ---
+outcome   = 'partial'
+destroyed = []
+skipped   = ['/pool/app01-seed.iso', '/pool/app01.qcow2', 'app01']
+problem   = warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+problem   = warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+exit=0
+
+---------------- 4. BEFORE: scratch pytest baseline ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest -q
+........................................................................ [ 16%]
+.........................................ssssssssss..................... [ 33%]
+........................................................................ [ 49%]
+...........sssssssssssssss.............................................. [ 66%]
+........................................................................ [ 82%]
+..............................................................ssssssssss [ 99%]
+....                                                                     [100%]
+401 passed, 35 skipped in 7.98s
+exit=0
+
+---------------- 5. the two new tests, against the UNFIXED production line ----------------
+$ diff -u tests/fake_libvirt.py.orig tests/fake_libvirt.py.fixed
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/fake_libvirt.py.orig	2026-08-31 01:59:26.348964392 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/fake_libvirt.py.fixed	2026-08-31 02:02:04.500631201 -0400
+@@ -49,6 +49,8 @@
+ 
+     def delete(self, flags: int = 0) -> None:
+         assert flags == 0, "the dir/fs backend accepts no delete flags"
++        if self.pool.volume_delete_error is not None:
++            raise self.pool.volume_delete_error
+         self.pool.deleted.append(self._name)
+         del self.pool.volumes[self._name]
+ 
+@@ -78,6 +80,9 @@
+         self.xml_error: libvirt.libvirtError | None = None
+         #: Raised by every volume this pool hands out, not by the pool itself.
+         self.volume_xml_error: libvirt.libvirtError | None = None
++        #: The refusal that is not "already gone": `_delete_volume` reports it
++        #: through `_fail`, and must not also report the path as deleted.
++        self.volume_delete_error: libvirt.libvirtError | None = None
+ 
+     def name(self) -> str:
+         if self.name_error is not None:
+exit=1
+
+$ diff -u tests/test_libvirt_destroy.py.orig tests/test_libvirt_destroy.py.fixed
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/test_libvirt_destroy.py.orig	2026-08-31 01:59:07.586885287 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/test_libvirt_destroy.py.fixed	2026-08-31 02:02:04.496631184 -0400
+@@ -221,6 +221,52 @@
+     assert out.problems == []
+ 
+ 
++def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
++    """#81. The other half of the pair above, and the commoner one: the domain
++    went and took its disks with it, so every path resolves NO_STORAGE_VOL and
++    nothing is unlinked. The name-alone warning reports a delete, so with no
++    delete there is nothing to report and `destroyed` and `problems` must agree."""
++    pool = FakePool("images", {})
++    conn = FakeConnection(domains=[], pools=[pool])
++    ghost = Existing(
++        name="app01",
++        id="00000000-0000-0000-0000-000000000000",
++        marker=Marker.for_vm("app01", "lab-a"),
++        disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
++    )
++
++    out = d.destroy({}, conn, [ghost])
++
++    assert pool.deleted == []
++    assert out.destroyed == []
++    assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
++    assert out.problems == []
++    assert not out.failed
++
++
++def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
++    """#81, second shape. `vol.delete` refused for a reason that is not "gone",
++    so `_fail` fires. `str(DestroyError)` is what `main` prints and what
++    `run.json["error"]` carries; it must not say "could not delete X" and
++    "X was deleted" about the same path."""
++    pool = FakePool("images", {"app01.qcow2": ""})
++    pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
++    conn = FakeConnection(domains=[], pools=[pool])
++    ghost = Existing(
++        name="app01",
++        id="00000000-0000-0000-0000-000000000000",
++        marker=Marker.for_vm("app01", "lab-a"),
++        disks=("/pool/app01.qcow2",),
++    )
++
++    with pytest.raises(d.DestroyError) as caught:
++        d.destroy({}, conn, [ghost])
++
++    said = str(caught.value)
++    assert "could not delete /pool/app01.qcow2" in said
++    assert "name alone" not in said
++
++
+ def test_a_lookup_that_failed_for_any_other_reason_is_fatal_and_touches_no_disk():
+     """`no domain with matching uuid` is one error code out of dozens. A dropped
+     connection or a policy refusal says nothing about whether that domain still
+exit=1
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+...............FF........................                                [100%]
+=================================== FAILURES ===================================
+_ test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted _
+
+    def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
+        """#81. The other half of the pair above, and the commoner one: the domain
+        went and took its disks with it, so every path resolves NO_STORAGE_VOL and
+        nothing is unlinked. The name-alone warning reports a delete, so with no
+        delete there is nothing to report and `destroyed` and `problems` must agree."""
+        pool = FakePool("images", {})
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+        )
+    
+        out = d.destroy({}, conn, [ghost])
+    
+        assert pool.deleted == []
+        assert out.destroyed == []
+        assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
+>       assert out.problems == []
+E       assert [Problem(seve...here='app01')] == []
+E         
+E         Left contains 2 more items, first extra item: Problem(severity=<Severity.WARNING: 'warning'>, message="/pool/app01.qcow2 was deleted on its name alone: domain 'app0... this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it", where='app01')
+E         Use -v to get more diff
+
+tests/test_libvirt_destroy.py:243: AssertionError
+____ test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete ____
+
+    def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
+        """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+        so `_fail` fires. `str(DestroyError)` is what `main` prints and what
+        `run.json["error"]` carries; it must not say "could not delete X" and
+        "X was deleted" about the same path."""
+        pool = FakePool("images", {"app01.qcow2": ""})
+        pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2",),
+        )
+    
+        with pytest.raises(d.DestroyError) as caught:
+            d.destroy({}, conn, [ghost])
+    
+        said = str(caught.value)
+        assert "could not delete /pool/app01.qcow2" in said
+>       assert "name alone" not in said
+E       AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+E         
+E         'name alone' is contained here:
+E           ed on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+E         ?           ++++++++++
+
+tests/test_libvirt_destroy.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted - assert [Problem(seve...here='app01')] == []
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete - AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+2 failed, 39 passed in 0.75s
+exit=1
+
+---------------- 6. candidate A applied ----------------
+$ diff -u destroy.py.orig destroy.py.fixedA
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.orig	2026-08-31 01:59:07.590885304 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.fixedA	2026-08-31 02:00:01.899114282 -0400
+@@ -552,9 +552,10 @@
+ 
+         for path in target.disks:
+             if _deletable(path, target, claimed, out):
+-                if vanished:
+-                    _deleted_on_name_alone(out, target, path)
++                before = len(out.destroyed)
+                 _delete_volume(session, path, target.name, out)
++                if vanished and len(out.destroyed) > before:
++                    _deleted_on_name_alone(out, target, path)
+ 
+     if out.failed:
+         raise DestroyError(out)
+exit=1
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+.........................................                                [100%]
+41 passed in 0.67s
+exit=0
+
+---------------- 7. AFTER: the same five shapes ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a1.py
+# destroy.py under test: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/orchestrator/backends/libvirt/destroy.py
+
+== shape 1: operator B already removed domain AND both volumes ==
+pool.deleted = []
+destroyed    = []
+skipped      = ['app01', '/pool/app01.qcow2', '/pool/app01-seed.iso']
+problem      = <none>
+failed       = False
+
+== shape 1-ordinary: ghost target, both volumes STILL PRESENT ==
+pool.deleted = ['app01.qcow2', 'app01-seed.iso']
+destroyed    = ['/pool/app01.qcow2', '/pool/app01-seed.iso']
+skipped      = ['app01']
+problem      = warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+problem      = warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+failed       = False
+
+== shape 2: ghost target, vol.delete raises code 38 ==
+str(DestroyError):
+  error [app01]: could not delete /pool/app01.qcow2: cannot unlink file '/pool/app01.qcow2': Permission denied
+  error [app01]: could not delete /pool/app01-seed.iso: cannot unlink file '/pool/app01-seed.iso': Permission denied
+    skipped: app01
+outcome.destroyed = []
+outcome.skipped   = ['app01']
+pool.deleted      = []
+
+== crash-window resume (domain off, still defined, still marked) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+  dom.log = ['undefine:55']
+
+== live target (the ordinary, non-vanished path) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+exit=0
+
+---------------- 8. AFTER: the same cli.main run ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a1_cli.py
+3 object(s) were not removed by this run; /tmp/tmpl5dlmq3z/runs/run.json names them
+  app01                destroy app01
+  app01                skipped, not removed by this run
+  /pool/app01.qcow2    skipped, not removed by this run
+  /pool/app01-seed.iso skipped, not removed by this run
+destroyed 0 object(s)
+
+cli.main exit code = 1
+
+--- run.json ---
+outcome   = 'partial'
+destroyed = []
+skipped   = ['/pool/app01-seed.iso', '/pool/app01.qcow2', 'app01']
+exit=0
+
+---------------- 9. AFTER: full scratch pytest ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest -q
+........................................................................ [ 16%]
+.........................................ssssssssss..................... [ 32%]
+........................................................................ [ 49%]
+.............sssssssssssssss............................................ [ 65%]
+........................................................................ [ 82%]
+................................................................ssssssss [ 98%]
+ss....                                                                   [100%]
+403 passed, 35 skipped in 7.75s
+exit=0
+
+---------------- 10. mutations: proving the tests can fail ----------------
+### mutation: '                if vanished:'
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+...............FF........................                                [100%]
+=================================== FAILURES ===================================
+_ test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted _
+
+    def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
+        """#81. The other half of the pair above, and the commoner one: the domain
+        went and took its disks with it, so every path resolves NO_STORAGE_VOL and
+        nothing is unlinked. The name-alone warning reports a delete, so with no
+        delete there is nothing to report and `destroyed` and `problems` must agree."""
+        pool = FakePool("images", {})
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+        )
+    
+        out = d.destroy({}, conn, [ghost])
+    
+        assert pool.deleted == []
+        assert out.destroyed == []
+        assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
+>       assert out.problems == []
+E       assert [Problem(seve...here='app01')] == []
+E         
+E         Left contains 2 more items, first extra item: Problem(severity=<Severity.WARNING: 'warning'>, message="/pool/app01.qcow2 was deleted on its name alone: domain 'app0... this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it", where='app01')
+E         Use -v to get more diff
+
+tests/test_libvirt_destroy.py:243: AssertionError
+____ test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete ____
+
+    def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
+        """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+        so `_fail` fires. `str(DestroyError)` is what `main` prints and what
+        `run.json["error"]` carries; it must not say "could not delete X" and
+        "X was deleted" about the same path."""
+        pool = FakePool("images", {"app01.qcow2": ""})
+        pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2",),
+        )
+    
+        with pytest.raises(d.DestroyError) as caught:
+            d.destroy({}, conn, [ghost])
+    
+        said = str(caught.value)
+        assert "could not delete /pool/app01.qcow2" in said
+>       assert "name alone" not in said
+E       AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+E         
+E         'name alone' is contained here:
+E           ed on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+E         ?           ++++++++++
+
+tests/test_libvirt_destroy.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted - assert [Problem(seve...here='app01')] == []
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete - AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+2 failed, 39 passed in 0.78s
+exit=1
+
+### mutation: '                if vanished and len(out.destroyed) >= before:'
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+...............FF........................                                [100%]
+=================================== FAILURES ===================================
+_ test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted _
+
+    def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
+        """#81. The other half of the pair above, and the commoner one: the domain
+        went and took its disks with it, so every path resolves NO_STORAGE_VOL and
+        nothing is unlinked. The name-alone warning reports a delete, so with no
+        delete there is nothing to report and `destroyed` and `problems` must agree."""
+        pool = FakePool("images", {})
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+        )
+    
+        out = d.destroy({}, conn, [ghost])
+    
+        assert pool.deleted == []
+        assert out.destroyed == []
+        assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
+>       assert out.problems == []
+E       assert [Problem(seve...here='app01')] == []
+E         
+E         Left contains 2 more items, first extra item: Problem(severity=<Severity.WARNING: 'warning'>, message="/pool/app01.qcow2 was deleted on its name alone: domain 'app0... this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it", where='app01')
+E         Use -v to get more diff
+
+tests/test_libvirt_destroy.py:243: AssertionError
+____ test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete ____
+
+    def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
+        """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+        so `_fail` fires. `str(DestroyError)` is what `main` prints and what
+        `run.json["error"]` carries; it must not say "could not delete X" and
+        "X was deleted" about the same path."""
+        pool = FakePool("images", {"app01.qcow2": ""})
+        pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2",),
+        )
+    
+        with pytest.raises(d.DestroyError) as caught:
+            d.destroy({}, conn, [ghost])
+    
+        said = str(caught.value)
+        assert "could not delete /pool/app01.qcow2" in said
+>       assert "name alone" not in said
+E       AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+E         
+E         'name alone' is contained here:
+E           ed on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+E         ?           ++++++++++
+
+tests/test_libvirt_destroy.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted - assert [Problem(seve...here='app01')] == []
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete - AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+2 failed, 39 passed in 0.71s
+exit=1
+
+### mutation: '                if vanished and len(out.destroyed) == before:'
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+.............F.FF........................                                [100%]
+=================================== FAILURES ===================================
+__ test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said ___
+
+    def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
+        """#9. The deletion stays -- it is the crash-window resume above -- but with
+        no live document to re-read, `_deletable`'s two remaining guards are "no
+        existing domain claims this path" and a basename match, and a volume created
+        after preflight ran satisfies both by construction.
+    
+        So the delete is still taken and still reported as such, and now says what it
+        was taken on. A warning, not an error: it must not stop the teardown.
+        """
+        pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+        )
+    
+        out = d.destroy({}, conn, [ghost])
+    
+        # Unchanged: both disks go, the domain itself is skipped rather than
+        # destroyed, and nothing here is fatal. `destroyed` holds objects, so the
+        # two volume paths are in it and the domain name is not.
+        assert pool.deleted == ["app01.qcow2", "app01-seed.iso"]
+        assert out.skipped == ["app01"]
+        assert out.destroyed == ["/pool/app01.qcow2", "/pool/app01-seed.iso"]
+        assert not out.failed
+    
+        # New: one warning per delete, naming the path and why the evidence is thin.
+        said = [p.message for p in out.problems]
+>       assert len(said) == 2
+E       assert 0 == 2
+E        +  where 0 = len([])
+
+tests/test_libvirt_destroy.py:204: AssertionError
+_ test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted _
+
+    def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
+        """#81. The other half of the pair above, and the commoner one: the domain
+        went and took its disks with it, so every path resolves NO_STORAGE_VOL and
+        nothing is unlinked. The name-alone warning reports a delete, so with no
+        delete there is nothing to report and `destroyed` and `problems` must agree."""
+        pool = FakePool("images", {})
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+        )
+    
+        out = d.destroy({}, conn, [ghost])
+    
+        assert pool.deleted == []
+        assert out.destroyed == []
+        assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
+>       assert out.problems == []
+E       assert [Problem(seve...here='app01')] == []
+E         
+E         Left contains 2 more items, first extra item: Problem(severity=<Severity.WARNING: 'warning'>, message="/pool/app01.qcow2 was deleted on its name alone: domain 'app0... this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it", where='app01')
+E         Use -v to get more diff
+
+tests/test_libvirt_destroy.py:243: AssertionError
+____ test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete ____
+
+    def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
+        """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+        so `_fail` fires. `str(DestroyError)` is what `main` prints and what
+        `run.json["error"]` carries; it must not say "could not delete X" and
+        "X was deleted" about the same path."""
+        pool = FakePool("images", {"app01.qcow2": ""})
+        pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
+        conn = FakeConnection(domains=[], pools=[pool])
+        ghost = Existing(
+            name="app01",
+            id="00000000-0000-0000-0000-000000000000",
+            marker=Marker.for_vm("app01", "lab-a"),
+            disks=("/pool/app01.qcow2",),
+        )
+    
+        with pytest.raises(d.DestroyError) as caught:
+            d.destroy({}, conn, [ghost])
+    
+        said = str(caught.value)
+        assert "could not delete /pool/app01.qcow2" in said
+>       assert "name alone" not in said
+E       AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+E         
+E         'name alone' is contained here:
+E           ed on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+E         ?           ++++++++++
+
+tests/test_libvirt_destroy.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said - assert 0 == 2
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted - assert [Problem(seve...here='app01')] == []
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete - AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+3 failed, 38 passed in 0.75s
+exit=1
+
+### restored candidate A
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+.........................................                                [100%]
+41 passed in 0.75s
+exit=0
+
+---------------- 11. lint and typecheck on the patched files ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/ruff check orchestrator/backends/libvirt/destroy.py tests/test_libvirt_destroy.py tests/fake_libvirt.py
+All checks passed!
+exit=0
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/ruff format --check orchestrator/backends/libvirt/destroy.py tests/test_libvirt_destroy.py tests/fake_libvirt.py
+3 files already formatted
+exit=0
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/ty check --python /home/ssullivan/vcows-wt/destroy-warning/.venv
+All checks passed!
+exit=0
+
+---------------- 12. candidate B, measured for comparison ----------------
+$ diff -u destroy.py.orig destroy.py.candB
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.orig	2026-08-31 01:59:07.590885304 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.candB	2026-08-31 02:00:27.712223117 -0400
+@@ -180,7 +180,7 @@
+     return True
+ 
+ 
+-def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> None:
++def _delete_volume(conn: Any, path: str, name: str, out: Outcome) -> bool:
+     """Delete one disk by path.
+ 
+     ``vol.delete`` takes no flags at all -- the dir/fs backend declares
+@@ -209,10 +209,11 @@
+             # in `_refresh_pools` is not optional and why an inactive pool holding
+             # any of these paths is fatal there.
+             out.skipped.append(path)
+-            return
++            return False
+         _fail(out, name, f"delete {path}", exc)
+-        return
++        return False
+     out.destroyed.append(path)
++    return True
+ 
+ 
+ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
+@@ -552,9 +553,8 @@
+ 
+         for path in target.disks:
+             if _deletable(path, target, claimed, out):
+-                if vanished:
++                if _delete_volume(session, path, target.name, out) and vanished:
+                     _deleted_on_name_alone(out, target, path)
+-                _delete_volume(session, path, target.name, out)
+ 
+     if out.failed:
+         raise DestroyError(out)
+exit=1
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python -m pytest tests/test_libvirt_destroy.py tests/test_cli.py -q
+........................................................................ [ 85%]
+............                                                             [100%]
+84 passed in 3.11s
+exit=0
+
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a1.py
+# destroy.py under test: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/repro/orchestrator/backends/libvirt/destroy.py
+
+== shape 1: operator B already removed domain AND both volumes ==
+pool.deleted = []
+destroyed    = []
+skipped      = ['app01', '/pool/app01.qcow2', '/pool/app01-seed.iso']
+problem      = <none>
+failed       = False
+
+== shape 1-ordinary: ghost target, both volumes STILL PRESENT ==
+pool.deleted = ['app01.qcow2', 'app01-seed.iso']
+destroyed    = ['/pool/app01.qcow2', '/pool/app01-seed.iso']
+skipped      = ['app01']
+problem      = warning [app01]: /pool/app01.qcow2 was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+problem      = warning [app01]: /pool/app01-seed.iso was deleted on its name alone: domain 'app01' was already gone, so this path came from the preflight snapshot and nothing re-read the domain to confirm it still owns it
+failed       = False
+
+== shape 2: ghost target, vol.delete raises code 38 ==
+str(DestroyError):
+  error [app01]: could not delete /pool/app01.qcow2: cannot unlink file '/pool/app01.qcow2': Permission denied
+  error [app01]: could not delete /pool/app01-seed.iso: cannot unlink file '/pool/app01-seed.iso': Permission denied
+    skipped: app01
+outcome.destroyed = []
+outcome.skipped   = ['app01']
+pool.deleted      = []
+
+== crash-window resume (domain off, still defined, still marked) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+  dom.log = ['undefine:55']
+
+== live target (the ordinary, non-vanished path) ==
+pool.deleted = ['app01.qcow2']
+destroyed    = ['app01', '/pool/app01.qcow2']
+skipped      = []
+problem      = <none>
+failed       = False
+
+exit=0
+
+---------------- 13. RX-A2 / #90: is the vanished branch reachable as :462-464 says? ----------------
+$ /home/ssullivan/vcows-wt/destroy-warning/.venv/bin/python a2.py
+preflight vms       = ()
+preflight problem   = warning [image.source_qcow2]: golden image '/images/golden.qcow2' is not readable (No such file or directory), so the copy already on the host cannot be verified against it.
+preflight problem   = error [app01]: volume 'app01.qcow2' exists but no domain on this host references it. A create interrupted before its domain was defined leaves exactly this, and so may a volume belonging to another deployment sharing this pool: names are the undecorated logical name (D16), so vcows cannot tell the two apart. Establish which it is before removing it.
+destroy targets     = []
+
+So: no target -> the `for target in targets` loop never runs -> the
+vanished branch is never entered on a re-run after an undefine.
+The leaked overlay is still named, by orphan_volumes, above.
+exit=0
+
+---------------- 14. does the SECOND new test earn its cost? ----------------
+# M4 is the plausible alternative fix: warn unless the path resolved as already
+# gone. It passes every existing test AND the first new test. Only the second
+# new test catches it, because it is the only one that reaches _fail.
+
+$ # apply M4:  if vanished and path not in out.skipped:
+$ .venv/bin/python -m pytest tests/test_libvirt_destroy.py -q
+E         ?           ++++++++++
+
+tests/test_libvirt_destroy.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_libvirt_destroy.py::test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete - AssertionError: assert 'name alone' not in 'error [app0...till owns it'
+1 failed, 40 passed in 0.69s
+exit=0
+
+---------------- 15. surface, measured ----------------
+destroy.py.fixedA                  +3 / -2
+destroy.py.candB                   +5 / -5
+test_libvirt_destroy.py.fixed      +38 / -0
+fake_libvirt.py.fixed              +5 / -0
+
+---------------- 16. the recommended patch as it would ship (candidate A + its comment) ----------------
+$ diff -u destroy.py.orig destroy.py.fixedA2
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.orig	2026-08-31 01:59:07.590885304 -0400
++++ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L5/destroy.py.fixedA2	2026-08-31 02:07:38.047037515 -0400
+@@ -552,9 +552,13 @@
+ 
+         for path in target.disks:
+             if _deletable(path, target, claimed, out):
+-                if vanished:
+-                    _deleted_on_name_alone(out, target, path)
++                # After the call, not before it. `_delete_volume` has three
++                # outcomes and only one of them is a delete; the warning is a
++                # report of the delete, so it has to know which one happened.
++                before = len(out.destroyed)
+                 _delete_volume(session, path, target.name, out)
++                if vanished and len(out.destroyed) > before:
++                    _deleted_on_name_alone(out, target, path)
+ 
+     if out.failed:
+         raise DestroyError(out)
+exit=1
+
+$ .venv/bin/python -m pytest -q
+................................................................ssssssss [ 98%]
+ss....                                                                   [100%]
+403 passed, 35 skipped in 8.40s
+exit=0
+
+$ .venv/bin/ruff check orchestrator/backends/libvirt/destroy.py tests/test_libvirt_destroy.py tests/fake_libvirt.py
+All checks passed!
+exit=0
+
+$ .venv/bin/ruff format --check <same three>
+3 files already formatted
+exit=0
+
+$ .venv/bin/ty check --python <worktree venv>
+All checks passed!
+exit=0
+
+$ diff -u destroy.py.orig destroy.py.fixedA2 | grep -c '^+[^+]' ; ... '^-[^-]'
+6
+2
+
+================================================================
+ end of capture
+================================================================
