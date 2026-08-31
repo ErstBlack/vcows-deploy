@@ -423,3 +423,27 @@ def test_a_multi_line_detail_reads_as_continuation(capsys):
     assert body[0].endswith("headline")
     assert body[1] == "    first line"
     assert body[2] == "    second line"
+
+
+def test_an_invocation_logs_its_exit_code_and_duration(fake_tofu, tmp_path, caplog):
+    """OpenTofu's own output is inherited and unprefixed -- 200 lines to our 10
+    in a real deploy -- so the "running" line opens a block that nothing closed.
+    The exit code and elapsed time were also recorded nowhere."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
+        tofu.init(workdir)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("running ") for m in messages)
+    assert any(re.fullmatch(r"init: exit 0 in \d+\.\ds", m) for m in messages), messages
+
+
+def test_a_report_row_carries_no_trailing_padding(caplog):
+    """`_row` pads to fixed columns; with an empty detail that padding would
+    hang off the end of the record."""
+    with caplog.at_level(logging.INFO, logger="orchestrator.cli"):
+        logging.getLogger("orchestrator.cli").info(
+            "%s", cli._row("app01", "destroy", "")
+        )
+    (record,) = caplog.records
+    assert record.getMessage() == "app01                destroy"

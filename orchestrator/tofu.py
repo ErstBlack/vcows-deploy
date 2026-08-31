@@ -35,6 +35,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -221,6 +222,7 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
     # question asked of any tofu invocation that misbehaved -- the -no-color
     # decision and the resolved -chdir are both computed here, not given.
     log.info("running %s", " ".join(argv))
+    started = time.monotonic()
 
     # Not `start_new_session`: Ctrl-C must reach tofu so it shuts down the way it
     # would if the operator had run it themselves.
@@ -246,6 +248,13 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
         proc.kill()
         proc.wait()
         raise
+
+    # Closes the block of OpenTofu's own output that "running" opened. That
+    # output is inherited and unprefixed -- deliberately, so a multi-GB upload
+    # shows progress live -- and in a real deploy it is 200 lines to our 10, so
+    # without a line at each end there is no telling where it stops. The exit
+    # code and the elapsed time were also not recorded anywhere before this.
+    log.info("%s: exit %d in %.1fs", cmd, proc.returncode, time.monotonic() - started)
 
     diagnostics, changes = _read_stream(stream)
     for d in diagnostics:

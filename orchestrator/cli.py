@@ -226,7 +226,9 @@ def _row(name: str, verb: str, detail: str) -> str:
     """One report line. `_report` and the destroy loop cannot share a *function*
     -- one prints `Decision`s and the other `Existing`s, which findings.md §3
     keeps as separate carriers -- so they share the shape instead."""
-    return f"{name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}"
+    # rstrip: an empty detail column would otherwise leave the line's own
+    # padding hanging off the end of the log record.
+    return f"{name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}".rstrip()
 
 
 def _report(decisions: list[Decision], problems: list[Problem]) -> None:
@@ -625,7 +627,16 @@ def _destroy(
                 ),
             )
         for e in targets:
-            log.info("%s", _row(e.name, "destroy", e.marker.name if e.marker else ""))
+            # The marker's logical name, and only when it differs: for the
+            # ordinary case where the domain is named after it, repeating it
+            # made the detail column say `app01  destroy  app01`.
+            marked = e.marker.name if e.marker else ""
+            log.info(
+                "%s",
+                _row(
+                    e.name, "destroy", f"marked {marked!r}" if marked != e.name else ""
+                ),
+            )
 
         if not targets:
             _record(run, "nothing-to-destroy")
