@@ -277,7 +277,7 @@ start_libvirtd() {
 # behaviour at a site. The runner is the site here, so standing the pool up is
 # part of preparing the host rather than part of what is under test.
 storage_pool() {
-    local err
+    local err state
     if ! vsh pool-info "$POOL" >/dev/null 2>&1; then
         vsh pool-define-as --name "$POOL" --type dir --target "$POOL_DIR" >/dev/null
     fi
@@ -295,9 +295,10 @@ storage_pool() {
     # run, where an already-active network was reported as one that would not
     # start. Every readback here goes through a variable for that reason.
     if ! err="$(vsh pool-start "$POOL" 2>&1)"; then
-        if ! contains "$(vsh pool-info "$POOL" 2>&1 | tr -s ' ')" 'State: running'; then
-            log "$(vsh pool-list --all 2>&1)"
-            log "$(vsh pool-dumpxml "$POOL" 2>&1)"
+        state="$(vsh pool-info "$POOL" 2>&1 | tr -s ' ' || true)"
+        if ! contains "$state" 'State: running'; then
+            log "$(vsh pool-list --all 2>&1 || true)"
+            log "$(vsh pool-dumpxml "$POOL" 2>&1 || true)"
             die "storage pool $POOL will not start: $err"
         fi
     fi
@@ -307,7 +308,7 @@ storage_pool() {
 # libvirtd needs that network defined and active or the domain will not define.
 # libvirt-daemon-system defines it; nothing starts it on a fresh runner.
 default_network() {
-    local err
+    local err state
     vsh net-info "$NETWORK" >/dev/null 2>&1 \
         || die "libvirt's '$NETWORK' network is not defined -- libvirt-daemon-system should have"
     # Same treatment as the pool above: the reason has to reach the log, or a
@@ -317,8 +318,9 @@ default_network() {
         # operation is not valid", which is the normal case here: libvirtd
         # autostarts it. The readback is what decides, and it goes through a
         # variable for the pipefail reason given above.
-        if ! contains "$(vsh net-info "$NETWORK" 2>&1 | tr -s ' ')" 'Active: yes'; then
-            log "$(vsh net-dumpxml "$NETWORK" 2>&1)"
+        state="$(vsh net-info "$NETWORK" 2>&1 | tr -s ' ' || true)"
+        if ! contains "$state" 'Active: yes'; then
+            log "$(vsh net-dumpxml "$NETWORK" 2>&1 || true)"
             log "$(journalctl -u libvirtd --no-pager -n 40 2>&1 || true)"
             die "libvirt's '$NETWORK' network will not start: $err"
         fi
@@ -382,7 +384,7 @@ assert_volumes() {
 }
 
 assert_domain() {
-    local xml
+    local xml state info
     xml="$(vsh dumpxml "$DOMAIN" 2>&1 || true)"
 
     check "the domain runs under TCG, not KVM" \
@@ -423,10 +425,10 @@ assert_domain() {
     check "the NIC is on the $NETWORK network" \
         contains "$xml" "<source network='$NETWORK'"
 
-    check "the domain is running" \
-        contains "$(vsh domstate "$DOMAIN")" 'running'
-    check "the domain is set to autostart" \
-        contains "$(vsh dominfo "$DOMAIN" | tr -s ' ')" 'Autostart: enable'
+    state="$(vsh domstate "$DOMAIN" || true)"
+    check "the domain is running" contains "$state" 'running'
+    info="$(vsh dominfo "$DOMAIN" | tr -s ' ' || true)"
+    check "the domain is set to autostart" contains "$info" 'Autostart: enable'
 }
 
 assert_gone() {
@@ -440,12 +442,18 @@ assert_gone() {
 }
 
 main() {
+    local uid
     # qemu:///system is root's socket, and adding this user to the libvirt group
     # would not take effect in the shell that added it. Re-exec once rather than
     # scatter sudo through every virsh call -- and `sudo "$0"` rather than
     # `sudo -E`, which needs the SETENV sudoers tag a runner's NOPASSWD:ALL does
     # not grant. lib.sh puts .tools/bin back on PATH when it is sourced again.
-    if [ "$(id -u)" -ne 0 ]; then
+    # Assigned rather than inline: inline, an `id` that fails puts an empty
+    # string in a numeric test, the test is false, the re-exec is skipped, and
+    # every virsh below fails against root's socket saying nothing about why.
+    # As an assignment the failure reaches lib.sh:16's `set -e`. SC2312.
+    uid="$(id -u)"
+    if [ "$uid" -ne 0 ]; then
         have sudo || die "this gate needs root or sudo: it starts libvirtd and writes /etc/libvirt"
         log "re-running under sudo"
         exec sudo "$0" "$@"
