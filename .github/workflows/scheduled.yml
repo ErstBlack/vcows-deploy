@@ -35,6 +35,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # No tool cache here, and that is the decision rather than the oversight it
+      # looks like: ci.yml and image.yml both cache .tools/bin against the same
+      # key. A cache earns its place by frequency, and this job runs twelve times
+      # a year. Measured on the image job, which bootstraps identically --
+      # install-tools.sh downloads all six in 5-7s, and restoring the 129 MB
+      # cache takes 4s. One to three seconds, in a job where `just bundle` alone
+      # is 47-67s.
+      #
+      # It would also usually miss. GitHub evicts a cache unused for seven days,
+      # and the `tools-` key stays warm only while `check` keeps touching it on
+      # every PR -- so on a quiet month this restores nothing, downloads anyway,
+      # and pays a 2-3s save on top. Slower than having no cache block at all.
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
