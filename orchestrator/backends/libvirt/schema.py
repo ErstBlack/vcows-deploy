@@ -290,7 +290,7 @@ def _check_image_digest(cfg: dict) -> list[Problem]:
     12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
     page cache does not help; with no ``sha256`` declared the call returns in
     8 microseconds. ``config.load`` runs the offline checks for every verb
-    (``cli.py:271``, ``:301``, ``:312``, ``:485``), so ``destroy`` pays it even
+    (``cli.py:295``, ``:325``, ``:336``, ``:531``), so ``destroy`` pays it even
     though it reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
     touches ``cfg["image"]``.
 

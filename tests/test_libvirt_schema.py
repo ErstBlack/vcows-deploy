@@ -384,6 +384,10 @@ def test_a_nic_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     cfg["vms"][1]["nics"][0]["ip_cidr"] = "192.168.122.60/24"
     problems = schema.validate(cfg)
     assert "vms[0].nics[0]]: 'default' is not of type 'object'" in messages(problems)
+    # The consequence of the skip, and the reason it is the right trade here:
+    # vms[0] registers no address, so vms[1] reusing one is not reported. That
+    # is a round trip the operator pays -- and the alternative is a crash.
+    assert "already used by" not in messages(problems)
 
 
 def test_duplicate_mac_across_vms_is_rejected(cfg):
