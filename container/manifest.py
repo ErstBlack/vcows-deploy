@@ -29,9 +29,10 @@ QUERY = "%{NAME}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\t%{SOURCERPM}\t%{VENDOR}\n"
 
 #: rpm renders a tag the package does not carry as the literal string
 #: ``(none)``, which is truthy. The rows that hit this are the ``gpg-pubkey``
-#: pseudo-packages: ``Containerfile:83`` imports the EPEL key and ``:91`` removes
-#: ``epel-release`` without removing the key from the rpmdb, so two of them are
-#: in every image. Measured on rpm 4.19.1.1: the conditional query format
+#: pseudo-packages: the ``Containerfile``'s ``dnf`` layer installs
+#: ``epel-release``, which imports the EPEL key, and removes the package again
+#: without removing the key from the rpmdb, so two of them are in every image.
+#: Measured on rpm 4.19.1.1: the conditional query format
 #: ``%|SOURCERPM?{%{SOURCERPM}}:{}|`` does **not** help -- the tag tests as
 #: present and still renders ``(none)`` -- so the sentinel has to be dropped
 #: here. ``%{VENDOR}`` renders it too, and is deliberately left alone: `tofu`
