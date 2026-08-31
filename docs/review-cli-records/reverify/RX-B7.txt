@@ -1,0 +1,77 @@
+RX-B7 / issue #80 -- reverification transcript
+worktree /home/ssullivan/vcows-wt/cli-records at aed962d; captured 2026-08-31T06:04:51Z
+fixtures: mktemp-style scratch, URI qemu+ssh://vcows@hypervisor.invalid/system
+
+$ podman --version
+podman version 5.8.2
+$ podman images localhost/vcows-deploy:0.1.0.0
+localhost/vcows-deploy:0.1.0.0 84dcf01a718d
+$ podman run --rm localhost/vcows-deploy:0.1.0.0 version   # which revision the image carries
+vcows-deploy 0.1.0.0
+image   672a500a5f3db394e91a3b91fb383517e504246d built 2026-08-31T03:52:16Z
+base    quay.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+provider registry.opentofu.org/dmacvicar/libvirt 0.9.8
+packages 160 from 115 sources
+tofu 1.12.6 on linux_amd64
+exit=0
+$ git -C /home/ssullivan/vcows-wt/cli-records diff --name-only 672a500 aed962d -- orchestrator container licenses Containerfile .containerignore
+(no output = no image-shipped path changed)
+
+id -u / umask / getenforce:
+1000
+0022
+Enforcing
+
+================ ARM A: --user 4242, --run-dir /runs ================
+$ podman unshare find runs -printf "%M %U:%G %p\n"   # before
+drwxr-xr-x 0:0 runs
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 deploy --run-dir /runs /config.yaml
+vcows: cannot make /runs 0700; it stays 0755. This run's seed ISOs carry user_data verbatim, and anyone who can read that directory can read them.
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ podman unshare find runs -printf "%M %U:%G %p\n"   # after
+drwxr-xr-x 0:0 runs
+^^ ARM A: no run.json, no manifest.json. /runs is still 0755 root-owned.
+
+================ ARM B: identical failure, NO --user ================
+$ podman run --rm \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 deploy --run-dir /runs /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ podman unshare find runs -printf "%M %U:%G %p\n"   # after
+drwx------ 0:0 runs
+-rw------- 0:0 runs/manifest.json
+-rw------- 0:0 runs/run.json
+$ podman unshare cat runs/run.json
+{
+  "backend": "libvirt",
+  "command": "deploy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "error": "libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer",
+  "finished": "20260831T060455Z",
+  "outcome": "failed",
+  "started": "20260831T060454Z",
+  "vcows": "0.1.0.0"
+}
+^^ ARM B: the same libvirt failure DOES write the record.
+
+================ MECHANISM: the write, and the suppression ================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./runs:/runs:Z --entrypoint /usr/bin/python3 \
+    localhost/vcows-deploy:0.1.0.0 -c '<the _record write, then the same write under contextlib.suppress(OSError)>'
+uid= 4242 mode= 0o755 owner_uid= 0
+RAISED PermissionError [Errno 13] Permission denied: '/runs/run.json'
+suppress block completed, no exception propagated
+exit=0
+
+VERDICT: RX-B7 / #80 REPRODUCES on both arms at aed962d.

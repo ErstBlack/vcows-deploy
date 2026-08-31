@@ -1,0 +1,85 @@
+issue #90, item 'orchestrator/cli.py:148-152' -- the chmod guard's comment
+reverified at aed962d, 2026-08-31T06:08:15Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "148,163p"
+148:    # `main` sets a 0o077 umask, so a directory vcows created is already private
+149:    # and this has work to do only for one an operator handed us. Skipped when it
+150:    # is already tight, because the chmod is the half that can fail: a bind mount
+151:    # owned by another UID (README's `--user`) refuses it, and that must not stop
+152:    # a run that is otherwise fine.
+153:    if path.stat().st_mode & 0o077:
+154:        try:
+155:            os.chmod(path, 0o700)
+156:        except PermissionError:
+157:            print(
+158:                f"vcows: cannot make {path} 0700; it stays "
+159:                f"{stat.S_IMODE(path.stat().st_mode):04o}. This run's seed ISOs "
+160:                f"carry user_data verbatim, and anyone who can read that "
+161:                f"directory can read them.",
+162:                file=sys.stderr,
+163:            )
+
+================ 1. WHICH CALL RAISES, AND WITH WHICH ERRNO ================
+$ podman run --rm -v ./runs:/runs:ro,Z --entrypoint /usr/bin/python3 localhost/vcows-deploy:0.1.0.0 -c <mkdir vs chmod>
+exists= True is_dir= True mode= 0o755
+Path.mkdir(exist_ok=True): returned, no exception
+bare os.mkdir RAISED FileExistsError 17 EEXIST [Errno 17] File exists: '/runs'
+stat mode & 0o077 = 0o55 -> the guard at :153 is entered
+os.chmod RAISED OSError 30 EROFS [Errno 30] Read-only file system: '/runs'
+isinstance(OSError(EROFS,...), PermissionError)? False
+exit=0
+
+So: the mkdir at :134 is NOT the raiser -- Path.mkdir(exist_ok=True) swallows
+the EEXIST. The chmod at :155 raises OSError(EROFS), which is not a
+PermissionError, so it escapes :156.
+
+================ 2. THE TWO ARMS, THROUGH THE REAL IMAGE ================
+-- EROFS arm: --run-dir /runs, /runs mounted :ro, no --user --
+$ podman run --rm -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:ro,Z \
+    localhost/vcows-deploy:0.1.0.0 deploy --run-dir /runs /config.yaml
+error: OSError: [Errno 30] Read-only file system: '/runs'
+exit=1
+
+-- EACCES arm: --run-dir /runs under --user 4242, /runs rw 0755 root-owned --
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy:0.1.0.0 deploy --run-dir /runs /config.yaml
+vcows: cannot make /runs 0700; it stays 0755. This run's seed ISOs carry user_data verbatim, and anyone who can read that directory can read them.
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+================ 3. WHAT A WIDENED GUARD WOULD DO INSTEAD ================
+Harness: a 0555 run directory handed in with --run-dir, cli.os.chmod stubbed
+to raise OSError(EROFS). Fake backend, no tofu, no hypervisor.
+
+-- unmutated: except PermissionError at :156 --
+$ .venv/bin/python /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/t90_guard.py
+error: OSError: [Errno 30] Read-only file system: '/tmp/tmpveupzz4r/runs-ro'
+dir mode = 0o555  & 0o077 = 0o55
+main() returned 1
+
+-- mutated: except OSError at :156 --
+$ sed -n "156p" orchestrator/cli.py
+        except OSError:
+$ .venv/bin/python /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/t90_guard.py
+vcows: cannot make /tmp/tmpungw2x75/runs-ro 0700; it stays 0555. This run's seed ISOs carry user_data verbatim, and anyone who can read that directory can read them.
+error: PermissionError: [Errno 13] Permission denied: '/tmp/tmpungw2x75/runs-ro/run.json'
+dir mode = 0o555  & 0o077 = 0o55
+  app01                skip    exists as 'app01' (not compared)
+  app02                skip    exists as 'app02' (not compared)
+main() returned 1
+$ restore
+cli.py restored, identical
+
+VERDICT: #90's claim HOLDS in both halves.
+EROFS does escape :156. And widening the catch is worse: the uncaught OSError
+names the cause and the path at the point it happened; the widened guard names
+the MODE, lets the run continue, and dies later at run.json with an errno that
+does not mention the read-only mount. Fix the comment, not the code.

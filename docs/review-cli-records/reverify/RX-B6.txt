@@ -1,0 +1,53 @@
+RX-B6 / issue #89 -- "tofu": null with the reason on stderr only
+reverified at aed962d, 2026-08-31T06:06:45Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "333,337p;350p;430,435p"
+333:    try:
+334:        return tofu.version(workdir)
+335:    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
+336:        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
+337:        return None
+350:    run.extra["problems"] = [str(p) for p in problems]
+430:    _record(
+431:        run,
+432:        "ok",
+433:        created=sorted(creating),
+434:        tofu=_tofu_version(workdir),
+435:    )
+$ grep -n "" orchestrator/tofu.py | sed -n "273,281p"    # return type is dict
+273:def version(workdir: Path | None = None) -> dict:
+274:    """``terraform_version``, ``platform`` and the resolved ``provider_selections``.
+275:
+276:    The R5 build manifest records what was *built*; this records what actually ran,
+277:    which is the only one of the two a runtime can observe. ``provider_selections``
+278:    is empty unless this is asked inside an initialised directory, which is why
+279:    ``workdir`` is here at all.
+280:    """
+281:    return _capture("version", workdir)
+$ grep -n "" tests/test_cli.py | sed -n "297,300p"
+297:    assert record["tofu"] is None
+298:    assert record["created"] == ["app01", "app02"]
+299:    assert (run / "inventory.json").is_file()
+300:    assert "cannot record the tofu version" in capsys.readouterr().err
+
+================ REPRODUCTION ================
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b6 -p no:randomly
+RX-B6 rc            = 0
+RX-B6 record[tofu]  = None
+RX-B6 record[problems] = []
+RX-B6 record keys   = ['backend', 'command', 'created', 'decisions', 'deployment', 'finished', 'outcome', 'problems', 'started', 'tofu', 'tofu_warnings', 'vcows']
+RX-B6 stderr        = vcows: cannot record the tofu version (tofu version failed (exit 1))
+RX-B6 reason in record?  False
+RX-B6 tofu.version def line   = def version(workdir: Path | None = None) -> dict:
+RX-B6 tofu.version return ann = dict  (unpatched, read at test entry)
+RX-B6 _tofu_version return ann = dict | None
+.
+1 passed in 0.53s
+exit=0
+
+VERDICT: RX-B6 REPRODUCES. The record carries tofu: null and the reason
+appears nowhere in it. The finding's own suggested fix is REJECTED:
+tofu.version -> dict, so putting a sentence in that field makes it
+dict | str. run.extra["problems"] already exists from cli.py:350 and is
+present, empty, in the ok record above.

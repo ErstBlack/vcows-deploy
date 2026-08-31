@@ -1,0 +1,57 @@
+RX-B3 / issue #89 -- the destroy record never names the VMs skipped as another deployment's
+reverified at aed962d, 2026-08-31T06:05:59Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/cli.py | sed -n "527p;528,537p;542p;548p;575,581p"
+527:        run.extra["problems"] = [str(p) for p in advisory]
+528:        for e in others:
+529:            assert e.marker is not None  # noqa: S101  `others` comes from `marked`
+530:            print(
+531:                _row(
+532:                    e.name,
+533:                    "skip",
+534:                    f"belongs to deployment "
+535:                    f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}",
+536:                )
+537:            )
+542:            _record(run, "nothing-to-destroy")
+548:            return 1
+575:    _record(
+576:        run,
+577:        "failed" if out.failed else "partial" if out.skipped else "ok",
+578:        destroyed=sorted(out.destroyed),
+579:        skipped=sorted(out.skipped),
+580:        problems=run.extra["problems"] + [str(p) for p in out.problems],
+581:    )
+
+================ REPRODUCTION ================
+backend.world = [ours("app01"), ours("elsewhere", "lab-b")]; destroy --yes
+$ .venv/bin/python -m pytest -q -s tests/test_rx_repro.py::test_rx_b3 -p no:randomly
+RX-B3 rc          = 0
+RX-B3 stdout rows =
+   |   elsewhere            skip    belongs to deployment 'lab-b', not 'lab-a'
+   |   app01                destroy app01
+   | destroyed 1 object(s)
+RX-B3 record      = {
+  "backend": "fake",
+  "command": "destroy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "destroyed": [
+    "app01"
+  ],
+  "finished": "20260831T060559Z",
+  "outcome": "ok",
+  "problems": [],
+  "skipped": [],
+  "started": "20260831T060559Z",
+  "vcows": "0.1.0.0"
+}
+RX-B3 'elsewhere' anywhere in run.json?  False
+RX-B3 'lab-b' anywhere in run.json?      False
+.
+1 passed in 0.43s
+exit=0
+
+VERDICT: RX-B3 REPRODUCES. 'elsewhere' and 'lab-b' appear on stdout and
+in no shipped artifact.

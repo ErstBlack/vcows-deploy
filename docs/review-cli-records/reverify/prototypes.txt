@@ -1,0 +1,116 @@
+Prototype measurement for issues #80 and #85
+captured 2026-08-31T06:15:07Z. Scratch copy only -- nothing under
+/home/ssullivan/vcows-wt/cli-records/orchestrator or /home/ssullivan/vcows-wt/cli-records/tests was modified at any point.
+
+The scratch copy has no .tools/bin, so the tofu gate is closed there and its
+baseline is 401 passed / 35 skipped rather than the worktree's 411 / 25.
+The delta between arms is what this measures, not the absolute count.
+
+================ scratch baseline, unpatched ================
+$ diff -r -x __pycache__ /home/ssullivan/vcows-wt/cli-records/orchestrator ./orchestrator
+(identical)
+$ .venv/bin/python -m pytest -q
+401 passed, 35 skipped in 9.07s
+
+================ the two proposed tests, UNPATCHED ================
+$ .venv/bin/python -m pytest -q tests/test_proposed.py -p no:randomly
+=========================== short test summary info ============================
+FAILED tests/test_proposed.py::test_a_run_record_that_could_not_be_written_says_so - AssertionError: assert ('left no record' in 'error: RuntimeError: the conne...
+FAILED tests/test_proposed.py::test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence[argv0] - assert 'PermissionError' not in "error: Perm...table/run'\n"
+FAILED tests/test_proposed.py::test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence[argv1] - assert 'PermissionError' not in "error: Perm...table/run'\n"
+3 failed in 0.69s
+
+================ apply both prototypes ================
+$ diff -u cli.py.orig orchestrator/cli.py
+--- /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/cli.py.orig	2026-08-31 02:02:23.963713262 -0400
++++ orchestrator/cli.py	2026-08-31 02:15:19.253981226 -0400
+@@ -120,7 +120,7 @@
+     """
+     path = (
+         Path(override) if override else Path("runs") / cfg["deployment"] / _timestamp()
+-    )
++    ).resolve()
+     # `exist_ok` covers an existing *directory* and nothing else, so a `--run-dir`
+     # naming a regular file reaches `main`'s catch-all as the raw `FileExistsError`
+     # `UsageError` above exists to replace. Classified here, before the mkdir,
+@@ -131,8 +131,13 @@
+             f"directory. Pass a --run-dir that does not exist yet, or one that "
+             f"is an empty directory."
+         )
+-    path.mkdir(parents=True, exist_ok=True)
+-    path = path.resolve()
++    try:
++        path.mkdir(parents=True, exist_ok=True)
++    except OSError as exc:
++        raise UsageError(
++            f"cannot create the run directory {path}: {exc.strerror}. Every run "
++            f"writes its own directory; check the mount and the UID it is owned by."
++        ) from exc
+     if any(path.iterdir()):
+         raise UsageError(
+             f"{path} is not empty. Every run writes its own directory -- the "
+@@ -257,9 +262,19 @@
+         return body()
+     except BaseException as exc:
+         # Suppressed, not handled: a full disk here must not replace the
+-        # exception that says what actually went wrong.
+-        with contextlib.suppress(OSError):
++        # exception that says what actually went wrong. Reported, though: the
++        # run directory is the whole account an air-gapped site ships back, and
++        # its absence is otherwise indistinguishable from a run that never ran.
++        try:
+             _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
++        except OSError as unwritable:
++            with contextlib.suppress(OSError):
++                print(
++                    f"vcows: this run left no record -- {run.path / 'run.json'} "
++                    f"could not be written ({unwritable.strerror}). The failure "
++                    f"below is reported on this stream only.",
++                    file=sys.stderr,
++                )
+         raise
+ 
+ 
+
+================ lint and typecheck the prototypes ================
+$ .venv/bin/ruff check orchestrator/cli.py
+All checks passed!
+$ .venv/bin/ruff format --check orchestrator/cli.py
+1 file already formatted
+$ .venv/bin/ty check orchestrator/
+All checks passed!
+
+================ the two proposed tests, PATCHED ================
+$ .venv/bin/python -m pytest -q tests/test_proposed.py -p no:randomly
+...                                                                      [100%]
+3 passed in 0.90s
+
+================ full scratch suite, PATCHED + the two new tests ================
+$ .venv/bin/python -m pytest -q --ignore=tests/test_rx_repro.py
+404 passed, 35 skipped in 8.82s
+401 -> 404: exactly the three new test ids (#80 x1, #85 x2). Nothing else moved.
+
+================ the messages, before and after ================
+-- #85, default layout, cwd's runs/ mode 0555 --
+$ .venv/bin/python <deploy, default run dir>   (patched)
+vcows: cannot create the run directory /tmp/tmp3nvvtjrq/runs/lab-a/20260831T061531Z: Permission denied. Every run writes its own directory; check the mount and the UID it is owned by.
+cwd = /tmp/tmp3nvvtjrq
+default-layout rc = 1
+$ ... (unpatched)
+error: PermissionError: [Errno 13] Permission denied: 'runs/lab-a'
+cwd = /tmp/tmpcfr5ayqp
+default-layout rc = 1
+
+-- #80, body fails AND the record write fails --
+$ .venv/bin/python <deploy, stubbed _write_json>   (patched)
+vcows: this run left no record -- /tmp/tmppinvr7x0/handed-over/run.json could not be written (Permission denied). The failure below is reported on this stream only.
+error: RuntimeError: the connection dropped
+rc = 1
+run.json present: False
+$ ... (unpatched)
+error: RuntimeError: the connection dropped
+rc = 1
+run.json present: False
+
+$ restore
+cli.py restored, identical to aed962d

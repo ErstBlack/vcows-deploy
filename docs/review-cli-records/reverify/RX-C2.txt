@@ -1,0 +1,70 @@
+RX-C2 / issue #89 -- urlsplit's ValueError escapes _check_target
+reverified at aed962d, 2026-08-31T06:07:38Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/backends/libvirt/schema.py | sed -n "346,352p"
+346:def _check_target(target: dict) -> list[Problem]:
+347:    """R-D: the URI is ours to assemble, not the operator's to decorate."""
+348:    where = "target.libvirt.uri"
+349:    uri = target["uri"]
+350:    parts = urlsplit(uri)
+351:
+352:    problems: list[Problem] = []
+$ grep -n "" orchestrator/cli.py | sed -n "719p"    # main's catch-all
+715:        return 1
+716:    except KeyboardInterrupt:
+717:        print("interrupted", file=sys.stderr)
+718:        return 1
+719:    except Exception as exc:
+720:        # Backends raise their own exceptions -- findings.md §3 explicitly rules out
+721:        # a shared hierarchy, so there is nothing narrower to catch and importing
+722:        # one would break the seam. `str()` on the libvirt backend's DestroyError
+723:        # already carries every per-object failure.
+724:        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+725:        if os.environ.get("VCOWS_TRACEBACK"):
+$ grep -n "" orchestrator/config.py | sed -n "117,119p"
+117:    Raises ``ConfigError`` carrying *every* problem rather than the first: an
+118:    operator editing a config at a site should not have to round-trip once per
+119:    typo.
+
+================ the three raising netloc classes ================
+$ .venv/bin/python -c "<urlsplit over four URIs>"
+RAISE 'qemu+ssh://[2001:db8::1/system' -> Invalid IPv6 URL
+RAISE 'qemu+ssh://2001:db8::1]/system' -> Invalid IPv6 URL
+RAISE 'qemu+ssh://h＃x/system' -> netloc 'h＃x' contains invalid characters under NFKC normalization
+ok    'qemu+ssh://[2001:db8::1]/system'
+exit=0
+
+================ end to end ================
+c-ipv6.yaml   : URI 'qemu+ssh://[2001:db8::1/system', plus vms[0].vcpus = 0
+c-ipv6ctl.yaml: URI 'qemu+ssh://[2001:db8::1]/system', same vcpus = 0
+
+$ .venv/bin/python -m orchestrator.cli validate c-ipv6.yaml
+error: ValueError: Invalid IPv6 URL
+exit=1
+
+$ .venv/bin/python -m orchestrator.cli validate c-ipv6ctl.yaml   # control
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[0].vcpus]: 0 is less than the minimum of 1
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+
+$ .venv/bin/python -m orchestrator.cli deploy c-ipv6.yaml --run-dir $D
+error: ValueError: Invalid IPv6 URL
+exit=1
+$ find $D
+/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/tx-rundir-eb2K
+
+$ .venv/bin/python -m orchestrator.cli deploy c-ipv6ctl.yaml --run-dir $D2   # control
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[0].vcpus]: 0 is less than the minimum of 1
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+$ find $D2
+/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L4/tx-rundir-Qef8
+
+VERDICT: RX-C2 REPRODUCES verbatim. Every other problem in the document is
+lost. Both run directories are empty, so this is a message-quality defect on
+a loud, non-destructive exit 1 -- not a lost-record path.

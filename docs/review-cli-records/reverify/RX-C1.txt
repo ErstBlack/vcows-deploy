@@ -1,0 +1,88 @@
+RX-C1 / issue #89 -- a structural VM error suppresses _check_nics
+reverified at aed962d, 2026-08-31T06:07:36Z
+
+================ ANCHORS ================
+$ grep -n "" orchestrator/backends/libvirt/schema.py | sed -n "243,251p"
+243:    for i, vm in enumerate(cfg["vms"]):
+244:        where = f"vms[{i}]"
+245:        structural = _check_vm_structure(vm, where)
+246:        problems += structural
+247:        if structural:
+248:            # The checks below index into fields the schema just rejected.
+249:            continue
+250:        problems += _check_firmware(vm, where)
+251:        problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
+
+$ grep -n "" orchestrator/backends/libvirt/schema.py | sed -n "425,427p;533,554p"   # the #27 fix, one level down
+425:def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
+426:    validator = jsonschema.Draft202012Validator(VM_SCHEMA)
+427:    return problems_from(validator.iter_errors(vm), at=where)
+533:        gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
+534:        # Only the gateway-outside-network check needs both values. Registering
+535:        # the address needs `iface` alone: guarding it on the gateway too means a
+536:        # NIC whose gateway did not parse never claims its address, so the next
+537:        # VM to reuse that address is not reported until the operator has fixed
+538:        # the gateway and re-run -- the round trip `validate` exists to avoid.
+539:        if iface is not None:
+540:            if gateway is not None and gateway not in iface.network:
+541:                problems.append(
+542:                    Problem.error(
+543:                        f"gateway {gateway} is outside {iface.network}",
+544:                        where=f"{at}.gateway",
+545:                    )
+546:                )
+547:            owner = seen_ips.setdefault(str(iface.ip), at)
+548:            if owner != at:
+549:                problems.append(
+550:                    Problem.error(
+551:                        f"address {iface.ip} is already used by {owner}",
+552:                        where=f"{at}.ip_cidr",
+553:                    )
+554:                )
+
+$ grep -n "" orchestrator/backends/base.py | sed -n "60,62p"
+60:
+61:    @property
+62:    def fatal(self) -> bool:
+
+================ REPRODUCTION ================
+Four configs from tests/conftest.CONFIG. In all four, vms[1] reuses vms[0]'s
+ip_cidr 192.168.122.60/24. URI rewritten to hypervisor.invalid.
+
+--- variant: vcpus0 ---
+$ .venv/bin/python -m orchestrator.cli validate c-vcpus0.yaml
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[0].vcpus]: 0 is less than the minimum of 1
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+
+--- variant: typo ---
+$ .venv/bin/python -m orchestrator.cli validate c-typo.yaml
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[0]]: Additional properties are not allowed ('cpus' was unexpected)
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+
+--- variant: control ---
+$ .venv/bin/python -m orchestrator.cli validate c-control.yaml
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+
+--- variant: gw27 ---
+$ .venv/bin/python -m orchestrator.cli validate c-gw27.yaml
+  warning [target.libvirt.ssh_keyfile]: /run/secrets/id_ed25519 does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  warning [target.libvirt.known_hosts]: /run/secrets/known_hosts does not exist here. It is read on the machine running the deploy, not on the target, so this matters only if that is this one.
+  error [vms[0].nics[0].gateway]: 'not-an-ip' does not appear to be an IPv4 or IPv6 address
+  error [vms[1].nics[0].ip_cidr]: address 192.168.122.60 is already used by vms[0].nics[0]
+  warning [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it (No such file or directory); a VM whose disk_gb is below the image's virtual size will fail at create time
+exit=1
+
+VERDICT: RX-C1 REPRODUCES verbatim.
+vcpus0 and typo: the duplicate is NOT reported. control: it is.
+gw27 (issue #27's own case): BOTH are reported -- #27's fix works, and its
+scope is nic-level only. The same defect one level up is still open.
