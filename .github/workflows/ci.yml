@@ -18,7 +18,7 @@ on:
   # so a branch push does not run twice once a PR exists.
   workflow_dispatch: {}
 
-# scripts/install-tools.sh:6-11 refuses marketplace actions because they run
+# scripts/install-tools.sh refuses marketplace actions because they run
 # "somebody else's code on the runner with the job's token". The tokens these
 # jobs actually need is the smaller half of that: nothing here writes to the
 # repository. `cache` and `upload-artifact` authenticate with the runner's own

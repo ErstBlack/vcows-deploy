@@ -414,8 +414,9 @@ def test_a_path_that_will_not_resolve_is_skipped_not_unlinked():
 
 def test_the_disks_deleted_are_the_ones_the_domain_names_now():
     """`cmd_destroy` waits on a human at a terminal between the two reads, and
-    the wait is unbounded. findings.md:87 claimed these paths were read
-    immediately before undefining; until now they were not read again at all."""
+    the wait is unbounded. findings.md's "deliberately absent: disk paths" rule
+    claimed these paths were read immediately before undefining; until now they
+    were not read again at all."""
     dom = domain(active=False, disks=["/pool/app01.qcow2"])
     stale = target(dom, ["/pool/app01-seed.iso"])
     pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})

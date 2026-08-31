@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check the two states that are cheap to detect and expensive to misdiagnose.
 #
-# pyproject.toml:26-34 describes the venv trap: without --system-site-packages
+# pyproject.toml describes the venv trap: without --system-site-packages
 # the python3-libvirt RPM is invisible, and without an explicit
 # --python /usr/bin/python3 uv installs its own managed CPython whose
 # site-packages holds no RPMs at all -- **so the flag appears to work while

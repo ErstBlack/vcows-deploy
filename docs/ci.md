@@ -30,8 +30,8 @@ nothing, because nothing lives there.
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
 
 The `When` column describes GitHub, where `push` is scoped to `branches: [master]`
-(`.github/workflows/ci.yml:12-19`) -- so a feature branch with no PR open runs
-neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
+(`.github/workflows/ci.yml`'s `on:` block) -- so a feature branch with no PR open
+runs neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
 trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
 `rules:`, so there both also run on every push.
 
@@ -220,9 +220,9 @@ either platform ever called it, so it only ever ran on one developer's box.
 
 It comes back once the artifact above is the thing being signed. That work does
 not have to rediscover anything: `docs/tooling-2026-08-30.md` section 4.2 has the
-cosign 3 API, and `docs/review-2026-08-30/finders/G-build-pipeline.md:47-66` has
-the verified air-gapped reproduction. The short version, because it cost a
-session to find. `sign-blob` requires `--bundle`, since a bare detached signature
+cosign 3 API, and `docs/review-2026-08-30/finders/G-build-pipeline.md`'s
+"`sign.sh --verify` works with no network" section has the verified air-gapped
+reproduction. The short version, because it cost a session to find. `sign-blob` requires `--bundle`, since a bare detached signature
 is no longer a complete artifact. `--tlog-upload=false` is refused against the
 default signing config, so you need one from `cosign signing-config create` that
 names no transparency log. Verification needs `--insecure-ignore-tlog`. Without

@@ -7,7 +7,7 @@
 
 variable "uri" {
   type        = string
-  description = "libvirt connection URI, always the qemu+sshcmd:// form -- preflight uses qemu+ssh:// against the same config, because libvirt's own client does not recognise sshcmd and the provider's ssh cannot reach a split-daemon host (schema.py:198-211). Carrying no SSH options at all: the provider runs ssh, so ssh_keyfile and known_hosts reach it through ~/.ssh/config, which the container entrypoint writes. The operator never supplies a query string, and never a password: both are refused before render."
+  description = "libvirt connection URI, always the qemu+sshcmd:// form -- preflight uses qemu+ssh:// against the same config, because libvirt's own client does not recognise sshcmd and the provider's ssh cannot reach a split-daemon host (schema.py's connection_uri). Carrying no SSH options at all: the provider runs ssh, so ssh_keyfile and known_hosts reach it through ~/.ssh/config, which the container entrypoint writes. The operator never supplies a query string, and never a password: both are refused before render."
 }
 
 variable "pool" {

@@ -17,7 +17,7 @@
 # `git status --porcelain` as the guard. Measured: it is blind to a second edit
 # of an already-modified file, because the porcelain line stays ` M path` either
 # way -- and a second edit is the common case inside a turn. A guard that misses
-# it rebuilds the failure conftest.py:7 names, so this hashes the contents of
+# it rebuilds the failure conftest.py names, so this hashes the contents of
 # the files the six gates read or are configured by. 0.033s against lint's 2.9s:
 # correctness is free here.
 #

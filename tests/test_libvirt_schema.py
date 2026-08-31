@@ -172,7 +172,7 @@ def test_bad_uris_are_rejected(cfg, uri, expect):
 
 
 def test_a_uri_that_will_not_parse_loses_no_other_problem(cfg):
-    """`config.py:117-119`: every problem rather than the first. `_check_target`
+    """`config.load`: every problem rather than the first. `_check_target`
     is the first check `validate` runs, so a `ValueError` out of `urlsplit` took
     the whole document's report with it."""
     cfg["target"]["libvirt"]["uri"] = "qemu+ssh://[2001:db8::1/system"
@@ -367,7 +367,7 @@ def test_a_structural_error_outside_nics_does_not_hide_a_duplicate_address(
 def test_a_vm_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     """The `continue` has to survive shapes `_check_nics` and `_check_firmware`
     cannot read, and this is the one that is not reachable through `validate`:
-    `config.py:182-185` returns the core schema's errors without ever asking the
+    `config.load` returns the core schema's errors without ever asking the
     backend, and calling `schema.validate` with one anyway raises `TypeError` out
     of `_check_volume_names` -- on master too, for a reason this guard is nowhere
     near. So the predicate is pinned directly, one clause at a time."""
@@ -536,8 +536,8 @@ def test_a_mismatched_sha256_is_an_error(cfg, tmp_path):
 
 
 def test_an_uppercase_sha256_matches(cfg, tmp_path):
-    """`config.py:57` admits [0-9a-fA-F]{64}, so the comparison must not be
-    the thing that rejects a config the schema accepted."""
+    """`config.py`'s `sha256` pattern admits [0-9a-fA-F]{64}, so the comparison
+    must not be the thing that rejects a config the schema accepted."""
     _, digest = golden(tmp_path, cfg)
     cfg["image"]["sha256"] = digest.upper()
     assert errors(schema.validate(cfg)) == []

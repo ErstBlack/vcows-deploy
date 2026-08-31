@@ -262,8 +262,9 @@ def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
     not pass, the question is narrower: are the fields *these* checks index still
     the right shape. `_check_nics` reads `vm["nics"]` and, through `mac_of`,
     `vm["name"]`; `_check_firmware` uses `.get` throughout. A `vcpus` out of range
-    or an unexpected key says nothing about any of them, and skipping anyway costs
-    the operator the edit round trip `config.py:117-119` rules out.
+    or an unexpected key says nothing about any of them, and skipping anyway
+    costs the operator the edit round trip `config.load`'s every-problem
+    contract rules out.
 
     **The container's shape is only half the question, and asking only it was a
     regression.** A nic that is a mapping with one wrongly-typed *field* passes
@@ -297,7 +298,7 @@ def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
 def _check_image_digest(cfg: dict) -> list[Problem]:
     """The declared ``image.sha256``, actually computed.
 
-    The field is schema-validated (``config.py:57``, under
+    The field is schema-validated (``config.py``'s ``sha256`` pattern, under
     ``additionalProperties: False``) and was never checked, so a corrupted or
     substituted golden image deployed with no signal. A pattern that only ever
     proved the string was 64 hex characters reads as enforcement and is not.
@@ -307,9 +308,9 @@ def _check_image_digest(cfg: dict) -> list[Problem]:
     12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
     page cache does not help; with no ``sha256`` declared the call returns in
     8 microseconds. ``config.load`` runs the offline checks for every verb
-    (``cli.py:295``, ``:325``, ``:336``, ``:531``), so ``destroy`` pays it even
-    though it reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
-    touches ``cfg["image"]``.
+    (``cmd_validate``, ``cmd_preflight``, ``cmd_deploy``, ``cmd_destroy``), so
+    ``destroy`` pays it even though it reads only ``cfg["backend"]`` and
+    ``cfg["deployment"]`` and never touches ``cfg["image"]``.
 
     That waste is accepted rather than engineered around. An operator who sets
     the field has asked for the check, and the alternative -- verifying in

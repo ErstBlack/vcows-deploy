@@ -139,9 +139,9 @@ main() {
     #
     # Each names the instruction it covers, not the line. A line number in this
     # file pointing into that one goes stale on every edit above the target, and
-    # hadolint already prints the line: these read :82, :94, :108 and :149, and
-    # one 35-line comment added to the Containerfile put all four out by 36
-    # without touching any of the instructions they describe.
+    # hadolint already prints the line anyway: one 35-line comment added to the
+    # Containerfile once put four such numbers out by 36 without touching any of
+    # the instructions they described.
     #
     # DL4006 wants pipefail before a piped RUN. Both pipes verify a download --
     # the tofu RPM and the provider zip -- and both are
@@ -173,8 +173,8 @@ main() {
     # running shellcheck does not know; an unknown `-o` name here exits non-zero
     # and fails this gate instead. The EPEL shellcheck on the maintainer's box
     # (0.10.0) is newer than the one os-deps.sh installs from apt on ubuntu:24.04,
-    # so that difference is real and has to fail loudly. conftest.py:7: a gate
-    # that quietly passes because it did not run is worse than no gate.
+    # so that difference is real and has to fail loudly. conftest.py: a gate that
+    # quietly passes because it did not run is worse than no gate.
     #
     # Measured over these same two globs before enabling, ~1160 lines:
     # check-unassigned-uppercase 0, quote-safe-variables 0,
