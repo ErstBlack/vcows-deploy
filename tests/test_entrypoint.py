@@ -12,6 +12,7 @@ Ungated and offline: nothing here imports libvirt or touches a hypervisor.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,62 @@ def test_an_unwritable_home_says_what_it_costs(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "could not write" in err
     assert "were not installed" in err
+
+
+# -- #13: which verbs get an SSH config at all ------------------------------
+
+
+@pytest.fixture
+def no_exec(monkeypatch):
+    """`main` ends in `os.execv`, which would replace the test process."""
+    calls = []
+    monkeypatch.setattr(os, "execv", lambda path, argv: calls.append((path, argv)))
+    return calls
+
+
+@pytest.mark.parametrize("command", ["validate", "version"])
+def test_an_offline_verb_writes_no_ssh_config(
+    tmp_path, fake_home, no_exec, monkeypatch, command
+):
+    """`cmd_validate` documents itself as "Offline only. No connection is opened
+    and nothing is written", and inside the image that was false: `install` ran
+    for every verb (#13). The docstring is the correct half."""
+    monkeypatch.setattr(
+        sys, "argv", ["entrypoint", command, str(config_file(tmp_path))]
+    )
+    entrypoint.main()
+
+    assert not (fake_home / ".ssh").exists()
+    assert no_exec == [
+        (entrypoint.VCOWS, ["vcows", command, str(config_file(tmp_path))])
+    ]
+
+
+@pytest.mark.parametrize("command", ["preflight", "deploy", "destroy"])
+def test_a_connecting_verb_still_gets_its_ssh_config(
+    tmp_path, fake_home, no_exec, monkeypatch, command
+):
+    """The other half. Skipping the install for a verb that connects is the
+    failure this must not trade for the one above."""
+    monkeypatch.setattr(
+        sys, "argv", ["entrypoint", command, str(config_file(tmp_path))]
+    )
+    entrypoint.main()
+
+    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
+
+
+def test_a_config_file_named_like_an_offline_verb_is_not_read_as_one(
+    tmp_path, fake_home, no_exec, monkeypatch
+):
+    """`verb` takes the first non-flag argument rather than testing membership,
+    so a config that happens to be called `validate` cannot suppress the install
+    for a `deploy`."""
+    named = config_file(tmp_path).rename(tmp_path / "validate")
+    monkeypatch.setattr(sys, "argv", ["entrypoint", "deploy", str(named)])
+    entrypoint.main()
+
+    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
 
 
 def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsys):
