@@ -36,7 +36,7 @@ destroyable, and a VM vcows did not create is never adopted or overwritten.
 
 ## CI calls `just` recipes and nothing else
 
-`scripts/lint.sh:34-77` (`workflows_carry_no_logic`) parses both pipeline files
+`scripts/lint.sh`'s `workflows_carry_no_logic` parses both pipeline files
 with PyYAML and rejects any command outside a small allowlist, so adding a `run:`
 step that carries logic fails `just lint` rather than failing review. New logic
 goes in `scripts/`, gets a recipe in the `justfile`, and the pipeline calls the
@@ -83,7 +83,7 @@ Each group carries `why` and `recheck`, and every accept or reject turns on
 `orchestrator/backends/libvirt/render.py:61` passing `sshcmd` to
 `connection_uri`: that dialer execs OpenSSH and never enters `x/crypto/ssh`.
 
-**`scripts/image-scan.sh:92` `--write-baseline` destroys that rationale.** It
+**`scripts/image-scan.sh`'s `--write-baseline` destroys that rationale.** It
 regenerates a fresh object carrying only `image`, `generated`, `note` and
 `accepted`, discarding every `why` and `recheck` in the file. Accepting a new
 finding is a hand-edit. Do not reach for the flag to make a scan pass.
@@ -97,9 +97,9 @@ the obvious helpful action, not a boundary.
 
 ## Four pins nothing can automate
 
-* `BASE_DIGEST` — `Containerfile:45`
-* `TOFU_RPM_SHA256` — `Containerfile:62`
-* `PROVIDER_SHA256` — `Containerfile:69`
+* `BASE_DIGEST` — `Containerfile:80`
+* `TOFU_RPM_SHA256` — `Containerfile:97`
+* `PROVIDER_SHA256` — `Containerfile:104`
 * the `h1:` hash — `docs/provider-0.9.8.lock.hcl:8`
 
 No update bot can recompute any of them, which is why `dependabot.yml` is
