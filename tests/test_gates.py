@@ -13,10 +13,12 @@ These two tests are the thing that notices.
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 import pytest
 
+from tests import conftest
 from tests.conftest import demanded, gate, pytest_runtest_setup, require
 
 TESTS = Path(__file__).resolve().parent
@@ -36,22 +38,28 @@ def _calls(tree: ast.AST) -> list[ast.Call]:
 
 
 def _references(tree: ast.AST) -> list[tuple[str, int]]:
-    """Every dotted name used as a call *or* as a bare decorator.
+    """Every dotted name used as a call, plus every dotted name used at all.
 
-    Calls alone miss `@pytest.mark.skip`, which takes no arguments and so is an
-    `ast.Attribute` the call walk never sees at all.
+    Calls alone miss the *uncalled* spellings, and they are the ones that get
+    written: `pytestmark = pytest.mark.skip` and `pytest.param(1,
+    marks=pytest.mark.skip)` are both bare `ast.Attribute` nodes the call walk
+    never sees. Adding `(reason=...)` to either turns it into an `ast.Call` and
+    the old scanner caught it -- two spellings of one edit disagreeing.
+
+    `from pytest import skip as _s` binds a name with no dotted path at all, so
+    the import itself is collected under the imported name.
     """
     found = [(_dotted(c.func), c.lineno) for c in _calls(tree)]
-    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    # Outermost only: `pytest.skip.Exception` is a legitimate reference to the
+    # exception type, and its inner `pytest.skip` is not a call to it. Collecting
+    # every Attribute flags this file's own :230 and :238 and nothing else.
+    inner = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     for node in ast.walk(tree):
-        if not isinstance(node, defs):
-            continue
-        found += [
-            (_dotted(d), d.lineno)
-            for d in node.decorator_list
-            if not isinstance(d, ast.Call)
-        ]
-    return found
+        if isinstance(node, ast.Attribute) and id(node) not in inner:
+            found.append((_dotted(node), node.lineno))
+        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+            found += [(a.name, node.lineno) for a in node.names]
+    return sorted(set(found))
 
 
 def _dotted(node: ast.expr) -> str:
@@ -70,17 +78,27 @@ def _sources() -> list[Path]:
 
 
 #: `skipif` is here because it is the exact idiom `gate()` itself returns
-#: (conftest.py:53), so it is the form a developer copying house style writes --
+#: (conftest.py:59), so it is the form a developer copying house style writes --
 #: and one written by hand goes straight past the mechanism. `xfail` is here
 #: because it is worse than a skip: the test runs, fails, and reports green.
+#: Trailing attribute paths, not full dotted names: `import pytest as _pt` and
+#: `raise unittest.SkipTest(...)` both reach the same behaviour under a spelling
+#: no `pytest.`-prefixed literal matches.
 BANNED = {
-    "pytest.skip",
-    "pytest.importorskip",
-    "pytest.xfail",
-    "pytest.mark.skip",
-    "pytest.mark.skipif",
-    "pytest.mark.xfail",
+    "skip",
+    "importorskip",
+    "xfail",
+    "mark.skip",
+    "mark.skipif",
+    "mark.xfail",
+    "SkipTest",
 }
+
+
+def _is_banned(name: str) -> bool:
+    """Match the trailing attribute path, so `import pytest as _pt` is no escape."""
+    parts = name.split(".")
+    return any(".".join(parts[i:]) in BANNED for i in range(len(parts)))
 
 
 def test_every_skip_goes_through_the_gate_mechanism():
@@ -89,7 +107,7 @@ def test_every_skip_goes_through_the_gate_mechanism():
         f"{path.name}:{lineno}: {name}"
         for path in _sources()
         for name, lineno in _references(ast.parse(path.read_text()))
-        if name in BANNED
+        if _is_banned(name)
     ]
     assert not found, (
         "these skips bypass conftest's gate mechanism, so no VCOWS_GATES value "
@@ -127,17 +145,24 @@ def test_every_known_gate_is_demandable(name: str, monkeypatch):
     assert not demanded(name)
 
 
-def test_gates_is_parsed_without_whitespace_stripping(monkeypatch):
+def test_gates_is_parsed_without_whitespace_stripping():
     """Documented rather than fixed: `VCOWS_GATES` splits on `,` and does not
     strip, so `tofu, image` demands `tofu` and a gate named " image" that does
-    not exist. Both CI files are written without spaces because of this."""
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
-    assert demanded("tofu")
-    assert not demanded(" tofu")
-    # The other half of the same fact, from the parsing side: this is the set
-    # `VCOWS_GATES="tofu, image"` produces, and `image` is not in it.
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu", " image"})
-    assert not demanded("image")
+    not exist. Both CI files are written without spaces because of this.
+
+    This performs the parse rather than monkeypatching `GATES` past it. Every
+    other test in this file replaces `GATES` wholesale, so the env-var -> set
+    step -- the one line every gate name in the suite travels through -- was
+    executed by nothing, and a `GATES = set()` that stops reading the
+    environment silenced all five names at once with the whole suite green.
+    """
+    assert conftest._parse("tofu, image") == {"tofu", " image"}
+    assert conftest._parse("") == set()
+    # The tie between the constant and the function that builds it. `GATES` is
+    # read at import, so this is only load-bearing where VCOWS_GATES is actually
+    # set -- `just test-tofu` and CI's `all` job -- and that is exactly where a
+    # decoupled GATES does harm. With nothing demanded there is nothing to see.
+    assert conftest.GATES == conftest._parse(os.environ.get("VCOWS_GATES", ""))
 
 
 # -- the mechanism itself ---------------------------------------------------
@@ -193,9 +218,19 @@ def test_require_returns_when_the_dependency_is_there(monkeypatch):
 
 
 def test_a_demanded_require_that_is_missing_fails(monkeypatch):
+    """The gate-of-gates' own gap: a `Skipped` raised inside
+    `pytest.raises(pytest.fail.Exception)` propagates and skips the *enclosing*
+    test, so with `require()`'s demanded branch deleted this converted itself
+    from a failure into a skip and the run stayed exit 0. That is the shape
+    conftest.py:7 exists to prevent, in the file that enforces it."""
     monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
-    with pytest.raises(pytest.fail.Exception, match=REASON):
-        require("tofu", False, REASON)
+    try:
+        with pytest.raises(pytest.fail.Exception, match=REASON):
+            require("tofu", False, REASON)
+    except pytest.skip.Exception:  # pragma: no cover -- this is the assertion
+        raise AssertionError(
+            "require() skipped where it was demanded to fail"
+        ) from None
 
 
 def test_an_undemanded_require_that_is_missing_skips(monkeypatch):

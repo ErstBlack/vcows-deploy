@@ -1,0 +1,136 @@
+# RX-D6 -- nine main.tf attributes survive constant substitution -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+======================================================================
+main.tf:27  --  base volume name -> "wrongname.qcow2"
+--- diff against HEAD ---
+27c27
+<   name   = var.base_volume.name
+---
+>   name   = "wrongname.qcow2"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 24.66s
+exit=0
+======================================================================
+main.tf:28  --  base volume pool -> "nowhere"
+--- diff against HEAD ---
+28c28
+<   pool   = var.pool
+---
+>   pool   = "nowhere"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 24.95s
+exit=0
+======================================================================
+main.tf:118  --  loader -> "/nowhere/OVMF.fd"
+--- diff against HEAD ---
+118c118
+<     loader        = each.value.loader
+---
+>     loader        = "/nowhere/OVMF.fd"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 24.41s
+exit=0
+======================================================================
+main.tf:120  --  loader_type -> null
+--- diff against HEAD ---
+120c120
+<     loader_type   = each.value.loader != null ? "pflash" : null
+---
+>     loader_type   = null
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 25.67s
+exit=0
+======================================================================
+main.tf:136  --  nvram format -> "raw"
+--- diff against HEAD ---
+136c136
+<       format          = each.value.loader_format
+---
+>       format          = "raw"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 25.17s
+exit=0
+======================================================================
+main.tf:175  --  device -> "cdrom"
+--- diff against HEAD ---
+175c175
+<         device = "disk"
+---
+>         device = "cdrom"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 24.52s
+exit=0
+======================================================================
+main.tf:181  --  driver.name -> "bogus"
+--- diff against HEAD ---
+181c181
+<         driver = { name = "qemu", type = "qcow2", discard = "unmap" }
+---
+>         driver = { name = "bogus", type = "qcow2", discard = "unmap" }
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 25.77s
+exit=0
+======================================================================
+main.tf:201  --  nic model -> { type = "e1000" }
+--- diff against HEAD ---
+201c201
+<         model = { type = n.model }
+---
+>         model = { type = "e1000" }
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 25.56s
+exit=0
+======================================================================
+main.tf:203  --  nic source.network -> null
+--- diff against HEAD ---
+203c203
+<           network = n.network != null ? { network = n.network } : null
+---
+>           network = null
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q --color=no tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 24.40s
+exit=0
+======================================================================
+CONTROL (live-harness check): driver discard removed
+181c181
+<         driver = { name = "qemu", type = "qcow2", discard = "unmap" }
+---
+>         driver = { name = "qemu", type = "qcow2" }
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/usr/bin/tofu', '-chdir=/tmp/pytest-of-ssullivan/pytest-672/tofu-test0', 'test', '-no-color'],... │     "unmap"\n\nthe overlay disk passes no discard: guest deletes never return blocks and the\noverlay only grows\n').returncode
+
+tests/test_tofu_module.py:196: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tofu_module.py::test_the_module_renders_what_the_acceptance_run_settled
+1 failed, 9 passed in 24.17s
+exit=1
+REVERTED:
+clean

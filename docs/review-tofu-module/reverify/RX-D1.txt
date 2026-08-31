@@ -1,0 +1,182 @@
+# RX-D1 -- tests/test_gates.py:195-198, require()'s failure branch -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### CONTROL, unmutated
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 31.65s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_gates.py -rs
+................                                                         [100%]
+16 passed in 0.80s
+exit=0
+
+### MUTATION -- delete conftest.py:65-66 (require() always skips when absent)
+65,66d64
+<     if demanded(name):
+<         pytest.fail(reason, pytrace=False)
+--- require() after the mutation ---
+def require(name: str, available: bool, reason: str) -> None:
+    """`gate` for the places a mark cannot reach: a fixture body, a module import."""
+    if available:
+        return
+    pytest.skip(reason)
+
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+410 passed, 26 skipped in 30.50s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_gates.py -rs
+=========================== short test summary info ============================
+SKIPPED [1] tests/conftest.py:65: needs a thing this runner does not have
+15 passed, 1 skipped in 0.92s
+exit=0
+
+### NARROWING CHECK 1 -- pycdlib is the gate require() uniquely guards
+(a shim earlier on sys.path makes 'import pycdlib' raise ImportError, which is what tests/test_seed_iso.py:24-26 catches)
+-- intact require(), gate demanded --
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib VCOWS_GATES=pycdlib .venv/bin/python -m pytest -q tests/test_seed_iso.py
+=========================== short test summary info ============================
+ERROR tests/test_seed_iso.py - Failed: needs pycdlib; it is what builds the s...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.57s
+exit=2
+-- mutated require(), same command --
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib VCOWS_GATES=pycdlib .venv/bin/python -m pytest -q tests/test_seed_iso.py -rs
+___________________ ERROR collecting tests/test_seed_iso.py ____________________
+Using pytest.skip outside of a test will skip the entire module. If that's your intention, pass `allow_module_level=True`. If you want to skip a specific test or an entire class, use the @pytest.mark.skip or @pytest.mark.skipif decorators.
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.45s
+exit=2
+
+### NARROWING CHECK 2 -- every tofu require() consumer also carries @needs_tofu
+$ grep -n 'require("tofu"' tests/*.py
+tests/test_tofu_module.py:54:    require("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
+tests/test_tofu_module.py:176:    require("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
+$ grep -n '^@needs_tofu$' tests/test_tofu_module.py
+7
+$ grep -n 'def test_.*(initialised\|def test_.*(mocked' tests/test_tofu_module.py
+85:def test_module_validates(initialised):
+92:def test_init_used_the_mirror_and_the_committed_lock(initialised):
+104:def test_golden_tfvars_satisfy_the_variable_types(initialised, tfvars):
+116:def test_the_uefi_and_bridge_branches_also_typecheck(initialised, tfvars):
+154:def test_the_gate_has_teeth(initialised, tfvars, mutate, expect):
+191:def test_the_module_renders_what_the_acceptance_run_settled(mocked):
+201:def test_the_module_gate_has_teeth(mocked, tmp_path):
+(each of these definitions is preceded by @needs_tofu -- printed above and below)
+test_module_validates                                        args=['initialised'] decorators=['needs_tofu']
+test_init_used_the_mirror_and_the_committed_lock             args=['initialised'] decorators=['needs_tofu']
+test_golden_tfvars_satisfy_the_variable_types                args=['initialised', 'tfvars'] decorators=['needs_tofu']
+test_the_uefi_and_bridge_branches_also_typecheck             args=['initialised', 'tfvars'] decorators=['needs_tofu']
+test_the_gate_has_teeth                                      args=['initialised', 'tfvars', 'mutate', 'expect'] decorators=['needs_tofu', 'pytest.mark.parametrize']
+test_the_module_renders_what_the_acceptance_run_settled      args=['mocked'] decorators=['needs_tofu']
+test_the_module_gate_has_teeth                               args=['mocked', 'tmp_path'] decorators=['needs_tofu']
+
+### NARROWING CHECK 3 -- libvirt's backstop is a module-scope import, not require()
+$ sed -n '25p' tests/fake_libvirt.py
+import libvirt
+$ grep -rn 'fake_libvirt' tests/*.py
+tests/test_libvirt_destroy.py:23:from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
+tests/test_libvirt_preflight.py:21:from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
+$ grep -n 'require(' tests/test_libvirt_errors.py tests/test_libvirt_destroy.py
+tests/test_libvirt_errors.py:20:    require(
+tests/test_libvirt_destroy.py:36:    require(
+
+REVERTED:
+clean
+
+### EXTENSION -- the undemanded pycdlib path, intact require()
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib .venv/bin/python -m pytest -q tests/test_seed_iso.py -rs
+
+==================================== ERRORS ====================================
+___________________ ERROR collecting tests/test_seed_iso.py ____________________
+Using pytest.skip outside of a test will skip the entire module. If that's your intention, pass `allow_module_level=True`. If you want to skip a specific test or an entire class, use the @pytest.mark.skip or @pytest.mark.skipif decorators.
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.67s
+exit=2
+
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib .venv/bin/python -m pytest -q   (whole suite, intact, undemanded)
+=========================== short test summary info ============================
+ERROR tests/test_seed_iso.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 1.00s
+exit=2
+
+### same, with require() mutated
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib .venv/bin/python -m pytest -q   (whole suite, mutated, undemanded)
+=========================== short test summary info ============================
+ERROR tests/test_seed_iso.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.86s
+exit=2
+$ PYTHONPATH=/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/blockpycdlib VCOWS_GATES=pycdlib .venv/bin/python -m pytest -q  (whole suite, mutated, demanded)
+=========================== short test summary info ============================
+ERROR tests/test_seed_iso.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.97s
+exit=2
+
+REVERTED:
+clean
+
+### NARROWING CHECK 3b -- a runner genuinely without the python3-libvirt RPM
+(a second venv built with 'uv venv' and NO --system-site-packages, same uv.lock export)
+$ /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/nolv/bin/python -c 'import libvirt'
+ModuleNotFoundError: No module named 'libvirt'
+
+-- intact require() --
+$ VCOWS_GATES=libvirt $NOLV/bin/python -m pytest -q
+[1m[31mE   ModuleNotFoundError: No module named 'libvirt'[0m
+=========================== short test summary info ============================
+ERROR tests/test_libvirt_destroy.py
+ERROR tests/test_libvirt_preflight.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 2.28s
+exit=2
+
+-- require() mutated (conftest.py:65-66 deleted) --
+$ VCOWS_GATES=libvirt $NOLV/bin/python -m pytest -q
+[1m[31mE   ModuleNotFoundError: No module named 'libvirt'[0m
+=========================== short test summary info ============================
+ERROR tests/test_libvirt_destroy.py
+ERROR tests/test_libvirt_preflight.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 1.05s
+exit=2
+
+$ $NOLV/bin/python -m pytest -q  (undemanded, mutated)
+[1m[31mE   ModuleNotFoundError: No module named 'libvirt'[0m
+=========================== short test summary info ============================
+ERROR tests/test_libvirt_destroy.py
+ERROR tests/test_libvirt_preflight.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 1.07s
+exit=2
+
+-- test_libvirt_errors.py in isolation, intact, undemanded (the one module with no fake_libvirt import) --
+$ $NOLV/bin/python -m pytest -q tests/test_libvirt_errors.py -rs
+s                                                                        [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/conftest.py:67: needs the python3-libvirt RPM; this pins our literals against the real ABI
+1 skipped in 0.45s
+exit=0
+
+REVERTED:
+clean
