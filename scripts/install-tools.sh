@@ -83,8 +83,21 @@ installed() {
 # 1.46.0`, `OpenTofu v1.12.6`, `Haskell Dockerfile Linter 2.15.1`,
 # `Version: 0.74.0`, `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves all
 # six and there is no per-tool case arm to keep in step with the pins above.
+#
+# Two failures, and they must not read the same. A tool that prints no dotted
+# triple is the empty return this function is documented to make, and install_one
+# has a `${found:-version unknown}` written for it -- but as one pipeline the
+# grep's no-match was status 1, pipefail made the whole pipeline 1, and `set -e`
+# aborted install_one before its own log line. The `:-` could never fire. A tool
+# that cannot run at all is the other failure and still returns 1, so the
+# assignment is split: only the grep's no-match is forgiven.
+#
+# The first line is taken with `${out%%...}` rather than a leading `head -1`,
+# which under pipefail could also read a SIGPIPE'd producer as a failure.
 version_of() {
-    "$1" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+    local out
+    out="$("$1" --version 2>/dev/null)" || return 1
+    printf '%s\n' "${out%%$'\n'*}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true
 }
 
 install_one() {
@@ -107,7 +120,8 @@ install_one() {
     if have "$tool" && [ "${FORCE:-0}" != 1 ]; then
         local found path
         path="$(command -v "$tool")"
-        found="$(version_of "$path")"
+        found="$(version_of "$path")" \
+            || die "$tool: $path is on PATH but '$tool --version' failed"
         log "  $tool: using $path (${found:-version unknown})"
         if [ "$found" != "$version" ]; then
             log "  warning: $tool ${found:-of unknown version} is on PATH, but this repo pins $version"
