@@ -47,9 +47,11 @@ recipe.
 `tests/conftest.py:7`: "A gate that quietly passes because it did not run is
 worse than no gate." Every conditional skip goes through `conftest.gate()` or
 `conftest.require()`, and `tests/test_gates.py` AST-walks the suite and fails
-on any bare `pytest.skip`, `pytest.importorskip`, `pytest.xfail`,
-`pytest.mark.skip`, `pytest.mark.skipif` or `pytest.mark.xfail`. Introducing
-one is a test failure, not a style note.
+on any bare skip. **`BANNED` in that file is the list, not this sentence** -- it
+has grown twice since this line was written, and it also catches
+`unittest.SkipTest` and every aliased spelling, because `_is_banned` matches a
+trailing attribute path rather than a literal. Introducing one is a test
+failure, not a style note.
 
 `VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Five
 names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, plus `all`.
