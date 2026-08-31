@@ -259,8 +259,12 @@ class Stubborn:
         self.remaining = interrupts
         self.killed = False
         self.returncode = 0
+        #: Every `timeout=` the driver passed, in order. Recorded rather than
+        #: ignored because the value is the thing under test below.
+        self.timeouts: list[float | None] = []
 
     def wait(self, timeout=None):
+        self.timeouts.append(timeout)
         if self.remaining:
             self.remaining -= 1
             raise KeyboardInterrupt
@@ -291,6 +295,26 @@ def test_a_second_ctrl_c_is_the_operator_meaning_it(fake_tofu, workdir, monkeypa
     with pytest.raises(KeyboardInterrupt):
         tofu.apply(workdir, workdir / "plan.bin")
     assert child.killed
+
+
+def test_init_runs_on_a_clock_and_apply_does_not(fake_tofu, workdir, monkeypatch):
+    """D42, and the one property of `_run` nothing else pins.
+
+    `SHORT_TIMEOUT` exists for `init`, where a hang is a name lookup or a stuck
+    registry and never work. `apply` streams the whole golden image through the
+    SSH tunnel with `vol-upload`, which has no resume, so a timeout that fires
+    kills a live upload. Making the timeout unconditional passed the entire
+    suite before this test existed.
+    """
+    child = Stubborn(interrupts=0)
+    monkeypatch.setattr(tofu.subprocess, "Popen", lambda *a, **k: child)
+
+    tofu.init(workdir)
+    assert child.timeouts == [tofu.SHORT_TIMEOUT]
+
+    child.timeouts.clear()
+    tofu.apply(workdir, workdir / "plan.bin")
+    assert child.timeouts == [None], "a clock on apply kills a resumeless upload"
 
 
 def test_a_missing_binary_says_so(workdir, monkeypatch):
