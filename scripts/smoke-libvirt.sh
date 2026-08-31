@@ -338,9 +338,14 @@ inputs() {
 
 # -- what libvirtd actually created -----------------------------------------
 
+# Every readback here ends in `|| true`. Without it a failing command inside a
+# `local x="$(...)"` assignment takes `set -e` and kills the run mid-report --
+# measured: the fourth CI run stopped after four ok lines with no message at all,
+# because `qemu-img info` on the overlay exited non-zero. The point of `check` is
+# that one broken assertion becomes one FAIL line and the rest still run.
 assert_volumes() {
     local vols base overlay seed
-    vols="$(vsh vol-list "$POOL")"
+    vols="$(vsh vol-list "$POOL" 2>&1 || true)"
     check "the base volume exists in $POOL"    contains "$vols" "$BASE_VOL"
     check "the overlay volume exists in $POOL" contains "$vols" "$OVERLAY_VOL"
     check "the seed volume exists in $POOL"    contains "$vols" "$SEED_VOL"
@@ -348,13 +353,18 @@ assert_volumes() {
     # The upload is the assertion. A volume that was allocated and never written
     # is zeros, and qemu-img calls zeros `raw`; only a real transfer of the qcow2
     # header makes this say qcow2.
-    base="$(qemu-img info "$POOL_DIR/$BASE_VOL" 2>&1)"
+    # `-U`, and it is not cosmetic. The domain is running, so QEMU holds a write
+    # lock on the overlay and `qemu-img info` without it fails with `Failed to
+    # get shared "write" lock` -- which is what stopped the fourth CI run. The
+    # base only escaped because a backing file is opened read-only. Both carry it
+    # so the two lines cannot drift apart.
+    base="$(qemu-img info -U "$POOL_DIR/$BASE_VOL" 2>&1 || true)"
     check "virStorageVolUpload wrote a real qcow2 header into the base volume" \
         contains "$base" "file format: qcow2"
 
     # The chain, read off the file rather than off the plan. The mock can only
     # compare two generated strings to each other.
-    overlay="$(qemu-img info "$POOL_DIR/$OVERLAY_VOL" 2>&1)"
+    overlay="$(qemu-img info -U "$POOL_DIR/$OVERLAY_VOL" 2>&1 || true)"
     check "the overlay backs onto the base volume on disk" \
         contains "$overlay" "backing file: $POOL_DIR/$BASE_VOL"
 
@@ -363,14 +373,14 @@ assert_volumes() {
     # provider's post-apply read disagree with its own plan, after the volume had
     # already been written. Nothing but a real libvirtd can say whether that is
     # still true of this provider and this libvirt.
-    seed="$(vsh vol-dumpxml --pool "$POOL" "$SEED_VOL" 2>&1)"
+    seed="$(vsh vol-dumpxml --pool "$POOL" "$SEED_VOL" 2>&1 || true)"
     check "libvirt detects the seed volume as iso" \
         contains "$seed" "<format type='iso'/>"
 }
 
 assert_domain() {
     local xml
-    xml="$(vsh dumpxml "$DOMAIN")"
+    xml="$(vsh dumpxml "$DOMAIN" 2>&1 || true)"
 
     check "the domain runs under TCG, not KVM" \
         contains "$xml" "<domain type='qemu'"
@@ -412,8 +422,8 @@ assert_domain() {
 
 assert_gone() {
     local domains vols vol
-    domains="$(vsh list --all --name)"
-    vols="$(vsh vol-list "$POOL")"
+    domains="$(vsh list --all --name 2>&1 || true)"
+    vols="$(vsh vol-list "$POOL" 2>&1 || true)"
     check "destroy undefined the domain" absent "$domains" "$DOMAIN"
     for vol in "$BASE_VOL" "$OVERLAY_VOL" "$SEED_VOL"; do
         check "destroy removed $vol" absent "$vols" "$vol"
