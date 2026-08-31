@@ -66,6 +66,21 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     ])
     error_message = "a domain does not carry the sizing, machine type or arch its tfvars asked for"
   }
+
+  // -- the domain type ------------------------------------------------------
+  // Its own block rather than a clause in the sizing `alltrue` above, whose
+  // message is about wrong numbers: `type = "qemu"` is TCG, so every VM
+  // defines, boots, completes cloud-init and the deploy reports success --
+  // unaccelerated, with nothing anywhere saying so. main.tf:88 is the only
+  // place the value is decided; no config field, no output, no XML read.
+  // scripts/smoke-libvirt.sh cannot carry this: that job runs deliberately
+  // without /dev/kvm and asserts a `type = "qemu"` it overrode itself.
+  assert {
+    condition = alltrue([
+      for k, v in var.vms : libvirt_domain.vm[k].type == "kvm"
+    ])
+    error_message = "a domain is not asking for KVM: it boots under TCG emulation and the deploy still reports success"
+  }
   assert {
     condition = alltrue([
       for k, v in var.vms :
