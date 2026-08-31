@@ -123,6 +123,11 @@ image:
 rebuild-scan:
   stage: image
   tags: [podman]
+  # No cache, unlike `image` above, and deliberately -- the note in
+  # .github/workflows/scheduled.yml carries the measurement. This file has never
+  # been executed, so its own numbers are unknown; it follows the GitHub side
+  # rather than reasoning independently, which is this file's relationship to
+  # that one throughout.
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $REBUILD_SCAN == "1"
   script:
