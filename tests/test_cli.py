@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import stat
+import subprocess
 import textwrap
 
 import pytest
@@ -89,6 +90,30 @@ def ours(name: str, deployment: str = "lab-a") -> Existing:
 def test_version_prints_the_single_definition(capsys):
     assert cli.main(["version"]) == 0
     assert VERSION in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        subprocess.TimeoutExpired(["tofu", "version"], 30),
+        json.JSONDecodeError("Expecting value", "not json", 0),
+    ],
+)
+def test_version_survives_every_way_tofu_version_can_fail(monkeypatch, capsys, raised):
+    """`version` is the command you run *because* something is wrong with the
+    build. `_tofu_version`'s tuple already names the four classes `_capture` can
+    raise for this same call; `cmd_version` named two, so a slow `tofu` and a
+    `tofu` printing something unparseable -- the two states this command exists
+    to discover -- exited 1."""
+
+    def boom(*a, **k):
+        raise raised
+
+    monkeypatch.setattr(cli.tofu, "version", boom)
+    assert cli.main(["version"]) == 0
+    out = capsys.readouterr().out
+    assert VERSION in out, "the build is still reported first"
+    assert "tofu: unavailable" in out
 
 
 def test_validate_is_offline(no_libvirt, backend, config, capsys):  # noqa: F811

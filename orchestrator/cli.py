@@ -153,8 +153,15 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     # `main` sets a 0o077 umask, so a directory vcows created is already private
     # and this has work to do only for one an operator handed us. Skipped when it
     # is already tight, because the chmod is the half that can fail: a bind mount
-    # owned by another UID (README's `--user`) refuses it, and that must not stop
-    # a run that is otherwise fine.
+    # owned by another UID (README's `--user`) refuses it with EACCES, and that
+    # must not stop a run that is otherwise fine.
+    #
+    # EACCES only. EROFS -- `/runs` mounted `:ro` -- is deliberately *not* caught:
+    # a run directory that cannot be chmod'ed because the filesystem is read-only
+    # cannot be written to either, and the uncaught OSError names the mount
+    # (`Read-only file system: '/runs'`). Widening this to `except OSError` was
+    # measured: it reports the mode instead of the cause and defers the failure to
+    # `run.json`, whose errno never mentions the mount.
     if path.stat().st_mode & 0o077:
         try:
             os.chmod(path, 0o700)
@@ -660,7 +667,12 @@ def cmd_version(args: argparse.Namespace) -> int:
     _print_manifest()
     try:
         info = tofu.version()
-    except (tofu.TofuError, OSError) as exc:
+    # The same four classes `_tofu_version` names for the identical call: both
+    # sites intend "report and carry on", so the narrower tuple was a divergence
+    # and not a policy. `subprocess.TimeoutExpired` and `json.JSONDecodeError`
+    # -- a slow `tofu` and a `tofu` printing something unparseable, the two
+    # states this command is run to discover -- used to reach `main` and exit 1.
+    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
         print(f"tofu: unavailable ({exc})")
         return 0
     print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")
