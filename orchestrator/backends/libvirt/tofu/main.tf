@@ -131,11 +131,16 @@ resource "libvirt_domain" "vm" {
       // since the declared `format` is what is read, and misleading to anyone
       // debugging it on a host whose other domains disagree.
       nv_ram = "/var/lib/libvirt/qemu/nvram/${each.value.domain_name}_VARS.${each.value.loader_format == "qcow2" ? "qcow2" : "fd"}"
-      // The variables file follows the firmware build it was templated from, so
-      // one config field settles both.
-      format          = each.value.loader_format
-      template        = each.value.nvram_template
-      template_format = each.value.loader_format
+      // Only what libvirt hands back. Measured on libvirt 10.0.0 (#75): its
+      // formatter drops format='raw' as its own default but keeps
+      // format='qcow2', and drops templateFormat for every value, including one
+      // that differs from format -- that attribute is write-only. Nothing under
+      // `os` is computed, so anything declared here and not returned fails the
+      // apply after the volumes are already written. `format` is still sent for
+      // qcow2 because libvirt does not probe a varstore, and a qcow2 one opened
+      // raw does not boot.
+      format   = each.value.loader_format == "raw" ? null : each.value.loader_format
+      template = each.value.nvram_template
     } : null
 
     boot_devices = [{ dev = "hd" }]
