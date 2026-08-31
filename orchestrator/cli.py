@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import shutil
@@ -97,9 +98,7 @@ def module_dir(backend: Backend) -> Path:
     ``__init__.py``. A backend defining its class in a submodule gets that
     submodule's directory, and ``_stage_module`` then reports an empty one.
     """
-    package = sys.modules[type(backend).__module__]
-    assert package.__file__ is not None  # noqa: S101  every backend is a file on disk
-    return Path(package.__file__).parent / "tofu"
+    return Path(inspect.getfile(type(backend))).parent / "tofu"
 
 
 def _timestamp() -> str:
