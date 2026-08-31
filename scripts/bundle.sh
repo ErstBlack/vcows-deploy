@@ -39,10 +39,9 @@ archive_label() {
 }
 
 main() {
-    have gzip || die "gzip not on PATH"
-    have jq   || die "jq not on PATH -- run scripts/os-deps.sh"
+    need gzip jq
 
-    local scan out archive sbom report version revision worktree name inner
+    local scan out archive sbom report version revision worktree name
 
     scan="$REPO/.cache/scan"
     archive="$scan/image.tar"
@@ -91,8 +90,7 @@ main() {
     # The digest of what is *inside* the gzip, so a site can check after
     # decompressing as well as before. Written in `sha256sum -c` format so it is
     # usable directly rather than read by eye.
-    inner="$(sha256sum "$archive" | cut -d' ' -f1)"
-    printf '%s  image.tar\n' "$inner" > "$out/image.tar.sha256"
+    ( cd "$scan" && sha256sum image.tar ) > "$out/image.tar.sha256"
 
     # The SBOM and the report travel with the image they describe. A loose SBOM
     # reconstructed later is an SBOM for whatever was current then.
