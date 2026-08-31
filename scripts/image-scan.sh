@@ -77,8 +77,8 @@ main() {
     # -- archive at :92, report and SBOM at :95-96 -- is on disk and complete
     # before the baseline is read at :128, so a passing .cache/scan and a failing
     # one are byte-identical apart from what is inside trivy.json, and nothing
-    # reads that for a verdict. README.md:262-264 documents `just scan` and
-    # `just bundle` as separate commands, so the second routinely runs in a
+    # reads that for a verdict. README.md's "Delivering it" documents `just scan`
+    # and `just bundle` as separate commands, so the second routinely runs in a
     # different shell, where an exit status is not available to be asked. The
     # answer therefore has to be a file, in the directory that is already the
     # interface between the two scripts.

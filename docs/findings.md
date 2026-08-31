@@ -416,7 +416,7 @@ What remains genuinely untestable on this rig is narrower and worth naming preci
 
 ## Appendix — errata in `orchestrator-architecture.md`
 
-That document is archived as background. It is a good survey, but it was written before any code existed and several of its concrete claims are wrong. Do not copy commands out of it without checking here first.
+That document is archived as background. It is a good survey, but it was written before any code existed and several of its concrete claims are wrong. Do not copy commands or claims out of it without checking here first.
 
 | Section | Claim | Reality |
 |---|---|---|

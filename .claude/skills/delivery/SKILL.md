@@ -22,8 +22,14 @@ the SBOM and the trivy report and dies with:
 
     no <name> -- run 'just scan' first, which writes it
 
-So a bundle is always a bundle *of a scanned image*. You cannot ship something
-that was not scanned against `docs/cve-baseline.json`, which is the point.
+Those three exist whether the scan passed or failed, so `bundle.sh` also
+requires the `PASSED` stamp `just scan` writes only when the baseline accepted
+the run, and checks the sha256 in it against `image.tar` -- a stamp from an
+earlier pass cannot vouch for an archive rewritten since.
+
+A bundle is therefore always a bundle *of an accepted image*. You cannot ship
+something that was not scanned against `docs/cve-baseline.json`, or that was
+scanned and rejected, which is the point.
 
 If the scan goes red, stop and use the `cve-triage` skill. Do not bundle around
 it.
