@@ -92,17 +92,17 @@ main() {
 
     if [ "${1:-}" = "--write-baseline" ]; then
         jq -n --arg image "$tag" \
-              --arg generated "$(now_utc)" \
+              --arg generated "$(now_utc || true)" \
               --argjson accepted "$found" \
               '{image: $image, generated: $generated,
                 note: "Findings reviewed and accepted at this image. Most live in the statically linked golang.org/x/crypto/ssh inside /usr/bin/tofu and the vendored terraform-provider-libvirt, and can only be cleared by bumping those pins. Anything not listed here fails scripts/image-scan.sh.",
                 accepted: $accepted}' > "$BASELINE"
-        log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found") accepted findings"
+        log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found" || true) accepted findings"
         return
     fi
 
     if [ ! -f "$BASELINE" ]; then
-        log "no docs/cve-baseline.json yet -- $(jq 'length' <<<"$found") findings, none classified"
+        log "no docs/cve-baseline.json yet -- $(jq 'length' <<<"$found" || true) findings, none classified"
         die "run 'scripts/image-scan.sh --write-baseline' once the pins are settled"
     fi
 
@@ -120,7 +120,7 @@ main() {
     if [ -n "$new" ]; then
         log "findings not in docs/cve-baseline.json:"
         printf '%s\n' "$new" | sed 's/^/  /' >&2
-        die "$(jq '.new | length' <<<"$delta") new finding(s)"
+        die "$(jq '.new | length' <<<"$delta" || true) new finding(s)"
     fi
 
     # The other direction. One or two accepted ids disappearing is ordinary --

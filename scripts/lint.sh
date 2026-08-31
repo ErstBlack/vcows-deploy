@@ -156,7 +156,36 @@ main() {
     # than pipeline code, but this project's position is that a claim nothing
     # checks is a claim that drifts, and that does not stop being true because
     # the file is small. Both globs always match; no nullglob handling needed.
-    gate "shellcheck"        shellcheck -x -s bash "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
+    #
+    # **Four of shellcheck's nine optional checks, and the flags rather than a
+    # .shellcheckrc.** A config file is found by searching upward from each input
+    # and is silently ignored when it is not found or when it names a check the
+    # running shellcheck does not know; an unknown `-o` name here exits non-zero
+    # and fails this gate instead. The EPEL shellcheck on the maintainer's box
+    # (0.10.0) is newer than the one os-deps.sh installs from apt on ubuntu:24.04,
+    # so that difference is real and has to fail loudly. conftest.py:7: a gate
+    # that quietly passes because it did not run is worse than no gate.
+    #
+    # Measured over these same two globs before enabling, ~1160 lines:
+    # check-unassigned-uppercase 0, quote-safe-variables 0,
+    # avoid-nullary-conditions 0, check-extra-masked-returns 9.
+    #
+    # The nine were fixed rather than suppressed. Two were real: lib.sh's
+    # `git status` inside `[ -n "$(...)" ]`, which recorded a clean SHA for a
+    # dirty tree when git failed, and image-build.sh's `now_utc` inline in
+    # --build-arg, which shipped an empty BUILD_DATE label. Both now assign on
+    # their own line, where `set -e` sees the failure. The other seven are du,
+    # jq, basename and id inside log lines and die messages, and carry `|| true`.
+    #
+    # `require-variable-braces` is the fifth check the survey proposed and is
+    # deliberately out: 293 findings, every one a mechanical $var -> ${var} with
+    # no correctness content, which would have buried the nine above.
+    gate "shellcheck"        shellcheck -x -s bash \
+                                 -o check-extra-masked-returns \
+                                 -o check-unassigned-uppercase \
+                                 -o quote-safe-variables \
+                                 -o avoid-nullary-conditions \
+                                 "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
     gate "workflows carry no logic" workflows_carry_no_logic
 
     if [ ${#failed[@]} -gt 0 ]; then

@@ -24,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 main() {
     local sudo=""
-    [ "$(id -u)" -eq 0 ] || sudo=sudo
+    [ "$(id -u || true)" -eq 0 ] || sudo=sudo
     if have apt-get; then
         $sudo apt-get update -qq
         $sudo apt-get install -y -qq python3-libvirt xorriso shellcheck jq curl unzip git
