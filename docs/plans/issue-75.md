@@ -331,3 +331,31 @@ Five CI runs of a budget of six. The sixth was not spent — see §9.
 * **`docs/rhel9-target.md` C2.** This settles the CI half of it on libvirt 10.0.0.
   The rig half — a real RHEL/Rocky 9 or 10 target — stays open, and so does
   `acceptance.md`'s "Still open" entry.
+
+## 10. What landed, and where it differs from this plan
+
+Written at `be50ae6`; implemented on top of `e1cbc53`. Rebase was clean — the
+drift lane touched no file this lane owns. Re-measured, and three numbers above
+are now stale:
+
+| this plan says | landed |
+|---|---|
+| baseline for `just check` | **439 passed, 25 skipped**, not what §8 implies |
+| the fix is at `main.tf:136-138` | correct at `origin/master`; the landed expression is `:142-143` |
+| `main.tf` **−3/+2** | **−5/+10**. The two lines of expression are as §5 wrote them; the comment they replace grew from 2 lines to 8, which is what §5 asked for when it said `:134-135` needed rewording |
+| `tests/libvirt-module.tftest.hcl` **+69/−1** | **+85/−7**. §7's split assertion carries the correction that falsified its old message, and the new run block carries a third assertion — `_VARS.fd` — proved separately in `reverify/IMPL-75.txt` |
+| `scripts/smoke-libvirt.sh` "three assertions" | **four**: §3's table says `templateFormat` is dropped for *every* value, so it gets its own line rather than riding on `format='raw'`'s |
+
+**The comment growth is not incidental.** `main.tf` below `:138` shifts +5, which
+moves the non-null bridge arm from `:204` to `:209`. `docs/review-drift/REVIEW.md`
+L12 left `tests/libvirt-module.tftest.hcl:314`'s citation of `main.tf:205`
+unfixed for this lane; it lands as `:209`, which is neither the wrong number nor
+the number the drift lane measured. Both endpoints are in `reverify/IMPL-75.txt`
+§A.
+
+§7's recommendation is taken: the smoke gate is repinned rather than carrying
+both branches. §7's own statement of the cost stands and is now written into
+`scripts/smoke-libvirt.sh` beside the tfvars, so a reader of the gate finds it.
+
+Not done, and deliberately: the firmware-descriptor finding in §9 is filed as
+issue #107, which this lane does not touch and must not close.
