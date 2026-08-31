@@ -10,3 +10,18 @@ runs/
 .cache/
 .tools/*
 !.tools/tofu-mirror
+
+# A git worktree checked out inside the tree. .gitignore:38 already excludes it,
+# for `ty` and the static-gate signature; the build context needs its own rule
+# because .containerignore is a separate matcher that never saw that one.
+#
+# **The patterns above do not cover what a worktree carries.** They are matched
+# against the whole relative path with `filepath.Match` semantics, so `.venv/`
+# matches `./.venv` and nothing deeper -- measured: a nested `.venv` and `.tools`
+# both reach the builder while the top-level ones do not. That is the multiplier,
+# not the checkout itself: a worktree with its own venv and tool binaries measured
+# 113 MiB against 4.7 MiB for one with neither.
+#
+# Nothing COPYs `.claude/` today, so this is context cost rather than image
+# content -- but that is a property of the current COPY list, not a guarantee.
+.claude/worktrees/

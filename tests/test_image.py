@@ -342,3 +342,70 @@ def test_the_provider_licence_travels_with_the_provider():
     assert result.returncode == 0, result.stderr
     assert "Apache License" in result.stdout
     assert "no `LICENSE` file" in result.stdout
+
+
+def test_containerignore_keeps_a_nested_worktree_out_of_the_build_context(tmp_path):
+    """`.containerignore` excludes `.claude/worktrees/`, and podman agrees.
+
+    Asserted against podman's own matcher rather than a re-implementation of it.
+    A test that parsed `.containerignore` here would be checking this repo's model
+    of `filepath.Match` against itself, and the defect this pins is precisely that
+    the model was wrong: the other patterns are not recursive, so a nested `.venv`
+    and `.tools` reach the builder while the top-level ones do not.
+
+    `FROM scratch` plus `COPY . /ctx` is the whole image -- no base pull, no
+    network. The context is a fixture, not the repo, so this costs no `just image`.
+    """
+    ctx = tmp_path / "ctx"
+    for d in (".venv", ".claude/worktrees/wt/.venv", ".claude/worktrees/wt/.tools"):
+        (ctx / d).mkdir(parents=True)
+        (ctx / d / "marker").write_text("x")
+    (ctx / "kept.txt").write_text("x")
+    shutil.copy(REPO / ".containerignore", ctx / ".containerignore")
+    (ctx / "Containerfile").write_text("FROM scratch\nCOPY . /ctx\n")
+
+    tag = "localhost/vcows-containerignore-gate:t"
+    try:
+        subprocess.run(
+            ["podman", "build", "-q", "-t", tag, str(ctx)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["podman", "save", tag, "-o", str(tmp_path / "i.tar")],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        names = subprocess.run(
+            ["tar", "-tf", str(tmp_path / "i.tar")], capture_output=True, text=True
+        )
+        assert names.returncode == 0, names.stderr
+        layers = [n for n in names.stdout.split() if n.endswith(".tar")]
+        assert layers, "no layer in the saved archive"
+        subprocess.run(
+            ["tar", "-xf", str(tmp_path / "i.tar"), "-C", str(tmp_path), *layers],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        shipped = set()
+        for layer in layers:
+            listing = subprocess.run(
+                ["tar", "-tf", str(tmp_path / layer)], capture_output=True, text=True
+            )
+            shipped.update(listing.stdout.split())
+    finally:
+        subprocess.run(["podman", "rmi", "-f", tag], capture_output=True)
+
+    assert any(n.endswith("kept.txt") for n in shipped), (
+        f"the fixture never reached the builder, so this proves nothing: {shipped}"
+    )
+    leaked = sorted(n for n in shipped if "worktrees" in n)
+    assert not leaked, (
+        "a worktree inside the tree reached the build context: "
+        f"{leaked}. .containerignore needs `.claude/worktrees/`, and note its "
+        "other patterns are not recursive, so the worktree's own .venv and "
+        ".tools come with it."
+    )
