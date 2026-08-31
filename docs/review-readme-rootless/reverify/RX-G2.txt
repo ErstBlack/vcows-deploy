@@ -1,0 +1,157 @@
+# RX-G2 reverification -- README.md:66, the --user recipe verbatim
+# image: localhost/vcows-deploy-l7:0.1.0.0  git_sha e555fe9f1c1044e90d476de5edadd8d71f24a7ab (clean)
+# host: uid 1000, umask 0022, podman 5.8.2, SELinux Enforcing
+# fixtures: /tmp/l7-fix.cOBC7O   URI qemu+ssh://vcows@hypervisor.invalid/system (cannot resolve)
+
+$ ls -ln . images secrets runs
+.:
+total 4
+drwxr-xr-x. 2 1000 1000  26 Aug 31 04:06 images
+-rw-r--r--. 1 1000 1000 986 Aug 31 04:06 lab-a.yaml
+drwxr-xr-x. 2 1000 1000   6 Aug 31 04:07 runs
+drwxr-xr-x. 2 1000 1000  85 Aug 31 04:07 secrets
+
+images:
+total 196
+-rw-r--r--. 1 1000 1000 196736 Aug 31 04:06 golden.qcow2
+
+runs:
+total 0
+
+secrets:
+total 16
+-rw-------. 1 1000 1000 419 Aug 31 04:06 id_ed25519
+-rw-r--r--. 1 1000 1000 104 Aug 31 04:06 id_ed25519.pub
+-rw-------. 1 1000 1000 419 Aug 31 04:07 id_ed25519.u
+-rw-r--r--. 1 1000 1000 100 Aug 31 04:06 known_hosts
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 validate /config.yaml
+/config.yaml: valid (1 VMs, deployment 'lab-a')
+exit=0
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 1000 1000 6 Aug 31 04:07 ./runs
+total 0
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 preflight /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 1000 1000 6 Aug 31 04:07 ./runs
+total 0
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+vcows: cannot create the run directory /runs/lab-a/20260831T080720Z: Permission denied. Every run writes its own directory; check the mount and the UID it is owned by.
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 1000 1000 6 Aug 31 04:07 ./runs
+total 0
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 destroy --yes /config.yaml
+vcows: cannot create the run directory /runs/lab-a/20260831T080721Z: Permission denied. Every run writes its own directory; check the mount and the UID it is owned by.
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 1000 1000 6 Aug 31 04:07 ./runs
+total 0
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+
+======================================================================
+# README.md:67-68 checked directly: "With neither, a run directory on a
+# foreign-UID mount also stays 0755 and vcows tells you what that costs
+# rather than failing."  'With neither' = no --passwd-entry, no :U.
+
+$ podman run --rm --user 4242 \
+    -v ./lab-a.yaml:/config.yaml:ro,z -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+vcows: could not write /.ssh/config: [Errno 13] Permission denied: '/.ssh'. This run's ssh_keyfile and known_hosts were not installed, so the connection will use whatever ssh finds on its own -- likely failing with a host key or permission error that does not mention this.
+vcows: cannot create the run directory /runs/lab-a/20260831T081113Z: Permission denied. Every run writes its own directory; check the mount and the UID it is owned by.
+exit=1
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+# No run directory exists, so nothing 'stays 0755'.
+
+# And the same mount with no --user at all -- vcows creates it itself:
+$ podman run --rm -v ... -v ./runs:/runs:Z localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ ls -lnR ./runs
+./runs:
+total 0
+drwx------. 3 1000 1000 30 Aug 31 04:11 lab-a
+
+./runs/lab-a:
+total 0
+drwx------. 2 1000 1000 43 Aug 31 04:11 20260831T081114Z
+
+./runs/lab-a/20260831T081114Z:
+total 52
+-rw-------. 1 1000 1000 47984 Aug 31 04:11 manifest.json
+-rw-------. 1 1000 1000   356 Aug 31 04:11 run.json
+# 0700, created by vcows under main's 0o077 umask. Still not 0755.
+
+======================================================================
+# Can this fixture observe README.md:62-63's 'Load key ...: Permission denied'?
+# Recipe with --passwd-entry and :U on /runs but NOT on the key, so the run
+# gets past the run directory and reaches ssh with an unreadable key.
+
+$ podman run --rm --user 4242 --passwd-entry '...' \
+    -v ./secrets/id_ed25519:/run/secrets/id_ed25519:ro,z   (no :U) \
+    -v ./runs:/runs:Z,U  ... localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+# Only the getaddrinfo failure. ssh resolves the host before it reads the
+# identity file, so a '.invalid' fixture cannot reach the key error at all.
+
+# Confirmed with plain ssh on the host, unreadable key, unresolvable host:
+$ ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -i /tmp/tmp.AtZ9HwwN4E/k vcows@hypervisor.invalid true
+ssh: Could not resolve hostname hypervisor.invalid: Name or service not known
+exit=255
+
+======================================================================
+# The /runs mount as uid 4242 sees it, which is the third bullet's claim.
+
+$ podman run --rm --user 4242 -v ./runs:/runs:Z --entrypoint /usr/bin/ls \
+    localhost/vcows-deploy-l7:0.1.0.0 -lnd /runs
+drwxr-xr-x. 2 0 0 6 Aug 31 08:18 /runs
+exit=0
+$ ... --entrypoint /usr/bin/id localhost/vcows-deploy-l7:0.1.0.0
+uid=4242(4242) gid=0(root) groups=0(root)
+# 0755, owned by container uid 0 -- the mapped host UID, the same one that
+# owns the key mount. uid 4242 has r-x and no w.
+
