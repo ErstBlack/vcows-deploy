@@ -10,21 +10,20 @@
 # also means R7's --system-site-packages trap cannot arise, because there is no
 # venv to hide the libvirt binding from.
 #
-# Build:
-#   ship='orchestrator container licenses docs/provider-0.9.8.lock.hcl'
-#   podman build -t vcows-deploy:0.1.0.0 \
-#     --build-arg GIT_SHA="$(git rev-parse HEAD)$(git status --porcelain -- $ship \
-#                             | grep -q . && printf -- -dirty)" \
-#     --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+# Build: `just image`, which is scripts/image-build.sh -- written so this command
+# stops being one people retype. The set of paths the `-dirty` suffix is computed
+# over lives in `source_revision` (scripts/lib.sh) and is not restated here: the
+# copy that used to sit in this comment had already gone stale, omitting the
+# Containerfile and .containerignore that #63 added to the set.
 #
 # The `-dirty` suffix is not decoration. The image built at e5d5a2c recorded a
 # clean SHA for a commit that did not contain the `container/entrypoint.py` it
 # shipped, which is the one question R5 exists to answer. `.git/` is outside the
 # build context, so only the caller can compute this -- and `container/manifest.py`
 # records `unknown` rather than trust anything that is not 40 hex or 40 hex plus
-# `-dirty`. The paths are the ones this file COPYs: a change under `docs/` or
-# `tests/` cannot reach the image, and flagging the build for one would make the
-# suffix mean nothing.
+# `-dirty`. The paths are the ones this file COPYs -- which includes the committed
+# lock under `docs/`, and nothing else there or under `tests/`. A suffix that
+# fired for everything would mean nothing.
 #
 # The provider mirror must exist at .tools/tofu-mirror first; `just mirror`
 # builds it, and `just image` runs this build for you. It is the one thing
@@ -151,12 +150,22 @@ COPY licenses /opt/vcows/licenses
 
 COPY orchestrator /opt/vcows/orchestrator
 
-# The committed lock, in the module directory the CLI stages from, so a deploy at
-# a site cannot silently select a differently-built provider. A lock produced
-# against a registry records different hashes than one produced against a mirror,
-# and the mismatch reads like corruption (R6).
-COPY docs/provider-0.9.8.lock.hcl \
-     /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl
+# The module directory the CLI stages from, written once because four copies of a
+# path is how one of them gets missed. Build-time only: nothing in the running
+# image reads it.
+ARG TOFU_MODULE=/opt/vcows/orchestrator/backends/libvirt/tofu
+
+# The committed lock, in that directory, so a deploy at a site cannot silently
+# select a differently-built provider. A lock produced against a registry records
+# different hashes than one produced against a mirror, and the mismatch reads like
+# corruption (R6).
+#
+# The source is interpolated rather than written out. `just verify-provider`
+# compares four places and this line is none of them, so a literal here survives a
+# bump that updates every one of them -- and `container/manifest.py` reads the file
+# this COPY placed, so the image would report the old provider truthfully (#118).
+COPY docs/provider-${PROVIDER_VERSION}.lock.hcl \
+     ${TOFU_MODULE}/.terraform.lock.hcl
 
 # `vcows` rather than `python3 -m orchestrator.cli`, because the entrypoint is
 # what an operator types and reads in `podman ps`.
@@ -182,8 +191,7 @@ ENV PYTHONPATH=/opt/vcows \
 # the cost recurs forever. With it, `.terraform` is symlinks into this directory
 # and a run directory holds nothing but its own artifacts. Costs 26 MB once.
 RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
- && cp /opt/vcows/orchestrator/backends/libvirt/tofu/*.tf \
-       /opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl /tmp/warm/ \
+ && cp "${TOFU_MODULE}"/*.tf "${TOFU_MODULE}/.terraform.lock.hcl" /tmp/warm/ \
  && tofu -chdir=/tmp/warm init -input=false -no-color > /dev/null \
  && rm -rf /tmp/warm
 
@@ -193,7 +201,7 @@ COPY container/manifest.py /tmp/manifest.py
 RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}" \
     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}" \
     PROVIDER_SHA256="${PROVIDER_SHA256}" \
-    PROVIDER_LOCK=/opt/vcows/orchestrator/backends/libvirt/tofu/.terraform.lock.hcl \
+    PROVIDER_LOCK="${TOFU_MODULE}/.terraform.lock.hcl" \
     python3 /tmp/manifest.py > /opt/vcows/manifest.json \
  && rm -f /tmp/manifest.py
 
