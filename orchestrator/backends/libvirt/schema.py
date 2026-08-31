@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import os
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -63,6 +63,10 @@ MAC_OUI = (0x52, 0x54, 0x00)
 FIRMWARE_DEFAULT = "efi"
 MACHINE_DEFAULT = "q35"
 
+#: `_ceiling` below is the only thing here that writes. Every other path in this
+#: module returns a `Problem`, which the caller reports.
+log = logging.getLogger(__name__)
+
 
 def _ceiling(name: str, default: int) -> int:
     """One size ceiling, overrideable from the environment.
@@ -72,6 +76,12 @@ def _ceiling(name: str, default: int) -> int:
     than editing a file inside the image. A value that will not parse, or is not
     positive, is reported and ignored -- taking it silently is the failure mode
     the reporting work existed to remove.
+
+    This runs at **import**, because the three constants it produces are consumed
+    as literals inside ``VM_SCHEMA`` below. That is why ``orchestrator``
+    configures logging in its own ``__init__`` rather than in ``cli.main`` -- a
+    logger configured in ``main`` would not exist yet here, and this warning
+    would fall through to ``logging.lastResort`` unprefixed.
     """
     raw = os.environ.get(name)
     if raw is None:
@@ -81,9 +91,8 @@ def _ceiling(name: str, default: int) -> int:
     except ValueError:
         value = 0
     if value < 1:
-        print(
-            f"vcows: ignoring {name}={raw!r}: not a positive integer. Using {default}.",
-            file=sys.stderr,
+        log.warning(
+            "ignoring %s=%r: not a positive integer. Using %s.", name, raw, default
         )
         return default
     return value

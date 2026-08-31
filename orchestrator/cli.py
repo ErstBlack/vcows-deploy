@@ -32,8 +32,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import time
-import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -61,74 +59,14 @@ MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
 #: The one non-`.tf` file `_stage_module` will carry out of a module directory.
 LOCK_NAME = ".terraform.lock.hcl"
 
-#: The log carries the *detail*; the prints below carry the headline. That split
-#: is #136's, and it is why nothing here re-prints a `Problem`, a `Decision` or an
-#: `Outcome` -- each of those is already printed where it arrives (findings.md
-#: §3), and repeating one would make this the fifth result carrier that section
-#: refuses. What the log records is what would otherwise be destroyed.
+#: Every line vcows writes goes through here: prefixed, level-tagged, on stderr.
+#: The one exception is `_confirm`'s prompt -- see its docstring.
 #:
-#: Named explicitly rather than by ``__name__``, which is the idiom everywhere
-#: else here. The image's ``/usr/local/bin/vcows`` is ``python3 -m
-#: orchestrator.cli``, so ``__name__`` is ``__main__`` on exactly the path that
-#: ships -- and a log read weeks after delivery would say which module a line
-#: came from for every module except this one.
+#: Named explicitly rather than by ``__name__``. The image's
+#: ``/usr/local/bin/vcows`` is ``python3 -m orchestrator.cli``, so ``__name__``
+#: is ``__main__`` on exactly the path that ships, and a log read weeks after
+#: delivery would say which module a line came from for every module but this one.
 log = logging.getLogger("orchestrator.cli")
-
-#: Default INFO rather than WARNING because the purpose is traceability *after*
-#: delivery: a site dumps `podman logs` weeks later, and `destroy` cannot be
-#: re-run to reproduce anything that was not recorded the first time. DEBUG adds
-#: the per-object recovery detail.
-LOG_LEVEL_DEFAULT = "INFO"
-
-#: `%(name)s` is the module, so a line says where it came from without the
-#: message having to. The `Z` is made true by the `gmtime` converter in `_logging`
-#: -- `asctime` is localtime otherwise, and a site in another timezone would read
-#: a stamp that disagrees with the run directory's name.
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-LOG_DATEFMT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def _log_level() -> str:
-    """``VCOWS_LOG_LEVEL``, or the default if it is unset or not a level name.
-
-    Same shape and the same voice as ``schema._ceiling``: an override that will
-    not parse is reported and ignored rather than taken silently, and never
-    fatal. `basicConfig` raises `ValueError` on an unknown level, which would
-    turn a typo in an environment variable into a run that does not start.
-    """
-    raw = os.environ.get("VCOWS_LOG_LEVEL")
-    if raw is None:
-        return LOG_LEVEL_DEFAULT
-    if raw.upper() not in logging.getLevelNamesMapping():
-        print(
-            f"vcows: ignoring VCOWS_LOG_LEVEL={raw!r}: not a level name. "
-            f"Using {LOG_LEVEL_DEFAULT}.",
-            file=sys.stderr,
-        )
-        return LOG_LEVEL_DEFAULT
-    return raw.upper()
-
-
-def _logging() -> None:
-    """Configure the root logger. Called once, from ``main``.
-
-    ``force=True`` is not decorative. `basicConfig` is a no-op when the root
-    logger already has handlers, so without it the first test in a session binds
-    the handler to *that* test's `capsys` stderr and every later test reads a
-    stream that is no longer connected to anything.
-
-    ``sys.stderr`` is resolved here rather than at import for the same reason:
-    `capsys` has already replaced it by the time `main` runs, and a module-level
-    handler would hold the real one and escape capture entirely.
-    """
-    logging.Formatter.converter = time.gmtime
-    logging.basicConfig(
-        level=_log_level(),
-        stream=sys.stderr,
-        format=LOG_FORMAT,
-        datefmt=LOG_DATEFMT,
-        force=True,
-    )
 
 
 class UsageError(Exception):
@@ -237,12 +175,12 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
         try:
             os.chmod(path, 0o700)
         except PermissionError:
-            print(
-                f"vcows: cannot make {path} 0700; it stays "
-                f"{stat.S_IMODE(path.stat().st_mode):04o}. This run's seed ISOs "
-                f"carry user_data verbatim, and anyone who can read that "
-                f"directory can read them.",
-                file=sys.stderr,
+            log.warning(
+                "cannot make %s 0700; it stays %04o. This run's seed ISOs carry "
+                "user_data verbatim, and anyone who can read that directory can "
+                "read them.",
+                path,
+                stat.S_IMODE(path.stat().st_mode),
             )
     # The join key. A `podman logs` dump weeks after delivery has no other way to
     # say which run.json it belongs to -- the container is gone, and the record
@@ -263,6 +201,26 @@ _NAME_W = 20
 _VERB_W = 7
 
 
+def _problem(problem: Problem) -> None:
+    """One problem row, logged at the level it says it is.
+
+    The level replaces the severity word ``Problem.__str__`` carries, so a line
+    reads ``WARNING ...:   [target.libvirt]: ...`` rather than restating it.
+    ``__str__`` itself is left alone: `run.json` records `str(p)`, and the record
+    should not change shape because the log got tidier.
+
+    Routing on the problem's own severity is also a fix. Every one of these
+    previously went out at WARNING, fatal ones included.
+    """
+    where = f" [{problem.where}]" if problem.where else ""
+    log.log(
+        logging.ERROR if problem.fatal else logging.WARNING,
+        " %s: %s",
+        where,
+        problem.message,
+    )
+
+
 def _row(name: str, verb: str, detail: str) -> str:
     """One report line. `_report` and the destroy loop cannot share a *function*
     -- one prints `Decision`s and the other `Existing`s, which findings.md §3
@@ -272,9 +230,9 @@ def _row(name: str, verb: str, detail: str) -> str:
 
 def _report(decisions: list[Decision], problems: list[Problem]) -> None:
     for d in decisions:
-        print(_row(d.vm_name, d.action.value, d.reason))
+        log.info("%s", _row(d.vm_name, d.action.value, d.reason))
     for p in problems:
-        print(f"  {p}", file=sys.stderr)
+        _problem(p)
 
 
 @dataclass
@@ -353,11 +311,11 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
             # The original invariant restated: a closed stderr must not become
             # the exception the operator sees instead of `exc`.
             with contextlib.suppress(OSError):
-                print(
-                    f"vcows: this run left no record -- {run.path / 'run.json'} "
-                    f"could not be written ({unwritable.strerror}). The failure "
-                    f"below is reported on this stream only.",
-                    file=sys.stderr,
+                log.error(
+                    "this run left no record -- %s could not be written (%s). "
+                    "The failure below is reported on this stream only.",
+                    run.path / "run.json",
+                    unwritable.strerror,
                 )
         raise
 
@@ -370,10 +328,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     cfg, problems = load(args.config, REGISTRY)
     # `load` raises on anything fatal, so what is left here is warnings.
     for problem in problems:
-        print(f"  {problem}", file=sys.stderr)
-    print(
-        f"{args.config}: valid ({len(cfg['vms'])} VMs, "
-        f"deployment {cfg['deployment']!r})"
+        _problem(problem)
+    log.info(
+        "%s: valid (%d VMs, deployment %r)",
+        args.config,
+        len(cfg["vms"]),
+        cfg["deployment"],
     )
     return 0
 
@@ -439,7 +399,7 @@ def _tofu_version(run: _Run, workdir: Path) -> dict | None:
         problem = Problem.warning(
             f"cannot record the tofu version ({exc})", where="tofu"
         )
-        print(f"vcows: {problem.message}", file=sys.stderr)
+        log.warning("%s", problem.message)
         run.extra["problems"].append(str(problem))
         return None
 
@@ -464,13 +424,13 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         p.fatal for p in problems
     ):
         _record(run, "refused")
-        print("refusing to deploy; nothing was changed", file=sys.stderr)
+        log.error("refusing to deploy; nothing was changed")
         return 1
 
     creating = {d.vm_name for d in decisions if d.action is Action.CREATE}
     if not creating:
         _record(run, "nothing-to-create")
-        print("nothing to create")
+        log.info("nothing to create")
         return 0
 
     # D23: the module only ever creates, so VMs that already exist are dropped
@@ -550,7 +510,7 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         created=sorted(creating),
         tofu=_tofu_version(run, workdir),
     )
-    print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
+    log.info("created %d VM(s); run directory %s", len(inventory.vms), run.path)
     return 0
 
 
@@ -634,13 +594,11 @@ def _destroy(
         # already tearing things down.
         advisory = config_problems + list(discovered.problems)
         if advisory:
-            print(
-                "  these were computed for a deploy; none of them changes "
-                "this teardown",
-                file=sys.stderr,
+            log.warning(
+                "  these were computed for a deploy; none of them changes this teardown"
             )
         for problem in advisory:
-            print(f"  {problem}", file=sys.stderr)
+            _problem(problem)
         run.extra["problems"] = [str(p) for p in advisory]
         # The same argument `Result.warnings` in `tofu.py` makes: the run
         # directory is the copy that outlives the terminal. `findings.md`'s
@@ -656,20 +614,21 @@ def _destroy(
         }
         for e in others:
             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
-            print(
+            log.info(
+                "%s",
                 _row(
                     e.name,
                     "skip",
                     f"belongs to deployment "
                     f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}",
-                )
+                ),
             )
         for e in targets:
-            print(_row(e.name, "destroy", e.marker.name if e.marker else ""))
+            log.info("%s", _row(e.name, "destroy", e.marker.name if e.marker else ""))
 
         if not targets:
             _record(run, "nothing-to-destroy")
-            print(f"no VMs marked for deployment {deployment!r} on this target")
+            log.info("no VMs marked for deployment %r on this target", deployment)
             return 0
 
         if not _confirm(len(targets), deployment, args.yes):
@@ -701,9 +660,9 @@ def _destroy(
     # `tofu destroy` for, and it is indistinguishable from success unless this
     # loop runs.
     for name in out.skipped:
-        print(f"  {name:<20} skipped, not removed by this run")
+        log.info("  %s skipped, not removed by this run", f"{name:<20}")
     for problem in out.problems:
-        print(f"  {problem}", file=sys.stderr)
+        _problem(problem)
 
     _record(
         run,
@@ -712,7 +671,7 @@ def _destroy(
         skipped=sorted(out.skipped),
         problems=run.extra["problems"] + [str(p) for p in out.problems],
     )
-    print(f"destroyed {len(out.destroyed)} object(s)")
+    log.info("destroyed %d object(s)", len(out.destroyed))
     if out.failed:
         # `Outcome`'s docstring says a backend that returns this "without its
         # consumer reading it reproduces that defect exactly" -- the silent
@@ -721,10 +680,7 @@ def _destroy(
         # branch exists because `Backend.destroy` explicitly permits a backend to
         # return rather than raise, and until now such a backend got "ok" and
         # exit 0. The problems themselves were printed above.
-        print(
-            f"the teardown reported a fatal problem; {run.path}/run.json has it",
-            file=sys.stderr,
-        )
+        log.error("the teardown reported a fatal problem; %s/run.json has it", run.path)
         return 1
     if out.skipped:
         # Not a failure -- nothing here raised, and every target was attempted --
@@ -732,10 +688,10 @@ def _destroy(
         # somebody else's crash; a volume that would not resolve is a leak. Both
         # end with an object this run did not account for, and a script that
         # reads only the exit code has to be told.
-        print(
-            f"{len(out.skipped)} object(s) were not removed by this run; "
-            f"{run.path}/run.json names them",
-            file=sys.stderr,
+        log.error(
+            "%d object(s) were not removed by this run; %s/run.json names them",
+            len(out.skipped),
+            run.path,
         )
         return 1
     return 0
@@ -746,13 +702,18 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
 
     Refusing when stdin is not a terminal is deliberate: a scripted destroy should
     have to say so rather than inherit an answer from an absent operator.
+
+    **The prompt below is the only thing vcows writes that is not a log line**,
+    and the only thing left on stdout. ``input()`` writes it with no trailing
+    newline so the cursor stays where the operator types; a handler would add
+    both a newline and a prefix and put the cursor on the next line. Being the
+    sole unprefixed output, it is trivially separable from the log -- which is
+    the reason it is the exception rather than an oversight.
     """
     if yes:
         return True
     if not sys.stdin.isatty():
-        print(
-            "not a terminal: pass --yes to destroy non-interactively", file=sys.stderr
-        )
+        log.error("not a terminal: pass --yes to destroy non-interactively")
         return False
     answer = input(
         f"destroy {count} VM(s) from deployment {deployment!r}? type 'yes': "
@@ -774,17 +735,21 @@ def _print_manifest() -> None:
         build = manifest()
         if build is None:
             return
-        print(f"image   {build['git_sha']} built {build['built']}")
-        print(f"base    {build['base_image']['name']}@{build['base_image']['digest']}")
-        print(f"provider {build['provider']['source']} {build['provider']['version']}")
+        log.info("image   %s built %s", build["git_sha"], build["built"])
+        log.info(
+            "base    %s@%s", build["base_image"]["name"], build["base_image"]["digest"]
+        )
+        log.info(
+            "provider %s %s", build["provider"]["source"], build["provider"]["version"]
+        )
         packages, sources = len(build["packages"]), len(build["source_rpms"])
-        print(f"packages {packages} from {sources} sources")
+        log.info("packages %s from %s sources", packages, sources)
     except (ValueError, KeyError, TypeError) as exc:
-        print(f"image: {MANIFEST} will not parse ({exc})", file=sys.stderr)
+        log.warning("image: %s will not parse (%s)", MANIFEST, exc)
 
 
 def cmd_version(args: argparse.Namespace) -> int:
-    print(f"vcows-deploy {VERSION}")
+    log.info("vcows-deploy %s", VERSION)
     _print_manifest()
     try:
         info = tofu.version()
@@ -794,9 +759,13 @@ def cmd_version(args: argparse.Namespace) -> int:
     # -- a slow `tofu` and a `tofu` printing something unparseable, the two
     # states this command is run to discover -- used to reach `main` and exit 1.
     except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
-        print(f"tofu: unavailable ({exc})")
+        log.info("tofu: unavailable (%s)", exc)
         return 0
-    print(f"tofu {info.get('terraform_version', '?')} on {info.get('platform', '?')}")
+    log.info(
+        "tofu %s on %s",
+        info.get("terraform_version", "?"),
+        info.get("platform", "?"),
+    )
     return 0
 
 
@@ -841,31 +810,31 @@ def main(argv: list[str] | None = None) -> int:
     # per-file chmod can reach them. A umask is the only lever that covers a
     # child process, and it has to be set before the first verb runs.
     os.umask(0o077)
-    # Before parsing, so a log line is possible from the first thing that runs.
-    _logging()
     args = _parser().parse_args(argv)
     try:
         return int(args.func(args))
     except ConfigError as exc:
         for problem in exc.problems:
-            print(f"  {problem}", file=sys.stderr)
+            _problem(problem)
         return 1
     except UsageError as exc:
-        print(f"vcows: {exc}", file=sys.stderr)
+        log.error("%s", exc)
         return 1
     except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
+        log.error("interrupted")
         return 1
     except Exception as exc:
         # Backends raise their own exceptions -- findings.md §3 explicitly rules out
         # a shared hierarchy, so there is nothing narrower to catch and importing
         # one would break the seam. `str()` on the libvirt backend's DestroyError
         # already carries every per-object failure.
-        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        log.error("error: %s: %s", type(exc).__name__, exc)
         if os.environ.get("VCOWS_TRACEBACK"):
             # The message above is what an operator needs; this is what a bug
             # report needs, and an air-gapped site cannot just re-run it here.
-            traceback.print_exc()
+            # `exc_info` rather than `log.exception`, which would repeat the
+            # message that was just logged at ERROR above.
+            log.error("traceback follows", exc_info=exc)
         return 1
 
 

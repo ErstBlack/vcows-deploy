@@ -14,9 +14,9 @@ reports the ones that do; it never modifies, and it never removes. Removing a VM
 from the config makes `preflight` say
 
 ```
-warning [app03]: marked VM 'app03' exists but is not in this config; leaving it
-alone. Removing a VM from the config does not delete it -- that needs a
-deliberate destroy.
+2026-08-31T22:44:12Z WARNING orchestrator.cli:   [app03]: marked VM 'app03' exists but is
+not in this config; leaving it alone. Removing a VM from the config does not
+delete it -- that needs a deliberate destroy.
 ```
 
 Tearing something down is `vcows destroy`, and nothing else.
@@ -90,11 +90,14 @@ empty, so nothing stops it — only the `0700` is refused, and that is deliberat
 a warning. The run goes ahead and dies on the first thing it writes:
 
 ```
-vcows: cannot make /runs 0700; it stays 0755. This run's seed ISOs carry
-       user_data verbatim, and anyone who can read that directory can read them.
-vcows: this run left no record -- /runs/run.json could not be written
-       (Permission denied). The failure below is reported on this stream only.
-error: PermissionError: [Errno 13] Permission denied: '/runs/run.json'
+2026-08-31T22:44:12Z WARNING orchestrator.cli: cannot make /runs 0700; it stays 0755.
+    This run's seed ISOs carry user_data verbatim, and anyone who can read that
+    directory can read them.
+2026-08-31T22:44:12Z ERROR   orchestrator.cli: this run left no record --
+    /runs/run.json could not be written (Permission denied). The failure below is
+    reported on this stream only.
+2026-08-31T22:44:12Z ERROR   orchestrator.cli: error: PermissionError: [Errno 13]
+    Permission denied: '/runs/run.json'
 ```
 
 No `run.json` and no `manifest.json` are written. **`deploy` and `destroy` are
@@ -275,38 +278,49 @@ find runs/ -mindepth 2 -maxdepth 2 -type d -mtime +30 -exec rm -rf {} +
 
 ## The log
 
-**The printout carries the headline; the log carries the detail.** Everything
-vcows decides — the preflight rows, the problems, `created N VM(s)` — is printed
-as it always was. The log is for what the printout does not keep: the OpenTofu
-diagnostic's multi-line *why*, the exact `tofu` command line, the URI actually
-dialled, the libvirt error behind a check that could not be answered.
+**Every line vcows writes is a log line** — timestamped, level-tagged, on
+**stderr**. There is no second channel: `podman logs <id>` is the whole of it and
+no mount is required.
 
-It goes to **stderr**, so in a container `podman logs <id>` is the whole of it and
-no mount is required. Nothing is written to the run directory, which means the log
-survives the one case the record does not — a `--run-dir` on a mount vcows cannot
-write, where `run.json` never appears at all.
+```
+2026-08-31T22:44:12Z INFO    orchestrator.backends.libvirt.preflight: connecting to qemu+ssh://vcows@hv1/system
+2026-08-31T22:44:12Z INFO    orchestrator.cli:   app-frontend-01      create  does not exist
+2026-08-31T22:44:12Z INFO    orchestrator.cli:   db01                 create  does not exist
+2026-08-31T22:44:12Z WARNING orchestrator.cli:   [image.source_qcow2]: cannot read /images/golden.qcow2 to check disk_gb against it
+2026-08-31T22:44:13Z INFO    orchestrator.cli: created 2 VM(s); run directory runs/lab-a/20260831T224412Z
+```
+
+The level is what distinguishes the kinds of line, where the stream used to:
+
+| Level | Carries |
+|---|---|
+| `DEBUG` | why something was not knowable: libvirt lookup misses, an unreadable pool, a config the entrypoint declined to read |
+| `INFO` | the report — decision rows, counts, verdicts, the run directory, the `tofu` command line, OpenTofu's diagnostics |
+| `WARNING` | degraded but continuing: a config `Problem`, an advisory, a run directory that could not be made `0700` |
+| `ERROR` | refusals and anything that ends the run |
 
 `VCOWS_LOG_LEVEL` sets the level and is read from the container's environment,
 like `VCOWS_MAX_*` above. **The default is `INFO`**, so a delivered run records
-its own account without anyone having opted in beforehand; this matters most for
-`destroy`, which cannot be re-run to reproduce what was not captured the first
-time. `DEBUG` adds the per-object detail — libvirt lookup misses, unreadable
-pools, a config the entrypoint declined to read. A value that is not a level name
-is reported and ignored rather than being fatal.
+its own account without anyone having opted in beforehand — which matters most
+for `destroy`, since it cannot be re-run to reproduce what was not captured.
+**`VCOWS_LOG_LEVEL=WARNING` is a quiet mode**: the report goes away and the
+problems stay. A value that is not a level name is reported and ignored rather
+than being fatal.
 
-```
-2026-08-31T21:42:26Z INFO orchestrator.cli: run directory /runs/lab-a/20260831T214226Z
-2026-08-31T21:42:26Z INFO orchestrator.backends.libvirt.preflight: connecting to qemu+ssh://vcows@hv1/system
-```
+Timestamps are UTC, matching the run directory's name. The first `run directory`
+line is the join key that ties a `podman logs` dump to the `run.json` an
+air-gapped site ships home.
 
-That first line is the join key: it is what ties a `podman logs` dump to the
-`run.json` an air-gapped site ships home. Timestamps are UTC, matching the run
-directory's name.
+**The one exception is the `destroy` confirmation prompt.** `input()` writes it
+to stdout with no trailing newline so the cursor stays where you type, and it is
+the only unprefixed output vcows produces — which makes it easy to tell apart
+from the log, and is why it is the exception rather than an oversight. Nothing
+else is written to stdout, so `2>/dev/null` silences vcows entirely.
 
 **The log names paths, never contents.** No `user_data`, no seed ISO bytes, no
-key material — `ssh_keyfile` and `known_hosts` appear as the paths they are. Treat
-it as less protected than the run directory even so: that directory is `0700` and
-a container's logs are whatever the host's log driver does with them.
+key material — `ssh_keyfile` and `known_hosts` appear as the paths they are.
+Treat it as less protected than the run directory even so: that directory is
+`0700`, and a container's logs are whatever the host's log driver does with them.
 
 ## Air gap
 

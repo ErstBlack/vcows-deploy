@@ -101,8 +101,10 @@ def run(*args, entrypoint=None, mounts=(), env=None, check=False):
 def test_the_image_runs_with_no_network():
     result = run("version")
     assert result.returncode == 0, result.stderr
-    assert VERSION in result.stdout
-    assert "tofu 1.12.6" in result.stdout
+    # Every vcows line is a log line on stderr now; stdout carries only
+    # `_confirm`'s interactive prompt, which no verb here reaches.
+    assert VERSION in result.stderr
+    assert "tofu 1.12.6" in result.stderr
 
 
 def test_the_rpm_binding_is_visible_to_the_interpreter_that_runs():
@@ -125,7 +127,7 @@ def test_validate_runs_offline(tmp_path):
     config.write_text(CONFIG)
     result = run("validate", "/config.yaml", mounts=[(config, "/config.yaml")])
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "valid" in result.stdout
+    assert "valid" in result.stderr
 
 
 # -- the R2 gate ------------------------------------------------------------
