@@ -456,6 +456,34 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
     return True
 
 
+def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
+    """Report a delete taken against the preflight snapshot rather than a domain.
+
+    The vanished branch is deliberate and stays: a domain gone between preflight
+    and teardown still has its disks collected, which is what makes a teardown
+    interrupted between undefine and delete finishable by re-running (df60f74).
+
+    But the evidence is weaker there and said so nowhere. With no live document
+    to re-read, ``_deletable``'s two remaining guards are "no existing domain
+    claims this path" and a basename match, and a volume created *after*
+    preflight ran satisfies both by construction -- so a second operator who
+    destroys and re-deploys inside the first operator's confirm prompt has the
+    new disks unlinked, reported as ``destroyed``, with no problem recorded.
+
+    A warning rather than an error: this must not stop the teardown, and
+    ``preflight.py:39-42`` requires a skip to name the object and what the skip
+    cost. This is the same obligation for a delete taken on less.
+    """
+    out.problems.append(
+        Problem.warning(
+            f"{path} was deleted on its name alone: domain {target.name!r} was "
+            f"already gone, so this path came from the preflight snapshot and "
+            f"nothing re-read the domain to confirm it still owns it",
+            where=target.name,
+        )
+    )
+
+
 def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
     """Tear down exactly the set preflight discovered. Raises on any failure.
 
@@ -493,6 +521,10 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         raise DestroyError(out)
 
     for target in targets:
+        # Whether the disks below are being deleted against a live document or
+        # against the preflight snapshot alone. It changes what the evidence is
+        # worth, so it changes what gets reported.
+        vanished = False
         try:
             dom = session.lookupByUUIDString(target.id)
         except libvirt.libvirtError as exc:
@@ -505,6 +537,7 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
             # Already gone. Its disks may not be, so they are still resolved
             # below -- from the preflight snapshot, which is why `_deletable`
             # rather than the snapshot decides what may go.
+            vanished = True
             out.skipped.append(target.name)
         else:
             fresh = _reverify(dom, target, out)
@@ -519,6 +552,8 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
 
         for path in target.disks:
             if _deletable(path, target, claimed, out):
+                if vanished:
+                    _deleted_on_name_alone(out, target, path)
                 _delete_volume(session, path, target.name, out)
 
     if out.failed:

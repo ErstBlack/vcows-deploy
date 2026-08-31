@@ -171,6 +171,56 @@ def test_a_domain_already_gone_still_has_its_disks_collected():
     assert pool.deleted == ["app01.qcow2"]
 
 
+def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
+    """#9. The deletion stays -- it is the crash-window resume above -- but with
+    no live document to re-read, `_deletable`'s two remaining guards are "no
+    existing domain claims this path" and a basename match, and a volume created
+    after preflight ran satisfies both by construction.
+
+    So the delete is still taken and still reported as such, and now says what it
+    was taken on. A warning, not an error: it must not stop the teardown.
+    """
+    pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
+    conn = FakeConnection(domains=[], pools=[pool])
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+    )
+
+    out = d.destroy({}, conn, [ghost])
+
+    # Unchanged: both disks go, the domain itself is skipped rather than
+    # destroyed, and nothing here is fatal. `destroyed` holds objects, so the
+    # two volume paths are in it and the domain name is not.
+    assert pool.deleted == ["app01.qcow2", "app01-seed.iso"]
+    assert out.skipped == ["app01"]
+    assert out.destroyed == ["/pool/app01.qcow2", "/pool/app01-seed.iso"]
+    assert not out.failed
+
+    # New: one warning per delete, naming the path and why the evidence is thin.
+    said = [p.message for p in out.problems]
+    assert len(said) == 2
+    for path in ("/pool/app01.qcow2", "/pool/app01-seed.iso"):
+        assert any(path in m and "name alone" in m for m in said)
+
+
+def test_a_live_target_deletes_its_disks_without_the_name_alone_warning():
+    """The other half: when the domain was re-read, the evidence is the document
+    and there is nothing to warn about. Without this the warning above could be
+    unconditional and the test would not notice."""
+    dom = domain(disks=["/pool/app01.qcow2"])
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    out = d.destroy({}, conn, [target(dom)])
+
+    assert pool.deleted == ["app01.qcow2"]
+    assert out.destroyed == ["app01", "/pool/app01.qcow2"]
+    assert out.problems == []
+
+
 def test_a_lookup_that_failed_for_any_other_reason_is_fatal_and_touches_no_disk():
     """`no domain with matching uuid` is one error code out of dozens. A dropped
     connection or a policy refusal says nothing about whether that domain still
