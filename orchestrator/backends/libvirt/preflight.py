@@ -160,7 +160,7 @@ def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
         try:
             name = dom.name()
             uuid = dom.UUIDString()
-            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
         except (libvirt.libvirtError, ET.ParseError) as exc:
             problems.append(
                 Problem.warning(
@@ -195,7 +195,7 @@ def volume_facts(xml: str) -> dict[str, Any]:
     not a parse failure. ``backing`` is ``None`` for everything that is not an
     overlay, which is how ``base_volume`` counts what a replacement would break.
     """
-    root = ET.fromstring(xml)  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+    root = ET.fromstring(xml)  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
     fmt = root.find("target/format")
     path = root.find("target/path")
     physical = root.find("physical")
@@ -470,7 +470,7 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
 
     claims: dict[str, str] = {}
     problems: list[Problem] = []
-    root = ET.fromstring(net.XMLDesc(0))  # noqa: S314  libvirt's own XMLDesc output; defusedxml has no RPM
+    root = ET.fromstring(net.XMLDesc(0))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
     for host in root.findall("ip/dhcp/host"):
         if ip := host.get("ip"):
             claims[ip] = f"a DHCP reservation on network {name!r}"
