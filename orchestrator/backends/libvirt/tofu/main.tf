@@ -111,9 +111,22 @@ resource "libvirt_domain" "vm" {
     type_arch    = "x86_64"
     type_machine = each.value.machine
 
-    // With loader and nvram_template unset, this is the whole firmware config
-    // and libvirt selects from the host's descriptors.
-    firmware = each.value.firmware == "efi" ? "efi" : null
+    // Autoselection and a pin are exclusive, not complementary. `firmware =
+    // "efi"` asks libvirt to choose from the host's own descriptors, and beside
+    // a pinned loader it does not defer to the pin -- it validates the pin
+    // against those same descriptors and refuses a format they do not carry.
+    // Measured on an Ubuntu 24.04 runner, whose four descriptors in
+    // /usr/share/qemu/firmware/ all declare raw: a qcow2 pin is refused at
+    // define with "Unable to find 'efi' firmware that is compatible with the
+    // current configuration", before the apply reports anything (#107, CI runs
+    // 33374365926 and 33374623746). So this is emitted only when nothing is
+    // pinned; when a loader is set, loader_type, loader_readonly and the nv_ram
+    // block below are the whole firmware config. Confirmed on that same runner
+    // (CI run 33437247928): with this guard in place the identical qcow2 pin
+    // defines. Note libvirt then fills `firmware='efi'` back into the stored
+    // XML when the pin matches a descriptor it can name, so dumpxml does not
+    // tell you which of you wrote it -- see scripts/smoke-libvirt.sh.
+    firmware = each.value.firmware == "efi" && each.value.loader == null ? "efi" : null
 
     loader        = each.value.loader
     loader_format = each.value.loader_format

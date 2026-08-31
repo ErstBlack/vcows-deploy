@@ -149,6 +149,14 @@ run "the_module_renders_what_the_acceptance_run_settled" {
     condition     = libvirt_domain.vm["app01"].os.nv_ram == null
     error_message = "app01 pins no loader and must be given no nvram block"
   }
+  // The other half of the same rule, and the one #107 is about. Autoselection
+  // does not defer to a pin: beside `firmware = "efi"` libvirt validates the
+  // pinned loader against the host's descriptors and refuses a format they do
+  // not carry, so app02's pin has to stand alone.
+  assert {
+    condition     = libvirt_domain.vm["app02"].os.firmware == null
+    error_message = "a pinned loader is emitted beside firmware = \"efi\": libvirt then validates the pin against the host's descriptors and refuses a format they do not carry (#107)"
+  }
   assert {
     condition     = libvirt_domain.vm["app02"].os.nv_ram.nv_ram == "/var/lib/libvirt/qemu/nvram/app02_VARS.qcow2"
     error_message = "the varstore suffix must follow the loader format, not a hardcoded .fd"
@@ -414,10 +422,13 @@ run "a_bios_domain_is_given_no_firmware_and_no_varstore" {
   command = apply
 
   // The third branch the golden tfvars does not take, and the one 454ee7c's
-  // header above did not name. Both fixture VMs carry `firmware = "efi"`, so
-  // the null arm of main.tf's `firmware` ternary is never evaluated by them --
-  // yet `bios` is a value an operator can write today (schema.py's `firmware`
-  // is {"enum": ["efi", "bios"]}).
+  // header above did not name. Since #107 the fixture's app02 also reaches the
+  // null arm of main.tf's `firmware` ternary -- a pin suppresses autoselection
+  // -- so `bios` is no longer the only route there. What this block still
+  // uniquely covers is the *other* reason to emit nothing: a VM that asks for
+  // no UEFI at all, which is a value an operator can write today (schema.py's
+  // `firmware` is {"enum": ["efi", "bios"]}) and which must also be given no
+  // varstore.
   // Same caveat as the two blocks above: `variables` overrides wholesale rather
   // than merging, so this VM is hand-written and nothing asserts it still
   // resembles what render.py emits.

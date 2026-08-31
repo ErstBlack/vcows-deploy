@@ -83,6 +83,10 @@ MAC="52:54:00:be:a8:60"
 LOADER="/usr/share/OVMF/OVMF_CODE_4M.fd"
 NVRAM_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
 
+# The probe below defines its own domain, so it needs a name the asserts and the
+# EXIT trap can tell apart from the one the module creates.
+PROBE_DOMAIN="vcows-smoke-probe"
+
 WORK=""
 
 # Accumulate and report every assertion, rather than dying on the first --
@@ -121,6 +125,7 @@ cleanup() {
     fi
     vsh destroy "$DOMAIN" >/dev/null 2>&1
     vsh undefine --nvram "$DOMAIN" >/dev/null 2>&1
+    vsh undefine --nvram "$PROBE_DOMAIN" >/dev/null 2>&1
     for vol in "$BASE_VOL" "$OVERLAY_VOL" "$SEED_VOL"; do
         vsh vol-delete --pool "$POOL" "$vol" >/dev/null 2>&1
     done
@@ -196,11 +201,16 @@ HCL
     # -3/+2 module fix. If autoselect later needs its own CI coverage, that is
     # its own change.
     #
-    # A qcow2 pin cannot substitute on this runner class: beside `firmware =
-    # "efi"` libvirt validates the pin against the host's descriptors rather than
-    # deferring to it, and every Ubuntu descriptor declares raw, so a qcow2 pin is
-    # refused at define with "Unable to find 'efi' firmware that is compatible
-    # with the current configuration" (CI runs 33374365926, 33374623746).
+    # A qcow2 pin cannot substitute on this runner class, and the reason changed
+    # with #107. It used to be that beside `firmware = "efi"` libvirt validates
+    # the pin against the host's descriptors rather than deferring to it, and
+    # every Ubuntu descriptor declares raw, so a qcow2 pin was refused at define
+    # with "Unable to find 'efi' firmware that is compatible with the current
+    # configuration" (CI runs 33374365926, 33374623746). That measurement is what
+    # produced #107, and the module no longer emits `firmware = "efi"` beside a
+    # pin, so it no longer applies. What remains is simpler and was always true:
+    # Ubuntu ships no qcow2 OVMF build for this to point at -- every descriptor
+    # declaring raw is the evidence -- so there is no qcow2 file here to pin.
     sed -e "s|@WORK@|$WORK|g" \
         -e "s|@LOADER@|$LOADER|g" \
         -e "s|@NVRAM_TEMPLATE@|$NVRAM_TEMPLATE|g" \
@@ -384,6 +394,81 @@ inputs() {
 # measured: the fourth CI run stopped after four ok lines with no message at all,
 # because `qemu-img info` on the overlay exited non-zero. The point of `check` is
 # that one broken assertion becomes one FAIL line and the rest still run.
+# #107, and the one property in this file that is about libvirt rather than about
+# the module. The fix for #107 is that main.tf stops emitting `firmware = "efi"`
+# beside a pinned loader, because autoselection does not defer to a pin -- it
+# validates the pin against the host's own firmware descriptors and refuses a
+# format they do not carry. That fix is only worth anything while omitting the
+# attribute actually keeps a pin out of that validation, which is a property of
+# libvirt and not of anything this repo controls.
+#
+# Nothing else can stand guard over it:
+#
+#   * libvirt-module.tftest.hcl pins what the module *emits* (`app02.os.firmware
+#     == null`) against a mock, which cannot refuse anything.
+#   * `virsh dumpxml` cannot carry it either. libvirt fills `firmware='efi'` back
+#     into the stored XML when the pin matches a descriptor it can name, so the
+#     module's raw .fd fixture dumps with the attribute present even though the
+#     module never sent it -- an `absent` on it FAILs against the raw pin (CI run
+#     33436774063) and passes against a qcow2 one (run 33437247928). Nothing in
+#     that capture distinguishes "the module sent it" from "libvirt deduced it".
+#   * The module's own fixture cannot carry it, because the format this runner's
+#     descriptors refuse is qcow2 and the fixture pins raw. Swapping it would
+#     give up the raw .fd branch, which is #75's and the delivery target's shape;
+#     carrying both means a second VM in the apply, which the header above prices
+#     at roughly +60 lines because DOMAIN and four other globals are keyed off by
+#     four functions.
+#
+# So this defines one throwaway domain directly, out of band of the module, with
+# the shape the module now renders: a qcow2 loader and no `firmware` attribute,
+# on a host whose four descriptors all declare raw. Before #107 that same
+# configuration was refused at define with "Unable to find 'efi' firmware that is
+# compatible with the current configuration" (runs 33374365926, 33374623746).
+# `define` is the whole test -- no start, no boot, no KVM -- because define is
+# where the descriptor match happens.
+#
+# The refusal is loud rather than silent, so this is early notice and not the
+# only line of defence. It earns its place because the notice arrives in CI
+# instead of at a site, and because a libvirt that changes this behaviour is the
+# one thing that reopens #107 without anyone touching the module.
+probe_pinned_loader_escapes_autoselection() {
+    local err="" defined=0
+    # Ubuntu ships no qcow2 OVMF build -- that is the same fact its descriptors
+    # record -- so convert the raw ones. Under $WORK, which cleanup removes, and
+    # only the declared format differs from the module's own fixture.
+    qemu-img convert -O qcow2 "$LOADER" "$WORK/probe_CODE.qcow2"
+    qemu-img convert -O qcow2 "$NVRAM_TEMPLATE" "$WORK/probe_VARS.qcow2"
+    cat > "$WORK/probe.xml" <<XML
+<domain type='qemu'>
+  <name>$PROBE_DOMAIN</name>
+  <memory unit='MiB'>256</memory>
+  <vcpu>1</vcpu>
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <loader readonly='yes' type='pflash' format='qcow2'>$WORK/probe_CODE.qcow2</loader>
+    <nvram template='$WORK/probe_VARS.qcow2' format='qcow2'>$WORK/probe_VARS_live.qcow2</nvram>
+  </os>
+  <!-- Not decoration: libvirt refuses a UEFI x86_64 domain without it, with
+       "unsupported configuration: UEFI requires ACPI on this architecture"
+       (measured, CI run 33438506248). apic follows it here for the same reason
+       main.tf emits both. -->
+  <features><acpi/><apic/></features>
+</domain>
+XML
+    # The error text is logged rather than asserted on. A define that fails for
+    # an unrelated reason -- a machine type this qemu does not carry, say --
+    # would otherwise read as a #107 regression, and the log is what tells the
+    # two apart.
+    if err="$(vsh define "$WORK/probe.xml" 2>&1)"; then
+        defined=1
+    else
+        log "  the probe's define was refused: $err"
+    fi
+    vsh undefine --nvram "$PROBE_DOMAIN" >/dev/null 2>&1 || true
+    check "a qcow2 pin defines with no firmware attribute beside it, on a host whose descriptors declare only raw (#107)" \
+        test "$defined" -eq 1
+}
+
 assert_volumes() {
     local vols base overlay seed
     vols="$(vsh vol-list "$POOL" 2>&1 || true)"
@@ -437,6 +522,15 @@ assert_domain() {
         contains "$xml" "<loader readonly='yes' type='pflash'>$LOADER</loader>"
     check "the varstore path follows the raw template's suffix" \
         contains "$xml" "template='$NVRAM_TEMPLATE'>$NVRAM_DIR/${DOMAIN}_VARS.fd<"
+    # **No assertion here for #107, deliberately, and the attempt is recorded so
+    # it is not made twice.** The module no longer emits `firmware = "efi"`
+    # beside a pin, but libvirt fills the attribute back in on a domain whose
+    # pinned loader matches a descriptor it can name -- so an `absent` on
+    # `firmware='efi'` FAILs against this raw .fd pin (CI run 33436774063) while
+    # passing against a qcow2 one (run 33437247928). Nothing in this capture
+    # distinguishes "the module sent it" from "libvirt deduced it".
+    # `probe_pinned_loader_escapes_autoselection` above carries that instead,
+    # and libvirt-module.tftest.hcl carries what the module emits.
 
     # #75's other half, and the half no offline gate can reach. The mock
     # satisfies the schema with generated values and never reads anything back,
@@ -532,6 +626,11 @@ main() {
     storage_pool
     default_network
     inputs
+
+    # Out of band of the module, and before it, so a libvirt that reopened #107
+    # is named as such rather than surfacing as an apply failure.
+    log "probing whether a pinned loader escapes firmware autoselection"
+    probe_pinned_loader_escapes_autoselection
 
     log "applying the module against $URI"
     tofu -chdir="$WORK" apply -auto-approve -input=false

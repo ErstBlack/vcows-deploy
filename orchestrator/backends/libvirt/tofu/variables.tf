@@ -61,6 +61,12 @@ variable "vms" {
     // firmware from the host's own descriptors. Fedora ships
     // OVMF_CODE_4M.qcow2; RHEL ships a raw .fd; an early RHEL 9 may carry
     // neither the descriptors nor the same paths.
+    //
+    // Setting these also *disables* that autoselection -- main.tf stops
+    // emitting `firmware = "efi"` beside a pin, because autoselection validates
+    // a pin against the descriptors rather than deferring to it and refuses a
+    // format they do not carry (#107). That is what lets a raw-only host accept
+    // a pin at all.
     loader         = optional(string)
     loader_format  = optional(string)
     nvram_template = optional(string)
