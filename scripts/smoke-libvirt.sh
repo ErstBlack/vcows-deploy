@@ -12,10 +12,15 @@
 #   * libvirtd parsing and accepting the domain XML the module renders
 #   * define, start and undefine of that domain
 #
-# This runs all three, and asserts against what libvirtd actually created --
-# `virsh dumpxml`, `virsh vol-dumpxml`, `qemu-img info` -- rather than against
-# what tofu planned. A plan that agrees with itself is what the mock already
-# proves.
+# This runs all three. What libvirtd actually created is then asserted against
+# rather than what tofu planned -- a plan that agrees with itself is what the
+# mock already proves.
+#
+# **The assertions live in `tests/test_libvirt_smoke.py`, not here** (`#122`).
+# This script builds the host and drives apply and destroy; that file says what
+# the result has to look like, behind `VCOWS_GATES=smoke`. Every constant below
+# is exported for it, and it is invoked twice -- once with the domain running and
+# once after destroy -- because those are two different subjects.
 #
 # **No guest is booted and no guest address is observed.** The domain reaches
 # firmware and stops there; nothing here needs it to reach a login prompt. The
@@ -89,27 +94,48 @@ PROBE_DOMAIN="vcows-smoke-probe"
 
 WORK=""
 
-# Accumulate and report every assertion, rather than dying on the first --
-# scripts/lint.sh's argument, for the same reason: one verdict per thing checked
-# is what a reader of a failed CI log wants.
-fail=0
-check() {
-    local what="$1"; shift
-    # stderr, where `log` and `die` already write. On stdout these interleaved
-    # with the final `die` and the log showed the verdict above the last two
-    # results it was a verdict on.
-    if "$@" >/dev/null 2>&1; then
-        printf '  ok    %s\n' "$what" >&2
-    else
-        printf '  FAIL  %s\n' "$what" >&2
-        fail=1
-    fi
-}
-
-contains() { grep -qF -- "$2" <<<"$1"; }
-absent()   { ! grep -qF -- "$2" <<<"$1"; }
-
 vsh() { virsh -c "$URI" "$@"; }
+
+# Kept when the assertions left, because host provisioning still reads virsh
+# output back: `storage_pool` and `default_network` both decide whether an
+# already-active object is the failure it looks like. `absent` went with the
+# assertions -- nothing below needs the negative form.
+contains() { grep -qF -- "$2" <<<"$1"; }
+
+# The constants above, over the environment, because tests/test_libvirt_smoke.py
+# asserts about the objects this script names and a second copy there would be
+# one fixture maintained in two languages. `$WORK` is exported later, from
+# `prepare`, since it does not exist yet.
+#
+# Exported here rather than passed through CI: the workflow gate rejects any
+# `VAR=x just recipe` line, and `sudo "$0"` drops the environment at the re-exec
+# anyway. This is the same rule scripts/test-image.sh follows for VCOWS_IMAGE.
+export VCOWS_SMOKE_URI="$URI"
+export VCOWS_SMOKE_POOL="$POOL"
+export VCOWS_SMOKE_POOL_DIR="$POOL_DIR"
+export VCOWS_SMOKE_NVRAM_DIR="$NVRAM_DIR"
+export VCOWS_SMOKE_NETWORK="$NETWORK"
+export VCOWS_SMOKE_DOMAIN="$DOMAIN"
+export VCOWS_SMOKE_BASE_VOL="$BASE_VOL"
+export VCOWS_SMOKE_OVERLAY_VOL="$OVERLAY_VOL"
+export VCOWS_SMOKE_SEED_VOL="$SEED_VOL"
+export VCOWS_SMOKE_MARKER_ID="$MARKER_ID"
+export VCOWS_SMOKE_MAC="$MAC"
+export VCOWS_SMOKE_LOADER="$LOADER"
+export VCOWS_SMOKE_NVRAM_TEMPLATE="$NVRAM_TEMPLATE"
+
+# One pytest invocation, one phase. The two phases are selected by node id rather
+# than by a marker or a `-k` expression: a conditional skip inside the file would
+# have to go through conftest.gate() or conftest.require(), and neither can
+# express "the domain has not been destroyed yet". Deselection is not a skip.
+#
+# `-p no:cacheprovider` and PYTHONDONTWRITEBYTECODE because this runs as root
+# after the re-exec, and a root-owned .pytest_cache/ or __pycache__/ left in the
+# work tree is a failure the next unprivileged run reports as something else.
+asserts() {
+    VCOWS_GATES=smoke PYTHONDONTWRITEBYTECODE=1 \
+        "$PY" -m pytest -q -rs -p no:cacheprovider "$REPO/tests/test_libvirt_smoke.py::$1"
+}
 
 # `tofu destroy` is the thing under test, so it runs in `main` where its exit
 # status is read. This is the second line of defence: an apply that failed
@@ -147,6 +173,10 @@ prepare() {
     [ -d "$MIRROR" ] || die "no provider mirror -- run 'just ensure-mirror' first"
 
     WORK="$(mktemp -d)"
+    # The remaining VCOWS_SMOKE_ constant, exported here because the others are
+    # known before this runs and this one is not. The drift assertion plans in
+    # it.
+    export VCOWS_SMOKE_WORK="$WORK"
     cp "$MODULE"/*.tf "$WORK/"
     # The committed lock, so init cannot quietly select a different build --
     # the same reason tests/test_tofu_module.py copies it.
@@ -387,13 +417,6 @@ inputs() {
         -volid CIDATA -joliet -rock "$WORK/cidata"
 }
 
-# -- what libvirtd actually created -----------------------------------------
-
-# Every readback here ends in `|| true`. Without it a failing command inside a
-# `local x="$(...)"` assignment takes `set -e` and kills the run mid-report --
-# measured: the fourth CI run stopped after four ok lines with no message at all,
-# because `qemu-img info` on the overlay exited non-zero. The point of `check` is
-# that one broken assertion becomes one FAIL line and the rest still run.
 # #107, and the one property in this file that is about libvirt rather than about
 # the module. The fix for #107 is that main.tf stops emitting `firmware = "efi"`
 # beside a pinned loader, because autoselection does not defer to a pin -- it
@@ -465,141 +488,14 @@ XML
         log "  the probe's define was refused: $err"
     fi
     vsh undefine --nvram "$PROBE_DOMAIN" >/dev/null 2>&1 || true
-    check "a qcow2 pin defines with no firmware attribute beside it, on a host whose descriptors declare only raw (#107)" \
-        test "$defined" -eq 1
+    # The probe itself stays here rather than moving to pytest with the rest of
+    # the assertions (#122): it converts two firmware images, writes a domain and
+    # defines it, which is host work of exactly the kind this script owns. Only
+    # the verdict crosses, and TestApplied carries it with the rationale above.
+    export VCOWS_SMOKE_PROBE_DEFINED="$defined"
 }
-
-assert_volumes() {
-    local vols base overlay seed
-    vols="$(vsh vol-list "$POOL" 2>&1 || true)"
-    check "the base volume exists in $POOL"    contains "$vols" "$BASE_VOL"
-    check "the overlay volume exists in $POOL" contains "$vols" "$OVERLAY_VOL"
-    check "the seed volume exists in $POOL"    contains "$vols" "$SEED_VOL"
-
-    # The upload is the assertion. A volume that was allocated and never written
-    # is zeros, and qemu-img calls zeros `raw`; only a real transfer of the qcow2
-    # header makes this say qcow2.
-    # `-U`, and it is not cosmetic. The domain is running, so QEMU holds a write
-    # lock on the overlay and `qemu-img info` without it fails with `Failed to
-    # get shared "write" lock` -- which is what stopped the fourth CI run. The
-    # base only escaped because a backing file is opened read-only. Both carry it
-    # so the two lines cannot drift apart.
-    base="$(qemu-img info -U "$POOL_DIR/$BASE_VOL" 2>&1 || true)"
-    check "virStorageVolUpload wrote a real qcow2 header into the base volume" \
-        contains "$base" "file format: qcow2"
-
-    # The chain, read off the file rather than off the plan. The mock can only
-    # compare two generated strings to each other.
-    overlay="$(qemu-img info -U "$POOL_DIR/$OVERLAY_VOL" 2>&1 || true)"
-    check "the overlay backs onto the base volume on disk" \
-        contains "$overlay" "backing file: $POOL_DIR/$BASE_VOL"
-
-    # libvirt inspects uploaded content and reports the format it detects. The
-    # module declares `iso` for exactly that reason -- declaring `raw` made the
-    # provider's post-apply read disagree with its own plan, after the volume had
-    # already been written. Nothing but a real libvirtd can say whether that is
-    # still true of this provider and this libvirt.
-    seed="$(vsh vol-dumpxml --pool "$POOL" "$SEED_VOL" 2>&1 || true)"
-    check "libvirt detects the seed volume as iso" \
-        contains "$seed" "<format type='iso'/>"
-}
-
-assert_domain() {
-    local xml state info
-    xml="$(vsh dumpxml "$DOMAIN" 2>&1 || true)"
-
-    check "the domain runs under TCG, not KVM" \
-        contains "$xml" "<domain type='qemu'"
-    check "the marker survived DomainDefineXML" \
-        contains "$xml" 'urn:vcows:1'
-    check "the marker carries the id destroy discovers by" \
-        contains "$xml" "$MARKER_ID"
-    # The firmware pin, read off what libvirtd stored rather than off the plan.
-    # The second line is the whole varstore element in one needle -- template
-    # attribute, directory and .fd suffix -- so it is also what proves the
-    # element is there for the two `absent` assertions below to mean anything.
-    check "the pinned raw loader reached the domain verbatim" \
-        contains "$xml" "<loader readonly='yes' type='pflash'>$LOADER</loader>"
-    check "the varstore path follows the raw template's suffix" \
-        contains "$xml" "template='$NVRAM_TEMPLATE'>$NVRAM_DIR/${DOMAIN}_VARS.fd<"
-    # **No assertion here for #107, deliberately, and the attempt is recorded so
-    # it is not made twice.** The module no longer emits `firmware = "efi"`
-    # beside a pin, but libvirt fills the attribute back in on a domain whose
-    # pinned loader matches a descriptor it can name -- so an `absent` on
-    # `firmware='efi'` FAILs against this raw .fd pin (CI run 33436774063) while
-    # passing against a qcow2 one (run 33437247928). Nothing in this capture
-    # distinguishes "the module sent it" from "libvirt deduced it".
-    # `probe_pinned_loader_escapes_autoselection` above carries that instead,
-    # and libvirt-module.tftest.hcl carries what the module emits.
-
-    # #75's other half, and the half no offline gate can reach. The mock
-    # satisfies the schema with generated values and never reads anything back,
-    # so libvirt-module.tftest.hcl can only pin that the module stopped emitting
-    # these two attributes -- never that emitting them was wrong. These two lines
-    # are that evidence, and the apply above is the regression gate: put either
-    # attribute back in main.tf and `tofu apply` exits 1 with "Provider produced
-    # inconsistent result after apply", after all three volumes exist.
-    #
-    # Not scoped to the <nvram> line: `format=` and `templateFormat=` appear on
-    # no other element of this domain -- the disks carry <driver type=>, not a
-    # format attribute -- and an `absent` against an extracted line that came
-    # back empty would pass without having checked anything.
-    check "libvirt omits format='raw' from the varstore, which is why the module must not declare it" \
-        absent "$xml" "format='raw'"
-    check "libvirt omits templateFormat from the varstore, for every value" \
-        absent "$xml" 'templateFormat'
-    check "acpi reached the domain" contains "$xml" '<acpi/>'
-    check "apic reached the domain" contains "$xml" '<apic/>'
-    check "the hpet timer is off, as this host's own guests have it" \
-        contains "$xml" "<timer name='hpet' present='no'/>"
-    check "the guest clock follows the host in UTC" \
-        contains "$xml" "<clock offset='utc'>"
-    check "the overlay disk passes discard=unmap" \
-        contains "$xml" "discard='unmap'"
-    # No trailing `/>` on these two. libvirt writes `<source file='...'
-    # index='2'/>` for a running domain, so matching the self-closing form
-    # asserted the index rather than the path -- measured, and the only two
-    # assertions the fifth CI run failed. The path is the claim: destroy parses
-    # `<source file=>`, and a module emitting a volume name rather than a
-    # computed path is what this is guarding against.
-    check "the root disk is the overlay's path, not its name" \
-        contains "$xml" "<source file='$POOL_DIR/$OVERLAY_VOL'"
-    check "the cdrom is the seed volume's path" \
-        contains "$xml" "<source file='$POOL_DIR/$SEED_VOL'"
-    check "the root disk is vda on virtio" \
-        contains "$xml" "<target dev='vda' bus='virtio'/>"
-    check "the seed is sda on sata" \
-        contains "$xml" "<target dev='sda' bus='sata'/>"
-    check "the seed is read-only" contains "$xml" '<readonly/>'
-    check "the domain carries a virtio-rng reading /dev/urandom" \
-        contains "$xml" '/dev/urandom'
-    check "the NIC carries the derived MAC" \
-        contains "$xml" "<mac address='$MAC'/>"
-    check "the NIC is on the $NETWORK network" \
-        contains "$xml" "<source network='$NETWORK'"
-
-    state="$(vsh domstate "$DOMAIN" || true)"
-    check "the domain is running" contains "$state" 'running'
-    info="$(vsh dominfo "$DOMAIN" | tr -s ' ' || true)"
-    check "the domain is set to autostart" contains "$info" 'Autostart: enable'
-}
-
-assert_gone() {
-    local domains vols vol
-    domains="$(vsh list --all --name 2>&1 || true)"
-    vols="$(vsh vol-list "$POOL" 2>&1 || true)"
-    check "destroy undefined the domain" absent "$domains" "$DOMAIN"
-    for vol in "$BASE_VOL" "$OVERLAY_VOL" "$SEED_VOL"; do
-        check "destroy removed $vol" absent "$vols" "$vol"
-    done
-    # A file rather than a libvirt object, so a path test and not an `absent` over
-    # a listing like the four above. This runs before `cleanup`, so the subject is
-    # the provider's destroy and not cleanup's own `undefine --nvram`.
-    check "destroy removed the varstore" test ! -e "$NVRAM_DIR/${DOMAIN}_VARS.fd"
-}
-
 main() {
-    local uid drift
+    local uid applied destroyed
     # qemu:///system is root's socket, and adding this user to the libvirt group
     # would not take effect in the shell that added it. Re-exec once rather than
     # scatter sudo through every virsh call -- and `sudo "$0"` rather than
@@ -617,6 +513,7 @@ main() {
     fi
 
     need tofu
+    need_venv
     trap cleanup EXIT
 
     prepare
@@ -635,27 +532,23 @@ main() {
     log "applying the module against $URI"
     tofu -chdir="$WORK" apply -auto-approve -input=false
 
+    # Both statuses are captured rather than left to `set -e`, and that is
+    # deliberate: an aborting assertion phase would skip the destroy below, so a
+    # single failed needle would leave the runner with a defined domain and cost
+    # the destroy assertions too. This is what the ok/FAIL accumulator bought,
+    # and pytest already reports every failure within a phase.
     log "what libvirtd created"
-    assert_volumes
-    assert_domain
-
-    # A successful apply proves the provider's *create* read agreed with its
-    # plan. Nothing else proves its *refresh* read does, and a disagreement there
-    # is #75 one step later: not a failed apply but a permanent diff that every
-    # subsequent plan re-proposes and no apply can settle. `-detailed-exitcode`
-    # is 0 for no changes, 1 for an error and 2 for a diff, so the assertion is
-    # on the number and not on `set -e`.
-    log "re-reading the applied domain"
-    drift=0
-    tofu -chdir="$WORK" plan -detailed-exitcode -input=false >/dev/null 2>&1 || drift=$?
-    check "the applied domain re-reads clean: no attribute drifts on refresh" \
-        test "$drift" -eq 0
+    applied=0
+    asserts TestApplied || applied=$?
 
     log "destroying"
     tofu -chdir="$WORK" destroy -auto-approve -input=false
-    assert_gone
+    destroyed=0
+    asserts TestDestroyed || destroyed=$?
 
-    [ "$fail" -eq 0 ] || die "the smoke gate failed -- see the FAIL lines above"
+    if [ "$applied" -ne 0 ] || [ "$destroyed" -ne 0 ]; then
+        die "the smoke gate failed -- see the pytest output above"
+    fi
     log "the module applies, libvirtd accepts what it renders, and destroy removes it"
 }
 

@@ -378,12 +378,13 @@ explicit reason rather than quietly passing:
 | `.tools/tofu-mirror` present | Runs the OpenTofu module gates. `just mirror` builds it. |
 | `python3-libvirt` importable | Pins our literal flag and error constants against the real ABI. |
 | `pycdlib` importable | Builds the seed ISO. |
+| `scripts/smoke-libvirt.sh` running as root | Asserts what a real libvirtd made of the applied module. Not runnable by hand: `just smoke-libvirt` installs packages and starts a daemon. |
 
 **A gate that passes because it did not run is worse than no gate.**
 `VCOWS_GATES` turns a named gate's skip into a failure carrying its reason:
 
 ```bash
-VCOWS_GATES=tofu just test        # or: rig, image, libvirt, pycdlib, or all
+VCOWS_GATES=tofu just test        # or: rig, image, libvirt, pycdlib, smoke, or all
 ```
 
 It is comma-separated, case-sensitive, and does **not** strip whitespace —

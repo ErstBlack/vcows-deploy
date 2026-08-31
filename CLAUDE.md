@@ -54,10 +54,13 @@ has grown twice since this line was written, and it also catches
 trailing attribute path rather than a literal. Introducing one is a test
 failure, not a style note.
 
-`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Five
-names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, plus `all`.
-It is case-sensitive and does not strip whitespace, so `VCOWS_GATES="tofu, image"`
-silently demands only `tofu`.
+`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Six
+names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, `smoke`, plus
+`all`. It is case-sensitive and does not strip whitespace, so
+`VCOWS_GATES="tofu, image"` silently demands only `tofu`. The list is `KNOWN` in
+`tests/test_gates.py`, not this sentence: a name absent from it is a test
+failure, and `smoke` was the sixth, added deliberately when `#122` moved
+`scripts/smoke-libvirt.sh`'s assertions into `tests/test_libvirt_smoke.py`.
 
 ## Do not cite line numbers
 
