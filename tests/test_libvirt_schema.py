@@ -6,6 +6,7 @@ one. A validator that rejects everything passes half a suite.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 
 import pytest
@@ -379,6 +380,66 @@ def test_a_non_qcow2_image_is_an_error(cfg, tmp_path):
     img.write_bytes(b"not a qcow2 at all, not even close" + b"\0" * 32)
     cfg["image"]["source_qcow2"] = str(img)
     assert "bad magic" in messages(schema.validate(cfg))
+
+
+# -- #12: the declared digest, actually computed ----------------------------
+
+
+def golden(tmp_path, cfg, virtual_gb: int = 40):
+    """A real qcow2 on disk, wired into the config. Returns it and its digest."""
+    img = tmp_path / "golden.qcow2"
+    img.write_bytes(qcow2_header(virtual_gb * 1024**3))
+    cfg["image"]["source_qcow2"] = str(img)
+    return img, hashlib.sha256(img.read_bytes()).hexdigest()
+
+
+def test_a_matching_sha256_passes(cfg, tmp_path):
+    _, digest = golden(tmp_path, cfg)
+    cfg["image"]["sha256"] = digest
+    assert errors(schema.validate(cfg)) == []
+
+
+def test_a_mismatched_sha256_is_an_error(cfg, tmp_path):
+    """The field was schema-validated and never computed, so a substituted or
+    corrupted golden image deployed with no signal at all (#12)."""
+    _, digest = golden(tmp_path, cfg)
+    cfg["image"]["sha256"] = "0" * 64
+    problems = errors(schema.validate(cfg))
+    assert "not the image the config describes" in messages(problems)
+    # The message names both digests, so an operator can tell a corruption from
+    # a stale config without computing anything themselves.
+    assert digest in messages(problems)
+
+
+def test_an_uppercase_sha256_matches(cfg, tmp_path):
+    """`config.py:57` admits [0-9a-fA-F]{64}, so the comparison must not be
+    the thing that rejects a config the schema accepted."""
+    _, digest = golden(tmp_path, cfg)
+    cfg["image"]["sha256"] = digest.upper()
+    assert errors(schema.validate(cfg)) == []
+
+
+def test_no_sha256_reads_nothing(cfg, tmp_path, monkeypatch):
+    """The field is optional and hashing the image is the expensive part, so a
+    config that declares no digest must not pay for one."""
+    golden(tmp_path, cfg)
+    cfg["image"].pop("sha256", None)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("hashed the image for a config that declares no sha256")
+
+    monkeypatch.setattr(schema.hashlib, "file_digest", refuse)
+    assert errors(schema.validate(cfg)) == []
+
+
+def test_an_unreadable_image_warns_rather_than_failing_the_digest(cfg):
+    """Same reason as the capacity check: `validate` is offline and the image is
+    bind-mounted at run time. An absent image must not turn a digest the
+    operator declared into a fatal problem."""
+    cfg["image"]["sha256"] = "0" * 64
+    problems = schema.validate(cfg)
+    assert errors(problems) == []
+    assert any("was not verified" in p.message for p in problems)
 
 
 def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):

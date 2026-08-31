@@ -23,6 +23,7 @@ close to unreadable, where a Python check names both fields the operator set.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 import sys
@@ -250,8 +251,67 @@ def validate(cfg: dict) -> list[Problem]:
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
     problems += _check_disk_capacity(cfg)
+    problems += _check_image_digest(cfg)
     problems += _check_volume_names(cfg)
     return problems
+
+
+def _check_image_digest(cfg: dict) -> list[Problem]:
+    """The declared ``image.sha256``, actually computed.
+
+    The field is schema-validated (``config.py:57``, under
+    ``additionalProperties: False``) and was never checked, so a corrupted or
+    substituted golden image deployed with no signal. A pattern that only ever
+    proved the string was 64 hex characters reads as enforcement and is not.
+
+    Optional, and the cost is why it stays optional: this reads the whole image.
+    Measured through this function -- 424 MiB in 2.46 s, ~172 MiB/s -- so roughly
+    12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
+    page cache does not help; with no ``sha256`` declared the call returns in
+    8 microseconds. ``config.load`` runs the offline checks for every verb
+    (``cli.py:271``, ``:301``, ``:312``, ``:485``), so ``destroy`` pays it even
+    though it reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
+    touches ``cfg["image"]``.
+
+    That waste is accepted rather than engineered around. An operator who sets
+    the field has asked for the check, and the alternative -- verifying in
+    ``preflight`` -- puts an offline check in the connected phase, so
+    ``vcows validate`` would keep reporting a corrupt image as valid. That is the
+    defect this closes, not a shape to preserve.
+
+    Unreadable is a warning, for the same reason ``_check_disk_capacity`` says:
+    ``validate`` is the offline phase and the golden image is bind-mounted at run
+    time.
+    """
+    declared = cfg["image"].get("sha256")
+    if declared is None:
+        return []
+
+    source = cfg["image"]["source_qcow2"]
+    try:
+        with open(source, "rb") as fh:
+            # `file_digest` rather than a read loop: it chunks internally, so a
+            # multi-GB image never lands in memory.
+            actual = hashlib.file_digest(fh, "sha256").hexdigest()
+    except OSError as exc:
+        return [
+            Problem.warning(
+                f"cannot read {source} to check its sha256 ({exc.strerror}); "
+                f"the declared digest was not verified",
+                where="image.sha256",
+            )
+        ]
+
+    # The schema pattern admits either case, so both sides are compared in one.
+    if actual != declared.lower():
+        return [
+            Problem.error(
+                f"{source} has sha256 {actual}, but the config declares "
+                f"{declared.lower()}; this is not the image the config describes",
+                where="image.sha256",
+            )
+        ]
+    return []
 
 
 def _check_volume_names(cfg: dict) -> list[Problem]:
