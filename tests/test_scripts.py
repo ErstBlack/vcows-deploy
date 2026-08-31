@@ -470,3 +470,42 @@ def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
     assert passed is must_pass, stderr
     if not must_pass:
         assert HOSTILE in stderr or "actions/checkout@v7" in stderr, stderr
+
+
+#: One row per shape `need`'s table can be asked about: a hit on each installer,
+#: the tool `lib.sh` names as deliberately absent, one that is passed to `need`
+#: today and is in neither installer, and one nothing has heard of. The last
+#: three must name no script -- pointing at `os-deps.sh` for something it does
+#: not install is worse than the bare message.
+NEED_ROWS = [
+    ("os-deps", "curl", "curl not on PATH -- run scripts/os-deps.sh"),
+    ("install-tools", "tofu", "tofu not on PATH -- run scripts/install-tools.sh"),
+    ("assumed-present", "gzip", "gzip not on PATH"),
+    ("neither-installer", "qemu-img", "qemu-img not on PATH"),
+    ("unheard-of", "nosuchtool", "nosuchtool not on PATH"),
+]
+
+
+@pytest.mark.parametrize(
+    ("tool", "message"),
+    [row[1:] for row in NEED_ROWS],
+    ids=[row[0] for row in NEED_ROWS],
+)
+def test_need_names_the_installer_that_provides_the_missing_tool(
+    tmp_path, tool, message
+):
+    """`need` against an empty PATH, which is how a tool is made absent here.
+
+    Seven of `TOOL_INSTALLER`'s twelve entries are not passed to `need` from
+    anywhere in the tree, so this is the only thing that reaches them. An entry
+    whose hint is wrong is worse than no entry, and nothing else would say.
+    """
+    tree = _tree(tmp_path)
+    empty = tree / "emptybin"
+    empty.mkdir()
+    done = _run(tree, f'PATH="{empty}"\nneed {tool}\necho REACHED')
+    assert done.returncode != 0, done.stdout
+    assert "REACHED" not in done.stdout
+    assert message in done.stderr
+    if "run scripts/" not in message:
+        assert "run scripts/" not in done.stderr, done.stderr

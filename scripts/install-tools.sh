@@ -60,6 +60,9 @@ url() {
 # unpacking into something surprising.
 fetch() {
     local tool="$1" version="$2" dest="$3" want file src
+    # Here rather than in main(): a box that already carries all six tools never
+    # reaches this function, and should not be refused for lacking curl.
+    need curl
     want="$(digest "${tool}:${version}")"
     src="$(url "$tool" "$version")"
     [ -n "$src" ] || die "$tool: no download URL -- add a case arm to url()"
@@ -115,7 +118,8 @@ install_one() {
     file="$(fetch "$tool" "$version" "$tmp")"
     case "$file" in
         *.tar.gz) tar -xzf "$file" -C "$tmp" ;;
-        *.zip)    unzip -q "$file" -d "$tmp" ;;
+        *.zip)    need unzip
+                  unzip -q "$file" -d "$tmp" ;;
         *)        chmod +x "$file"
                   rm -rf "${TOOLS_BIN:?}/$tool"
                   mv "$file" "$TOOLS_BIN/$tool"
