@@ -323,6 +323,9 @@ def test_a_deploy_that_worked_is_not_failed_by_the_version_it_records(
     assert record["created"] == ["app01", "app02"]
     assert (run / "inventory.json").is_file()
     assert "cannot record the tofu version" in capsys.readouterr().err
+    # Both halves. `tofu: null` alone reads as "vcows did not ask", and the
+    # reason went to a terminal the shipped run directory does not include.
+    assert any("cannot record the tofu version" in p for p in record["problems"])
 
 
 def test_a_failed_apply_records_the_warnings_that_came_before_it(
@@ -357,6 +360,54 @@ def test_a_failed_apply_records_the_warnings_that_came_before_it(
     assert record["tofu_warnings"] == [
         "warning: deprecated argument",
         "warning: unused variable",
+    ]
+
+
+def test_a_failing_tofu_step_records_its_own_warnings_too(
+    backend, config, tmp_path, monkeypatch
+):
+    """The other half of the test above. `_note_warnings` runs after each step
+    *returns*, so the step that raised kept none of its own -- and `TofuError`
+    has carried the whole `Result` since it was written, with nothing in
+    production reading it."""
+
+    def boom(*a, **k):
+        raise cli.tofu.TofuError(
+            "tofu apply failed (exit 1)",
+            cli.tofu.Result(
+                1,
+                diagnostics=(
+                    cli.tofu.Diagnostic("warning", "apply warned about a flag"),
+                    cli.tofu.Diagnostic("error", "apply blew up"),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        cli.tofu,
+        "init",
+        lambda w: cli.tofu.Result(
+            0, diagnostics=(cli.tofu.Diagnostic("warning", "init warned"),)
+        ),
+    )
+    monkeypatch.setattr(
+        cli.tofu,
+        "plan",
+        lambda w, o: cli.tofu.Result(
+            0,
+            changes={"add": 2},
+            diagnostics=(cli.tofu.Diagnostic("warning", "plan warned"),),
+        ),
+    )
+    monkeypatch.setattr(cli.tofu, "apply", boom)
+
+    assert cli.main(["deploy", config]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert record["tofu_warnings"] == [
+        "warning: init warned",
+        "warning: plan warned",
+        "warning: apply warned about a flag",
     ]
 
 
@@ -571,9 +622,12 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     assert session.destroyed == ["app01"]
     out = capsys.readouterr().out
     assert "belongs to deployment 'lab-b'" in out
-    assert json.loads((latest_run(tmp_path) / "run.json").read_text())["destroyed"] == [
-        "app01"
-    ]
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["destroyed"] == ["app01"]
+    # The stdout row above outlives the terminal only if something records it.
+    # The name alone would not: whose deployment it belongs to is the half of
+    # the row that explains why this teardown left it alone.
+    assert record["left_alone"] == {"elsewhere": "lab-b"}
 
 
 def test_a_destroy_that_could_not_finish_says_what_it_left(

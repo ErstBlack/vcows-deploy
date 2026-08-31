@@ -332,7 +332,7 @@ def _note_warnings(run: _Run, result: tofu.Result) -> None:
     run.extra["tofu_warnings"] += [str(d) for d in result.warnings]
 
 
-def _tofu_version(workdir: Path) -> dict | None:
+def _tofu_version(run: _Run, workdir: Path) -> dict | None:
     """What actually ran, or ``None`` -- never an exception over a good deploy.
 
     This is provenance, and it is asked for *after* the apply succeeded and
@@ -345,7 +345,15 @@ def _tofu_version(workdir: Path) -> dict | None:
     try:
         return tofu.version(workdir)
     except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
-        print(f"vcows: cannot record the tofu version ({exc})", file=sys.stderr)
+        # Both halves, not just stderr: `tofu: null` in the shipped record reads
+        # as "vcows did not try" and means "tried and could not". The field stays
+        # `dict | None` -- a sentence in it would make it `dict | str` and break
+        # a consumer reading `record["tofu"]["terraform_version"]`.
+        problem = Problem.warning(
+            f"cannot record the tofu version ({exc})", where="tofu"
+        )
+        print(f"vcows: {problem.message}", file=sys.stderr)
+        run.extra["problems"].append(str(problem))
         return None
 
 
@@ -400,28 +408,38 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         # each step rather than after all three: a plan that warns and an apply
         # that raises is exactly the run whose warnings are worth keeping, and
         # collecting them at the end means that run records none of them.
-        inited = tofu.init(workdir)
-        _note_warnings(run, inited)
-        planned = tofu.plan(workdir, workdir / "plan.bin")
-        _note_warnings(run, planned)
-        if not planned.changes:
-            # No change summary at all is not the same fact as a plan that
-            # creates nothing. `_read_stream` returns `{}` for a stream that is
-            # missing or will not parse -- deliberately, since the exit code is
-            # the authority on success -- and without this branch that arrives
-            # as "the module proposes no creates", which sends whoever reads it
-            # to the module rather than to the file.
-            raise tofu.TofuError(
-                f"tofu plan exited 0 but reported no change summary; "
-                f"{workdir / 'plan.json'} is the stream it should be in"
-            )
-        if not planned.changes.get("add"):
-            raise tofu.TofuError(
-                f"plan proposes no creates for {len(creating)} VM(s); refusing to apply"
-            )
-        applied = tofu.apply(workdir, workdir / "plan.bin")
-        _note_warnings(run, applied)
-        raw = tofu.outputs(workdir)
+        try:
+            inited = tofu.init(workdir)
+            _note_warnings(run, inited)
+            planned = tofu.plan(workdir, workdir / "plan.bin")
+            _note_warnings(run, planned)
+            if not planned.changes:
+                # No change summary at all is not the same fact as a plan that
+                # creates nothing. `_read_stream` returns `{}` for a stream that
+                # is missing or will not parse -- deliberately, since the exit
+                # code is the authority on success -- and without this branch
+                # that arrives as "the module proposes no creates", which sends
+                # whoever reads it to the module rather than to the file.
+                raise tofu.TofuError(
+                    f"tofu plan exited 0 but reported no change summary; "
+                    f"{workdir / 'plan.json'} is the stream it should be in"
+                )
+            if not planned.changes.get("add"):
+                raise tofu.TofuError(
+                    f"plan proposes no creates for {len(creating)} VM(s); "
+                    f"refusing to apply"
+                )
+            applied = tofu.apply(workdir, workdir / "plan.bin")
+            _note_warnings(run, applied)
+            raw = tofu.outputs(workdir)
+        except tofu.TofuError as exc:
+            # The step that raised warned too, and `TofuError.result` is the only
+            # thing carrying those warnings. Without this they die with the
+            # exception -- the run whose warnings are worth most keeps none of
+            # its own.
+            if exc.result is not None:
+                _note_warnings(run, exc.result)
+            raise
 
     inventory = backend.parse_outputs(raw)
     # Names, not counts. The message below already computes the set difference and
@@ -443,7 +461,7 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         run,
         "ok",
         created=sorted(creating),
-        tofu=_tofu_version(workdir),
+        tofu=_tofu_version(run, workdir),
     )
     print(f"created {len(inventory.vms)} VM(s); run directory {run.path}")
     return 0
@@ -537,6 +555,17 @@ def _destroy(
         for problem in advisory:
             print(f"  {problem}", file=sys.stderr)
         run.extra["problems"] = [str(p) for p in advisory]
+        # The same argument `tofu.py:77-84` makes for `Result.warnings`: the run
+        # directory is the copy that outlives the terminal. `findings.md:121`
+        # mandates the report, and the `skip` row below satisfies it -- but a
+        # marked VM this teardown deliberately left alone appeared in no shipped
+        # artifact at all. The deployment name goes with it: a bare list of names
+        # drops the half of the row that explains why the VM was left.
+        run.extra["left_alone"] = {
+            e.name: e.marker.deployment or "<unset>"
+            for e in others
+            if e.marker is not None
+        }
         for e in others:
             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
             print(

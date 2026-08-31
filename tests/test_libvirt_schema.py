@@ -154,11 +154,31 @@ def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
         # leaves the netloc, so it reaches the tfvars in the run directory.
         ("qemu+ssh://vcows:hunter2@vcows/system", "no password"),
         ("qemu+ssh://vcows:@vcows/system", "no password"),
+        # `urlsplit` raises on these rather than returning an unusable split, so
+        # the ValueError unwound past every other problem in the document and
+        # past `config.load`'s "every problem rather than the first".
+        ("qemu+ssh://[2001:db8::1/system", "is not a URL"),
+        ("qemu+ssh://2001:db8::1]/system", "is not a URL"),
+        # Escaped rather than literal: ruff's RUF001 rejects a bare FULLWIDTH
+        # NUMBER SIGN in source, and the point of the row is what `urlsplit`
+        # does with it under NFKC, not how it reads here.
+        ("qemu+ssh://h\uff03x/system", "is not a URL"),
     ],
 )
 def test_bad_uris_are_rejected(cfg, uri, expect):
     cfg["target"]["libvirt"]["uri"] = uri
     assert expect in messages(schema.validate(cfg))
+
+
+def test_a_uri_that_will_not_parse_loses_no_other_problem(cfg):
+    """`config.py:117-119`: every problem rather than the first. `_check_target`
+    is the first check `validate` runs, so a `ValueError` out of `urlsplit` took
+    the whole document's report with it."""
+    cfg["target"]["libvirt"]["uri"] = "qemu+ssh://[2001:db8::1/system"
+    cfg["vms"][0]["vcpus"] = 0
+    problems = schema.validate(cfg)
+    assert any(p.where == "target.libvirt.uri" for p in problems), messages(problems)
+    assert any(p.where == "vms[0].vcpus" for p in problems), messages(problems)
 
 
 def test_a_good_uri_passes(cfg):
@@ -319,6 +339,51 @@ def test_a_duplicate_ip_is_reported_even_when_the_gateway_is_unparseable(cfg):
     out = messages(schema.validate(cfg))
     assert "gateway" in out
     assert "already used by" in out
+
+
+@pytest.mark.parametrize(
+    "mutate, expect",
+    [
+        (lambda vm: vm.__setitem__("vcpus", 0), "is less than the minimum"),
+        (lambda vm: vm.__setitem__("cpus", 2), "Additional properties"),
+    ],
+)
+def test_a_structural_error_outside_nics_does_not_hide_a_duplicate_address(
+    cfg, mutate, expect
+):
+    """The same round trip as the test above, one level up. A structural problem
+    anywhere in a VM skipped that VM's nic checks entirely, so its addresses were
+    never registered and a later VM reusing one went unreported -- for triggers
+    (a `vcpus` out of range, an unexpected key) that say nothing about `nics`.
+    """
+    mutate(cfg["vms"][0])
+    cfg["vms"][1]["nics"][0]["ip_cidr"] = cfg["vms"][0]["nics"][0]["ip_cidr"]
+    out = messages(schema.validate(cfg))
+    assert expect in out
+    assert "already used by" in out
+
+
+def test_a_vm_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
+    """The `continue` has to survive shapes `_check_nics` and `_check_firmware`
+    cannot read, and this is the one that is not reachable through `validate`:
+    `config.py:182-185` returns the core schema's errors without ever asking the
+    backend, and calling `schema.validate` with one anyway raises `TypeError` out
+    of `_check_volume_names` -- on master too, for a reason this guard is nowhere
+    near. So the predicate is pinned directly, one clause at a time."""
+    assert schema._nic_checks_are_safe(cfg["vms"][0]) is True
+    assert schema._nic_checks_are_safe("app01") is False
+    assert schema._nic_checks_are_safe({"name": "app01"}) is False
+    assert schema._nic_checks_are_safe({"nics": []}) is False
+    assert schema._nic_checks_are_safe({"name": "app01", "nics": ["eth0"]}) is False
+
+
+def test_a_nic_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
+    """Same guard, one level deeper -- `mac_of` indexes each nic -- and this one
+    the core schema does pass through to the backend."""
+    cfg["vms"][0]["nics"] = ["default"]
+    cfg["vms"][1]["nics"][0]["ip_cidr"] = "192.168.122.60/24"
+    problems = schema.validate(cfg)
+    assert "vms[0].nics[0]]: 'default' is not of type 'object'" in messages(problems)
 
 
 def test_duplicate_mac_across_vms_is_rejected(cfg):
