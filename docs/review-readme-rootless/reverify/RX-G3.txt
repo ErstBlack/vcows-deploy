@@ -1,0 +1,281 @@
+# RX-G3 reverification -- README.md:62-64, the ':U' remedy applied to /runs
+# image: localhost/vcows-deploy-l7:0.1.0.0  git_sha e555fe9f1c1044e90d476de5edadd8d71f24a7ab (clean)
+# host: uid 1000, umask 0022, podman 5.8.2, SELinux Enforcing
+# fixtures: /tmp/l7-fix.cOBC7O   URI qemu+ssh://vcows@hypervisor.invalid/system (cannot resolve)
+
+$ ls -ln secrets ; ls -lnd ./runs
+total 16
+-rw-------. 1 1000 1000 419 Aug 31 04:06 id_ed25519
+-rw-r--r--. 1 1000 1000 104 Aug 31 04:06 id_ed25519.pub
+-rw-------. 1 1000 1000 419 Aug 31 04:07 id_ed25519.u
+-rw-r--r--. 1 1000 1000 100 Aug 31 04:06 known_hosts
+drwxr-xr-x. 2 1000 1000 6 Aug 31 04:07 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z,U \
+    localhost/vcows-deploy-l7:0.1.0.0 validate /config.yaml
+/config.yaml: valid (1 VMs, deployment 'lab-a')
+exit=0
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 528529 1000 6 Aug 31 04:07 ./runs
+total 0
+(ls -lnA ./runs exit=0)
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 4242:0 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z,U \
+    localhost/vcows-deploy-l7:0.1.0.0 preflight /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 2 528529 1000 6 Aug 31 04:07 ./runs
+total 0
+(ls -lnA ./runs exit=0)
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 4242:0 ./runs
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z,U \
+    localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 3 528529 1000 19 Aug 31 04:07 ./runs
+total 0
+drwx------. 3 528529 1000 30 Aug 31 04:07 lab-a
+(ls -lnA ./runs exit=0)
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 4242:0 ./runs
+drwx------ 4242:0 ./runs/lab-a
+drwx------ 4242:0 ./runs/lab-a/20260831T080755Z
+-rw------- 4242:0 ./runs/lab-a/20260831T080755Z/manifest.json
+-rw------- 4242:0 ./runs/lab-a/20260831T080755Z/run.json
+
+======================================================================
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z,U \
+    localhost/vcows-deploy-l7:0.1.0.0 destroy --yes /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+$ ls -lnd ./runs ; ls -lnA ./runs
+drwxr-xr-x. 3 528529 1000 19 Aug 31 04:07 ./runs
+total 0
+drwx------. 4 528529 1000 54 Aug 31 04:07 lab-a
+(ls -lnA ./runs exit=0)
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 4242:0 ./runs
+drwx------ 4242:0 ./runs/lab-a
+drwx------ 4242:0 ./runs/lab-a/20260831T080755Z
+-rw------- 4242:0 ./runs/lab-a/20260831T080755Z/manifest.json
+-rw------- 4242:0 ./runs/lab-a/20260831T080755Z/run.json
+drwx------ 4242:0 ./runs/lab-a/20260831T080756Z
+-rw------- 4242:0 ./runs/lab-a/20260831T080756Z/manifest.json
+-rw------- 4242:0 ./runs/lab-a/20260831T080756Z/run.json
+
+======================================================================
+# What uid 1000 can do with the artifact, after the deploy above
+
+$ ls -ln ./runs/lab-a
+ls: cannot open directory './runs/lab-a': Permission denied
+exit=2
+
+$ cat ./runs/lab-a/*/run.json
+cat: './runs/lab-a/*/run.json': Permission denied
+exit=1
+
+$ rm -rf ./runs
+rm: cannot remove './runs/lab-a': Permission denied
+exit=1
+
+# The key mount was chowned too, which README.md:63 does price:
+$ ls -ln secrets/id_ed25519.u ; head -c 40 secrets/id_ed25519.u
+-rw-------. 1 528529 1000 419 Aug 31 04:07 secrets/id_ed25519.u
+head: cannot open 'secrets/id_ed25519.u' for reading: Permission denied
+ exit=1
+
+$ podman unshare cat ./runs/lab-a/*/run.json    # this is how you read it back
+{
+  "backend": "libvirt",
+  "command": "deploy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "error": "libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer",
+  "finished": "20260831T080755Z",
+  "outcome": "failed",
+  "started": "20260831T080755Z",
+  "vcows": "0.1.0.0"
+}
+{
+  "backend": "libvirt",
+  "command": "destroy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "error": "libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer",
+  "finished": "20260831T080756Z",
+  "outcome": "failed",
+  "started": "20260831T080756Z",
+  "vcows": "0.1.0.0"
+}
+exit=0
+
+$ podman unshare rm -rf ./runs ; ls -lnd ./runs
+exit=0
+ls: cannot access './runs': No such file or directory
+
+======================================================================
+# Adjacent measurement A: --run-dir /runs, ':Z' only, no ':U'.
+# This is the case README.md:66-68 describes. Changed by #80 (18a43cb).
+
+$ podman run --rm --user 4242 --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.u:/run/secrets/id_ed25519:ro,z,U \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 deploy --run-dir /runs /config.yaml
+vcows: cannot make /runs 0700; it stays 0755. This run's seed ISOs carry user_data verbatim, and anyone who can read that directory can read them.
+vcows: this run left no record -- /runs/run.json could not be written (Permission denied). The failure below is reported on this stream only.
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+
+======================================================================
+# Adjacent measurement B: --userns=keep-id:uid=4242,gid=0 instead of ':U'.
+# G called this out as the untested alternative. Measuring it here.
+# No ':U' on anything; fresh empty ./runs owned by host uid 1000.
+
+$ podman run --rm --userns=keep-id:uid=4242,gid=0 --user 4242:0 \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.k:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+vcows: could not write /.ssh/config: [Errno 13] Permission denied: '/.ssh'. This run's ssh_keyfile and known_hosts were not installed, so the connection will use whatever ssh finds on its own -- likely failing with a host key or permission error that does not mention this.
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ ls -lnR ./runs ; ls -ln secrets/id_ed25519.k
+./runs:
+total 0
+drwx------. 3 1000 1000 30 Aug 31 04:08 lab-a
+
+./runs/lab-a:
+total 0
+drwx------. 2 1000 1000 43 Aug 31 04:08 20260831T080850Z
+
+./runs/lab-a/20260831T080850Z:
+total 52
+-rw-------. 1 1000 1000 47984 Aug 31 04:08 manifest.json
+-rw-------. 1 1000 1000   356 Aug 31 04:08 run.json
+-rw-------. 1 1000 1000 419 Aug 31 04:08 secrets/id_ed25519.k
+
+======================================================================
+# Adjacent measurement C: keep-id PLUS --passwd-entry, no ':U' anywhere.
+# B failed only on the home, which is the wall README.md:56-61 already names.
+
+$ podman run --rm --userns=keep-id:uid=4242,gid=0 --user 4242:0 \
+    --passwd-entry 'vcows:x:4242:0:vcows:/tmp:/bin/sh' \
+    -v ./lab-a.yaml:/config.yaml:ro,z \
+    -v ./secrets/id_ed25519.k:/run/secrets/id_ed25519:ro,z \
+    -v ./secrets/known_hosts:/run/secrets/known_hosts:ro,z \
+    -v ./images:/images:ro,z -v ./runs:/runs:Z \
+    localhost/vcows-deploy-l7:0.1.0.0 <verb> /config.yaml
+
+--- validate
+/config.yaml: valid (1 VMs, deployment 'lab-a')
+exit=0
+--- preflight
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+--- deploy
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+--- destroy --yes
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+
+$ ls -lnR ./runs ; ls -ln secrets/id_ed25519.k
+./runs:
+total 0
+drwx------. 4 1000 1000 54 Aug 31 04:09 lab-a
+
+./runs/lab-a:
+total 0
+drwx------. 2 1000 1000 43 Aug 31 04:09 20260831T080927Z
+drwx------. 2 1000 1000 43 Aug 31 04:09 20260831T080928Z
+
+./runs/lab-a/20260831T080927Z:
+total 52
+-rw-------. 1 1000 1000 47984 Aug 31 04:09 manifest.json
+-rw-------. 1 1000 1000   356 Aug 31 04:09 run.json
+
+./runs/lab-a/20260831T080928Z:
+total 52
+-rw-------. 1 1000 1000 47984 Aug 31 04:09 manifest.json
+-rw-------. 1 1000 1000   357 Aug 31 04:09 run.json
+-rw-------. 1 1000 1000 419 Aug 31 04:09 secrets/id_ed25519.k
+
+$ cat ./runs/lab-a/*/run.json   # as uid 1000, no podman unshare
+{
+  "backend": "libvirt",
+  "command": "deploy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "error": "libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer",
+  "finished": "20260831T080927Z",
+  "outcome": "failed",
+  "started": "20260831T080927Z",
+  "vcows": "0.1.0.0"
+}
+{
+  "backend": "libvirt",
+  "command": "destroy",
+  "decisions": [],
+  "deployment": "lab-a",
+  "error": "libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer",
+  "finished": "20260831T080928Z",
+  "outcome": "failed",
+  "started": "20260831T080928Z",
+  "vcows": "0.1.0.0"
+}
+exit=0
+
+$ rm -rf ./runs ; echo rc=$?
+rc=0
+ls: cannot access './runs': No such file or directory
+
+======================================================================
+# Adjacent measurement D: is the explicit --user needed alongside keep-id?
+# Same as C but with no --user flag at all.
+
+$ podman run --rm --userns=keep-id:uid=4242,gid=0 --passwd-entry '...' ... localhost/vcows-deploy-l7:0.1.0.0 deploy /config.yaml
+error: libvirtError: Cannot recv data: ssh: Could not resolve hostname hypervisor.invalid: Name or service not known: Connection reset by peer
+exit=1
+$ id inside the container, same flags:
+uid=4242(4242) gid=0(root) groups=0(root)
+$ podman unshare find ./runs -printf "%M %U:%G %p\n"
+drwxr-xr-x 0:0 ./runs
+drwx------ 0:0 ./runs/lab-a
+drwx------ 0:0 ./runs/lab-a/20260831T081212Z
+-rw------- 0:0 ./runs/lab-a/20260831T081212Z/manifest.json
+-rw------- 0:0 ./runs/lab-a/20260831T081212Z/run.json
+
