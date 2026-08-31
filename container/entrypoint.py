@@ -186,7 +186,7 @@ def install(argv: list[str]) -> None:
     # `write_text` creates at `0o666 & ~umask`, and the image's umask is 0022 --
     # measured, `podman run --rm --entrypoint sh IMAGE -c umask`. So the file
     # naming the operator's private key path was 0644 until the `chmod` on the
-    # next line. `orchestrator/cli.py:670`'s `os.umask(0o077)` cannot close that:
+    # next line. `orchestrator/cli.py`'s `os.umask(0o077)` cannot close that:
     # `main` below `execv`s into vcows *after* this write, so it is set strictly
     # too late, and nothing else in the image sets one. The mode argument here is
     # honoured at creation, and 0022 does not touch owner bits, so the file is

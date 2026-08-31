@@ -45,13 +45,13 @@ recipe.
 ## Gate discipline: a skip must be able to become a failure
 
 `tests/conftest.py:7`: "A gate that quietly passes because it did not run is
-worse than no gate." Every conditional skip goes through `conftest.gate()`
-(`:44`) or `conftest.require()` (`:61`), and `tests/test_gates.py` AST-walks the
-suite and fails on any bare `pytest.skip`, `pytest.importorskip`,
-`pytest.xfail`, `pytest.mark.skip`, `pytest.mark.skipif` or `pytest.mark.xfail`.
-Introducing one is a test failure, not a style note.
+worse than no gate." Every conditional skip goes through `conftest.gate()` or
+`conftest.require()`, and `tests/test_gates.py` AST-walks the suite and fails
+on any bare `pytest.skip`, `pytest.importorskip`, `pytest.xfail`,
+`pytest.mark.skip`, `pytest.mark.skipif` or `pytest.mark.xfail`. Introducing
+one is a test failure, not a style note.
 
-`VCOWS_GATES` (`conftest.py:37`) turns a named gate's skip into a failure. Five
+`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Five
 names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, plus `all`.
 It is case-sensitive and does not strip whitespace, so `VCOWS_GATES="tofu, image"`
 silently demands only `tofu`.
