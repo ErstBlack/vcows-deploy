@@ -412,7 +412,11 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         raw = tofu.outputs(workdir)
 
     inventory = backend.parse_outputs(raw)
-    if len(inventory.vms) != len(creating):
+    # Names, not counts. The message below already computes the set difference and
+    # carries an `or 'names differ'` fallback, so the intent was always a set
+    # comparison; a length test made that fallback reachable only when the lengths
+    # already differed, and let two same-sized disagreeing lists through.
+    if set(inventory.vms) != set(creating):
         # The module is the authority on what it created and `creating` is the
         # authority on what was asked for. When they disagree the run has two
         # artifacts that contradict each other, and recording either as the truth
@@ -570,12 +574,25 @@ def _destroy(
 
     _record(
         run,
-        "partial" if out.skipped else "ok",
+        "failed" if out.failed else "partial" if out.skipped else "ok",
         destroyed=sorted(out.destroyed),
         skipped=sorted(out.skipped),
         problems=run.extra["problems"] + [str(p) for p in out.problems],
     )
     print(f"destroyed {len(out.destroyed)} object(s)")
+    if out.failed:
+        # `Outcome`'s docstring says a backend that returns this "without its
+        # consumer reading it reproduces that defect exactly" -- the silent
+        # partial success findings.md §1 rejects `tofu destroy` for. The libvirt
+        # backend raises on `out.failed`, so nothing reaches here through it; the
+        # branch exists because `Backend.destroy` explicitly permits a backend to
+        # return rather than raise, and until now such a backend got "ok" and
+        # exit 0. The problems themselves were printed above.
+        print(
+            f"the teardown reported a fatal problem; {run.path}/run.json has it",
+            file=sys.stderr,
+        )
+        return 1
     if out.skipped:
         # Not a failure -- nothing here raised, and every target was attempted --
         # but not a success either. A domain already gone is a resume finishing

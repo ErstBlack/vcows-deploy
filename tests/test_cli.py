@@ -562,6 +562,66 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
     assert any("could not refresh pool" in p for p in record["problems"])
 
 
+def test_a_returned_fatal_problem_is_not_recorded_as_ok(
+    backend, config, tmp_path, capsys
+):
+    """RW-B2. `Backend.destroy`'s docstring says a backend is free to return
+    rather than raise, and `Outcome`'s says a returned outcome "without its
+    consumer reading it reproduces that defect exactly". Core read `skipped` and
+    never `failed`, so a backend that returned a fatal problem with an empty
+    `skipped` got `outcome: "ok"` and exit 0 -- the silent partial success
+    findings.md §1 rejects `tofu destroy` for, arriving through the seam meant to
+    prevent it. Unreachable through the libvirt backend, which raises."""
+    from orchestrator.backends.base import Outcome, Problem, Severity
+
+    backend.world = [ours("app01")]
+    backend.outcome = Outcome(
+        destroyed=["app01"],
+        problems=[
+            Problem(Severity.ERROR, "pool 'images' went away mid-run", "storage")
+        ],
+    )
+
+    assert cli.main(["destroy", config, "--yes"]) == 1
+    assert "pool 'images' went away" in capsys.readouterr().err
+
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert any("went away mid-run" in p for p in record["problems"])
+
+
+def test_a_module_that_created_the_right_count_under_wrong_names_fails(
+    backend, config, tmp_path, monkeypatch
+):
+    """RW-B1. The reconciliation compared counts, so two VMs asked for and two
+    reported passed even when one was a different VM -- `run.json` and
+    `inventory.json` in the same directory disagreeing about what exists, with
+    `outcome: ok` over both. The message already computed the set difference and
+    carried an `or 'names differ'` fallback, so a set comparison was always the
+    intent. Unreachable through the libvirt module, whose `vms` output is keyed
+    off `for_each = var.vms`."""
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
+    )
+    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu,
+        "outputs",
+        lambda w: {
+            "vms": {"value": {"app01": {"name": "app01"}, "ghost": {"name": "ghost"}}}
+        },
+    )
+    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
+
+    assert cli.main(["deploy", config]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    # The count matched, so the fallback branch is the one that has to speak.
+    assert "names differ" in record["error"] or "app02" in record["error"]
+    assert not (latest_run(tmp_path) / "inventory.json").exists()
+
+
 def test_a_destroy_that_raises_still_records_what_it_removed(
     backend, config, tmp_path, monkeypatch
 ):
