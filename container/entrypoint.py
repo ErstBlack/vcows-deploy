@@ -44,6 +44,20 @@ VCOWS = "/usr/local/bin/vcows"
 #: already been written and read.
 SSH_PATH = re.compile(r"^/[^\s]*\Z")
 
+#: Verbs that open no connection, so nothing needs installing for them.
+#:
+#: `orchestrator/cli.py`'s ``cmd_validate`` says "Offline only. No connection is
+#: opened and nothing is written", and inside the image that was false: `install`
+#: ran for every verb, and `config_path` matches on "a non-flag argument that is
+#: an existing file" rather than on the verb, so `vcows validate config.yaml`
+#: wrote ~/.ssh/config before any schema check ran. The docstring was right and
+#: this was wrong, which is the decision ledger item 2.1 asked for.
+#:
+#: A closed set, and the default is to install: a verb added later and not named
+#: here still gets its SSH config rather than silently losing it and failing at
+#: the connection with an error that mentions neither.
+OFFLINE = frozenset({"validate", "version"})
+
 
 def home() -> Path | None:
     """The passwd entry's home -- the one `ssh` uses. `HOME` is not consulted.
@@ -219,8 +233,23 @@ def install(argv: list[str]) -> None:
         )
 
 
+def verb(argv: list[str]) -> str | None:
+    """The subcommand, which is the first non-flag argument.
+
+    `vcows`'s only top-level flag is `--version`, which takes no value, and every
+    other flag belongs to a subparser and so follows the verb. Position among the
+    non-flags rather than membership, so a config file that happens to be named
+    `validate` is not mistaken for the verb.
+    """
+    for arg in argv:
+        if not arg.startswith("-"):
+            return arg
+    return None
+
+
 def main() -> None:
-    install(sys.argv[1:])
+    if verb(sys.argv[1:]) not in OFFLINE:
+        install(sys.argv[1:])
     # S606 flags shell-less execution, which is the safe half of the pair:
     # execv with an argv list cannot be shell-injected, and replacing the
     # process is what an entrypoint is for.
