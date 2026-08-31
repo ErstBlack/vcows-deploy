@@ -40,6 +40,10 @@ default:
 
 check:
   stage: check
+  # Ceilings sized against a wedge, not a slow run; the measurement and the
+  # reason are in .github/workflows/ci.yml. They are repeated here because
+  # .github/ is meant to be deletable at the migration.
+  timeout: 15m
   cache: *python_cache
   script:
     - *bootstrap
@@ -47,6 +51,7 @@ check:
 
 tofu:
   stage: check
+  timeout: 15m
   cache:
     - key:
         prefix: tools
@@ -77,6 +82,7 @@ tofu:
 image:
   stage: image
   tags: [podman]
+  timeout: 30m
   cache:
     - key:
         prefix: tools
@@ -100,6 +106,18 @@ image:
         - docs/provider-*.lock.hcl
         - licenses/**/*
         - scripts/image-*.sh
+        # The gate's own machinery and the file it reads, both of which decide
+        # what the job concludes: a change to the CVE baseline suppresses
+        # findings, and is the change most in need of running the job that would
+        # exercise the suppression. tests/test_image.py is the only thing
+        # exercising the air-gap properties, and scripts/lib.sh is sourced by
+        # image-build.sh and image-scan.sh alike, while the line above lists only
+        # scripts/image-*.sh. These three are inputs to the *decision to run*, not
+        # paths the image carries -- scripts/lib.sh's ship= array stays as it is,
+        # for the reason its comment gives.
+        - docs/cve-baseline.json
+        - tests/test_image.py
+        - scripts/lib.sh
   script:
     - *bootstrap
     - just mirror
@@ -123,6 +141,7 @@ image:
 rebuild-scan:
   stage: image
   tags: [podman]
+  timeout: 30m
   # No cache, unlike `image` above, and deliberately -- the note in
   # .github/workflows/scheduled.yml carries the measurement. This file has never
   # been executed, so its own numbers are unknown; it follows the GitHub side

@@ -26,20 +26,43 @@ on:
       - 'docs/provider-*.lock.hcl'
       - 'licenses/**'
       - 'scripts/image-*.sh'
+      # The gate's own machinery and the file it reads, both of which decide
+      # what the job concludes: a change to the CVE baseline suppresses
+      # findings, and is the change most in need of running the job that would
+      # exercise the suppression. tests/test_image.py is the only thing
+      # exercising the air-gap properties, and scripts/lib.sh is sourced by
+      # image-build.sh and image-scan.sh alike, while the line above lists only
+      # scripts/image-*.sh. These three are inputs to the *decision to run*, not
+      # paths the image carries -- scripts/lib.sh's ship= array stays as it is,
+      # for the reason its comment gives.
+      - 'docs/cve-baseline.json'
+      - 'tests/test_image.py'
+      - 'scripts/lib.sh'
 
   # On demand: the image job is otherwise unreachable from a branch.
   workflow_dispatch: {}
 
+# scripts/install-tools.sh:6-11 refuses marketplace actions because they run
+# "somebody else's code on the runner with the job's token". The tokens these
+# jobs actually need is the smaller half of that: nothing here writes to the
+# repository. `cache` and `upload-artifact` authenticate with the runner's own
+# token rather than this one, so read is the whole requirement.
+permissions:
+  contents: read
+
 jobs:
   image:
     runs-on: ubuntu-latest
+    # Measured over the last 25 runs: 2m37s-3m03s. See the note in ci.yml for
+    # why every job carries one.
+    timeout-minutes: 30
     steps:
       # Full history: image-build.sh computes the -dirty suffix from
       # `git status --porcelain` over the shipped paths.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: .tools/bin
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
@@ -64,7 +87,7 @@ jobs:
       #
       # A `uses:`, so `workflows_carry_no_logic` in scripts/lint.sh still passes:
       # it inspects run/script/before_script/after_script and not uses.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: delivery-${{ github.sha }}
           path: .cache/delivery/

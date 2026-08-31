@@ -28,11 +28,22 @@ on:
     - cron: '0 6 1 * *'
   workflow_dispatch: {}
 
+# scripts/install-tools.sh:6-11 refuses marketplace actions because they run
+# "somebody else's code on the runner with the job's token". The tokens these
+# jobs actually need is the smaller half of that: nothing here writes to the
+# repository. `cache` and `upload-artifact` authenticate with the runner's own
+# token rather than this one, so read is the whole requirement.
+permissions:
+  contents: read
+
 jobs:
   rebuild-scan:
     runs-on: ubuntu-latest
+    # No recent run to measure -- it is monthly -- but it does the image job's
+    # work minus `just test-image`, so it gets the image job's ceiling.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
       # No tool cache here, and that is the decision rather than the oversight it
@@ -63,7 +74,7 @@ jobs:
       #
       # A `uses:`, so `workflows_carry_no_logic` in scripts/lint.sh still passes:
       # it inspects run/script/before_script/after_script and not uses.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: delivery-${{ github.sha }}
           path: .cache/delivery/

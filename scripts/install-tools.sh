@@ -75,6 +75,15 @@ installed() {
     [ -f "$TOOLS_BIN/$1" ] && [ -x "$TOOLS_BIN/$1" ]
 }
 
+# The version a binary on PATH reports, or empty when it will not say. All six
+# put a dotted version in the first line of `--version` -- measured: `just
+# 1.46.0`, `OpenTofu v1.12.6`, `Haskell Dockerfile Linter 2.15.1`,
+# `Version: 0.74.0`, `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves all
+# six and there is no per-tool case arm to keep in step with the pins above.
+version_of() {
+    "$1" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
 install_one() {
     local tool="$1" version="$2" tmp file
     tmp="$TMP/$tool"; mkdir -p "$tmp"
@@ -84,8 +93,22 @@ install_one() {
     fi
     # A system copy is fine and is what the maintainer's Rocky box has for
     # `just` (EPEL) and `tofu`. Only install what is genuinely missing.
+    #
+    # `have` is `command -v` and says nothing about version, and this arm covers
+    # all six tools rather than the two the sentence above names -- so on any
+    # box with a distro copy, the pins and digests at the top of this file are
+    # advisory and the fetch machinery never runs. That is the intended
+    # behaviour; being silent about it was not. Report the version beside the
+    # path, and say so when it is not the pinned one. A warning, not a failure:
+    # the early return is deliberate.
     if have "$tool" && [ "${FORCE:-0}" != 1 ]; then
-        log "  $tool: using $(command -v "$tool")"
+        local found path
+        path="$(command -v "$tool")"
+        found="$(version_of "$path")"
+        log "  $tool: using $path (${found:-version unknown})"
+        if [ "$found" != "$version" ]; then
+            log "  warning: $tool ${found:-of unknown version} is on PATH, but this repo pins $version"
+        fi
         return
     fi
     log "  $tool $version: downloading"
