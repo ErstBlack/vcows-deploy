@@ -51,8 +51,16 @@ and that is what made the varstore question unanswerable for as long as it was.
 honoured exactly — measured 2026-08-29: `app02` came back carrying its configured
 `OVMF_CODE_4M.qcow2` and named template with `secure-boot` and `enrolled-keys`
 both `no`, while the autoselected `app01` got the secboot build with both `yes`.
-The construct is therefore not wrong in principle. The open question is whether
-old libvirt's firmware autoselection *overrides* a pin instead of deferring to it.
+The construct is therefore not wrong in principle.
+
+**Answered 2026-08-31, and the answer is worse than the question.** Autoselection
+neither overrides nor defers: beside `firmware = "efi"`, libvirt validates the pin
+against the host's own firmware descriptors and refuses a format they do not
+carry. Measured on Ubuntu, whose four descriptors all declare `raw`: a qcow2 pin
+is refused at define with *Unable to find 'efi' firmware that is compatible with
+the current configuration*. So the deciding fact about a target is not its libvirt
+version but its descriptor set, which `virsh domcapabilities` answers before a
+deploy. Filed as #107; `scripts/smoke-libvirt.sh` carries the run ids.
 
 `virsh define` then `virsh dumpxml` is enough — no boot, no KVM, so this can run
 on a box that is only a libvirt install. Diff the stored `<os>` block against the
@@ -63,9 +71,15 @@ whenever a loader is set, and 2.15 drops to a schema fix.
 
 **Needs any current 9.x.** Rocky 9 and Rocky 10 `edk2-ovmf` ship raw `.fd`
 templates; this rig has only qcow2, so the `.fd` half of `main.tf:133` —
-`_VARS.${loader_format == "qcow2" ? "qcow2" : "fd"}` — has never been rendered
-against a real template. Deploy one VM with `loader_format: raw` and a `.fd`
-template, confirm `<name>_VARS.fd` appears, then destroy and confirm it is gone.
+`_VARS.${loader_format == "qcow2" ? "qcow2" : "fd"}` — was rendered against no
+real template until 2026-08-31.
+
+**Partly closed.** `scripts/smoke-libvirt.sh` now pins a raw `.fd` loader and
+template on every CI run and asserts the rendered `<nvram template='…_VARS.fd'>`
+against a real libvirtd, which is the first half of the check below. Two gaps
+remain: it is Ubuntu with libvirt 10.0.0 rather than RHEL 9 EUS, and `assert_gone`
+does not yet confirm the varstore file is removed (#111). Closing this needs the
+same VM on a 9.x target, and the destroy half.
 
 The qcow2 path is settled: watched at two-second resolution on 2026-08-29, both
 varstores appeared at define and were gone by the next sample after destroy. Do
