@@ -84,3 +84,54 @@ jobs:
       - run: just ensure-mirror
       - run: just verify-provider
       - run: just test-tofu
+
+  # The one job in this repository that boots a guest. Everything the `tofu` job
+  # above runs is offline against a mocked provider, which is what makes it able
+  # to read every value in the module and unable to observe a single consequence
+  # of one: acceptance.md defect 5 produced VMs that came up healthy on addresses
+  # nobody asked for, and no plan, no `validate` and no mock can see an address.
+  #
+  # `/dev/kvm` is a hard requirement, not a preference -- the hosted Linux runners
+  # expose it, and `main.tf` pins `type = "kvm"` and `cpu = { mode =
+  # "host-passthrough" }`, which TCG refuses. The alternative was editing the two
+  # lines this job exists to run unmodified. scripts/smoke.sh's header carries the
+  # measurement behind that, including why TF_PROVIDER_LIBVIRT_DOMAIN_TYPE is not
+  # the lever it looks like.
+  smoke:
+    runs-on: ubuntu-latest
+    # Measured end to end at 3 min 34 s, of which the 646 MB cold-cache download
+    # was 141 s and the guest's boot to its address was 18 s. Sized against a
+    # wedge rather than that run: the script's own clocks cap the work at roughly
+    # twelve minutes -- 300 s on the apply, 180 s on the boot poll, both of which
+    # report rather than hang -- and this is the ceiling over them.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/tofu-mirror
+          key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
+      # Keyed on the script, because the script is where the image URL and its
+      # sha256 are pinned -- so an edit to the pin cannot hit a cache holding the
+      # old image. It busts on an unrelated edit to the same file too, which costs
+      # one 646 MB download and is the cheap side of the trade: the expensive side
+      # is a run that verifies a digest against a guest it did not fetch. No
+      # restore-keys, for the reason the mirror has none.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .cache/smoke/*.qcow2
+          key: smoke-guest-${{ hashFiles('scripts/smoke.sh') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      - run: just ensure-mirror
+      - run: just smoke

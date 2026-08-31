@@ -14,6 +14,10 @@
 #              resembles what the air-gapped site runs.
 #   - `podman` a runner with rootless podman. The image gate needs a runtime, not
 #              just a builder -- see scripts/image-build.sh.
+#   - `libvirt` a runner that can host VMs: /dev/kvm, root, systemd, and
+#              NET_ADMIN for libvirt's NAT bridge. A shell executor, or a
+#              privileged Docker one. The shared SaaS runners are none of these,
+#              and TCG would not have helped -- see scripts/smoke.sh.
 # Every job is tagged. An untagged job on an instance with no matching runner
 # hangs pending forever instead of failing, which is the worst of both.
 
@@ -78,6 +82,46 @@ tofu:
     - just ensure-mirror
     - just verify-provider
     - just test-tofu
+
+smoke:
+  stage: check
+  # **Not `linux`.** This job boots a guest: it needs /dev/kvm, root, systemd to
+  # start libvirtd, and NET_ADMIN for the NAT network's bridge and rules. A shared
+  # SaaS Docker executor grants none of those, and no accelerator choice changes
+  # that -- TCG would still need the bridge and the daemon. So it gets a tag of
+  # its own, for the same reason `podman` has one: an untagged job on an instance
+  # with no matching runner hangs pending forever instead of failing.
+  tags: [libvirt]
+  # The script's own clocks are the real bounds -- 300 s on the apply, 180 s on
+  # the boot poll, both of which report rather than hang -- and they cap the work
+  # at roughly twelve minutes. Measured end to end at 3 min 34 s on GitHub. Same
+  # figure as .github/workflows/ci.yml, repeated because .github/ is meant to be
+  # deletable.
+  timeout: 20m
+  cache:
+    - key:
+        prefix: tools
+        files: [scripts/install-tools.sh, Containerfile]
+      paths: [.tools/bin]
+    - key:
+        prefix: uv
+        files: [pyproject.toml, uv.lock]
+      paths: [.cache/uv]
+    - key:
+        prefix: tofu-mirror
+        files: [orchestrator/backends/libvirt/tofu/main.tf]
+      paths: [.tools/tofu-mirror]
+    # Keyed on the script, because the script is where the guest image URL and
+    # its sha256 are pinned: an edit to the pin must not hit a cache holding the
+    # old image.
+    - key:
+        prefix: smoke-guest
+        files: [scripts/smoke.sh]
+      paths: [.cache/smoke/*.qcow2]
+  script:
+    - *bootstrap
+    - just ensure-mirror
+    - just smoke
 
 image:
   stage: image

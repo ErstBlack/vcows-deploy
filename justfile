@@ -89,6 +89,16 @@ verify-provider:
 test-tofu:
     VCOWS_GATES=tofu .venv/bin/python -m pytest -q -rs
 
+# The end-to-end gate: the module against a real libvirtd, a guest that boots,
+# and the address it actually came up on. **Deliberately not in `check`.** It
+# installs packages, needs root and /dev/kvm, and takes minutes -- while
+# .claude/hooks/static-gate.sh runs `just lint` every turn. Its own CI job, and
+# nothing else calls it. See the header of scripts/smoke.sh for what it proves
+# that `just test-tofu` structurally cannot, and for the switch that proves it
+# can fail.
+smoke:
+    ./scripts/smoke.sh
+
 # Build the container image.
 image:
     ./scripts/image-build.sh

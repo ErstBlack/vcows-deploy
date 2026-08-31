@@ -25,6 +25,7 @@ nothing, because nothing lives there.
 |---|---|---|
 | `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, ty, pytest |
 | `tofu` | PRs/MRs and master pushes | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
+| `smoke` | PRs/MRs and master pushes | `just smoke` — the module against a real libvirtd, one guest booted, and the address it came up on |
 | `image` | master, tags, and PR/MRs touching the image's inputs | build, `just test-image`, `just scan` |
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
 
@@ -33,6 +34,34 @@ The `When` column describes GitHub, where `push` is scoped to `branches: [master
 neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
 trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
 `rules:`, so there both also run on every push.
+
+## What `smoke` is for, and what it costs
+
+Every other gate here stops before a guest exists. `libvirt-module.tftest.hcl`
+reaches every expression in the module through `mock_provider "libvirt" {}`, which
+is what lets it tell a path from a name — and nothing is dialled, nothing is
+created, and no byte of rendered XML is ever handed to libvirt. So the whole class
+of defect that only appears past that point is unobserved, and
+`docs/acceptance.md` records five of them found by hand on a real hypervisor.
+
+`smoke` boots one Rocky 9 guest — the same image, to the byte, that the acceptance
+run used — and then asks the host what answers at the configured address. Defect 5
+was `routes: [{to: default}]`: cloud-init read it, threw out of its own v2-to-v1
+normaliser, applied nothing, fell back to DHCP, and both guests came up **healthy
+on the wrong addresses** reporting `cloud-init status: done`. No plan, no
+`validate` and no mock can see an address. That single assertion is what the job
+is for; `VCOWS_SMOKE_INJECT_DEFECT5=1` puts the defect back and the job must go
+red.
+
+It is the most expensive job in the pipeline and the only one that needs
+`/dev/kvm`. `main.tf` pins `type = "kvm"` and `cpu = { mode = "host-passthrough" }`,
+and TCG refuses the second outright, so running under TCG would mean editing the
+two lines the job exists to run unmodified.
+`TF_PROVIDER_LIBVIRT_DOMAIN_TYPE=qemu` is not the escape it appears to be: in
+terraform-provider-libvirt v0.9.8 that variable occurs in `README.md` and in the
+project's own workflow and in **no `.go` file at all**, and every acceptance
+fixture in that release writes `type = "kvm"` literally. It passes on
+`ubuntu-latest` because the hosted Linux runners expose `/dev/kvm`.
 
 There is no mutation-testing job. `just mutants` exists and its configuration is
 correct, but `mutmut run` does not complete here (see `pyproject.toml`), and a
@@ -72,13 +101,19 @@ coverage gate somebody turns off. Run it locally when the number is the question
 
 ## Runner assumptions
 
-GitHub: `ubuntu-latest`, which has podman.
+GitHub: `ubuntu-latest`, which has podman, and which exposes `/dev/kvm` — the one
+thing `smoke` cannot do without.
 
 GitLab, once it exists:
 
 - `linux` — a Docker-executor runner that can reach the package mirrors and the
   OpenTofu registry. Build-time network only; nothing in CI resembles what the
   air-gapped site runs.
+- `libvirt` — a runner that can host VMs: `/dev/kvm`, root, systemd to start
+  `libvirtd`, and `NET_ADMIN` for the NAT network's bridge and rules. A shell
+  executor, or a privileged Docker one. **The shared SaaS runners are none of
+  these**, and no accelerator choice changes it: TCG would still need the bridge
+  and the daemon. `smoke` is the only job that needs this tag.
 - `podman` — rootless podman, for the image job. **buildah is not a substitute.**
   It builds this Containerfile fine and even runs containers, but `buildah run`
   does not honour the image `ENTRYPOINT` and mutates the working container
@@ -191,8 +226,9 @@ Do not add `--offline`; it was deprecated as a no-op in v3.0.3.
 
 ## Migrating to GitLab
 
-1. Point the GitLab runners at the repository and give them the `linux` and
-   `podman` tags.
+1. Point the GitLab runners at the repository and give them the `linux`, `podman`
+   and `libvirt` tags. The last one is the only new machine the migration needs:
+   nothing that hosts a VM can be a shared SaaS runner.
 2. Create one pipeline schedule: monthly with `REBUILD_SCAN=1`. That is the
    only schedule variable any job reads.
 3. Replace Dependabot with self-hosted Renovate, or accept a manual
