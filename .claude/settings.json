@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh\"",
             "timeout": 60
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh\"",
             "timeout": 15
           }
         ]

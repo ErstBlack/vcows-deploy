@@ -1,0 +1,64 @@
+########## RX-F4 — .claude/skills/cve-triage/SKILL.md:26-30 has the wrong counts
+# target aed962d
+
+$ sed -n 22,31p .claude/skills/cve-triage/SKILL.md
+    22	```
+    23	{image, generated, note, rationale, accepted}
+    24	```
+    25	
+    26	So `--write-baseline` deletes the entire `rationale` object -- five groups
+    27	(`provider/golang.org/x/crypto`, `provider/stdlib`, `tofu`, `rocky-base`,
+    28	`CVE-2026-56854`), each carrying `count`, `why` and `recheck` -- and overwrites
+    29	the hand-written `note` with a generic one. The 99 accepted IDs survive; every
+    30	reason they were accepted does not.
+    31	
+
+===== A. docs/cve-baseline.json at HEAD (aed962d) =====
+$ jq ".rationale | keys | length" docs/cve-baseline.json
+6
+$ jq ".accepted | length" docs/cve-baseline.json
+100
+$ jq -r ".rationale | keys[]" docs/cve-baseline.json
+CVE-2026-11979
+CVE-2026-56854
+provider/golang.org/x/crypto
+provider/stdlib
+rocky-base
+tofu
+
+===== B. the same file at 053869f, the commit that ADDED the skill =====
+$ git show 053869f:docs/cve-baseline.json | jq ".rationale | keys | length"
+6
+$ git show 053869f:docs/cve-baseline.json | jq ".accepted | length"
+100
+$ git show 053869f:docs/cve-baseline.json | jq -r ".rationale | keys[]"
+CVE-2026-11979
+CVE-2026-56854
+provider/golang.org/x/crypto
+provider/stdlib
+rocky-base
+tofu
+
+# six and 100 at BOTH commits -> authoring error, not drift.
+
+===== C. neither file has changed since the skill shipped =====
+$ git diff --stat 053869f..aed962d -- docs/cve-baseline.json
+  (empty = unchanged)
+$ git diff --stat 053869f..aed962d -- .claude/skills/cve-triage/SKILL.md
+  (empty = unchanged)
+
+===== D. the unnamed sixth group =====
+# SKILL.md names: provider/golang.org/x/crypto, provider/stdlib, tofu, rocky-base, CVE-2026-56854
+# the file also holds: CVE-2026-11979
+$ jq ".rationale[\"CVE-2026-11979\"] | {count, recheck}" docs/cve-baseline.json
+{
+  "count": "1 finding, MEDIUM, libxml2 2.12.5-10.el10 in the rocky base layer",
+  "recheck": "on the next BASE_DIGEST re-pin; recheck date 2026-12"
+}
+
+$ jq -r ".rationale[\"CVE-2026-11979\"].why" docs/cve-baseline.json | tail -c 400
+ it adds nothing. Upstream libxml2 also disputes that it is a vulnerability. Rocky has published the fix as 2.12.5-10.el10_2.3, but libxml2 comes from the base layer -- verified present at this same version in rockylinux:10@sha256:827d37bc -- not from the Containerfile's `dnf -y install`, so no rebuild picks it up. Only re-pinning BASE_DIGEST can, which is the gap recorded at Containerfile's ARG.
+
+# It is the one acceptance tied to BASE_DIGEST -- the entry an agent re-triages after a re-pin.
+
+########## END RX-F4

@@ -1,0 +1,177 @@
+########## RX-F1 — the static gate's signature omits .toml, .tftest.hcl and the justfile
+# target aed962d; scratch = git clone of the lane worktree, .venv and .tools symlinked
+# hook invoked as .claude/settings.json:8 invokes it: CLAUDE_PROJECT_DIR set, Stop payload on stdin
+
+$ git -C /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone log --oneline -1
+aed962d Fix the eight masked returns in smoke-libvirt.sh that turned master's check job red
+$ cat /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/payload.json
+{"session_id":"l6","transcript_path":"/dev/null","cwd":"/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone","hook_event_name":"Stop","stop_hook_active":false}
+$ sed -n 54p .claude/hooks/static-gate.sh
+        | grep -zE '\.(py|sh|tf|ya?ml)$|(^|/)Containerfile$' \
+
+===== A. counts at aed962d =====
+$ git ls-files -z | wc (tracked total)
+183
+$ git ls-files | grep -cE "<signature regex>"   (INSIDE)
+71
+$ git ls-files | grep -cvE "<signature regex>"  (OUTSIDE)
+112
+# the same two counts at the review pin 672a500, where the issue measured 70 / 78:
+$ git ls-tree -r --name-only 672a500 | grep -cE "<sig>"
+70
+$ git ls-tree -r --name-only 672a500 | grep -cvE "<sig>"
+79
+
+# which of the OUTSIDE files a just lint / just typecheck gate actually reads:
+$ git ls-files | grep -vE "<sig>" | grep -E "\.toml$|\.hcl$|justfile$|\.json$"
+.claude/settings.json
+docs/cve-baseline.json
+docs/provider-0.9.8.lock.hcl
+docs/provider-schema-0.9.8.json
+justfile
+pyproject.toml
+tests/golden/libvirt.tfvars.json
+tests/libvirt-module.tftest.hcl
+
+===== B. baseline, clean tree =====
+$ hook (cold, no state file)
+exit=0  elapsed=3.616s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+$ hook (warm)
+exit=0  elapsed=0.034s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+
+===== C. mutation 1a — pyproject.toml:124 line-length 88 -> 40 =====
+$ grep -n "^line-length" pyproject.toml
+124:line-length = 40
+$ ./scripts/lint.sh ; echo $?
+  ok    hadolint
+  ok    tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+error: 2 gate(s) failed: ruff check
+ruff format
+lint.sh exit=1
+$ state before hook:
+pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb
+$ hook
+exit=0  elapsed=0.044s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+# baseline sig was: pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb
+
+===== C-control. same broken tree, state file removed =====
+$ rm -f .cache/static-gate.state ; hook
+exit=2  elapsed=4.544s  state=[block 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+$ head -6 stderr
+just lint failed:
+./scripts/lint.sh
+lint
+[1m[91mE501[0m[1m Line too long (80 > 40)[0m
+ [1m[94m--> [0mcontainer/entrypoint.py:2:41
+  [1m[94m|[0m
+# clean-tree state was  : pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb
+# broken-tree state now : block 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb
+# -> same signature, different verdict. The file is never hashed; the cache is only the mechanism.
+
+===== D. mutation 1b — pyproject.toml:168 [tool.ty.src] exclude -> [] =====
+$ sed -n 166,168p pyproject.toml
+[tool.ty.src]
+# Archived evidence, not package code (mirrors ruff's extend-exclude).
+exclude = []
+$ just typecheck ; echo $?
+
+Found 1 diagnostic
+error: Recipe `typecheck` failed on line 63 with exit code 1
+just typecheck exit=1
+$ hook
+exit=0  elapsed=0.055s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+
+===== E. mutation 1c — misformatted block in tests/libvirt-module.tftest.hcl =====
+$ tofu fmt -check -recursive .   (clean tree)
+exit=0
+$ head -4 tests/libvirt-module.tftest.hcl
+variable "l6_probe" {
+  type=string
+    default   =  "x"
+}
+$ tofu fmt -check -recursive . ; echo $?
+tests/libvirt-module.tftest.hcl
+exit=3
+$ ./scripts/lint.sh ; echo $?
+  FAIL  tofu fmt
+  ok    shellcheck
+  ok    workflows carry no logic
+error: 1 gate(s) failed: tofu fmt
+lint.sh exit=1
+$ hook
+exit=0  elapsed=0.025s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+
+===== F. NEGATIVE CONTROL — is docs/provider-0.9.8.lock.hcl in the blind spot? =====
+$ tail -8 docs/provider-0.9.8.lock.hcl
+
+provider "registry.opentofu.org/l6/probe" {
+version="9.9.9"
+    constraints  =  "9.9.9"
+  hashes=[
+"h1:aaaa",
+    ]
+}
+$ tofu fmt -check -recursive . ; echo $?
+exit=0
+$ tofu fmt -check docs/ ; echo $?
+exit=0
+$ ./scripts/lint.sh >/dev/null ; echo $?
+lint.sh exit=0
+# -> tofu fmt ignores lock files. The lock file is NOT in the blind spot.
+# -> so \.(toml|hcl)$ over-includes; the correct addition is \.toml$|\.tftest\.hcl$|(^|/)justfile$
+
+===== G. mutation 1d — justfile:55 -> a script that does not exist =====
+$ sed -n 54,56p justfile
+lint:
+    ./scripts/lint-typo.sh
+
+$ just lint ; echo $?
+./scripts/lint-typo.sh
+sh: line 1: ./scripts/lint-typo.sh: No such file or directory
+error: Recipe `lint` failed on line 55 with exit code 127
+just lint exit=127
+$ hook
+exit=0  elapsed=0.035s  state=[pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb]
+
+===== H. is :61-63 true? force cur empty with a failing git =====
+# state now: pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb  -- a warm run would be ~0.03s
+$ PATH=<failing git> hook -> exit=0 elapsed=4.000s
+# 4.0s, not 0.03s: it ran the gates rather than short-circuiting on the recorded pass.
+# :61-63 is TRUE as written.
+
+===== I. the proposed alternation =====
+# proposed: \.(py|sh|tf|ya?ml|toml)$|\.tftest\.hcl$|(^|/)(Containerfile|justfile)$
+$ tracked files INSIDE current : 71
+$ tracked files INSIDE proposed: 74
+$ files it adds:
+> justfile
+> pyproject.toml
+> tests/libvirt-module.tftest.hcl
+$ files the over-broad \.(toml|hcl)$ would add on top:
+> docs/provider-0.9.8.lock.hcl
+$ signature timing, current then proposed, 3 runs each:
+  0.031s 0.037s 0.031s 
+  0.032s 0.034s 0.040s 
+
+===== J. the patched hook against all four mutations =====
+$ sed -n 54p /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/static-gate-FIXED.sh
+        | grep -zE '\.(py|sh|tf|ya?ml|toml)$|\.tftest\.hcl$|(^|/)(Containerfile|justfile)$' \
+  1a: exit=2  elapsed=3.993s  state=[block 881ae00a2631add4e7cc22f95943a83f4513937fa158b4b12db11f1ff789fb6a]
+      baseline sig was: pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d
+      stderr line 1   : just lint failed:
+  1b: exit=2  elapsed=4.066s  state=[block d497a6b714e5d63c1077fadd16fb25ecfa39f02adc7fc0f38c3adae7ac0ef8ad]
+      baseline sig was: pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d
+      stderr line 1   : just typecheck failed:
+  1c: exit=2  elapsed=3.930s  state=[block 04125d61c6209a619ee37a01341aec87f2c170cafb22daf805dcf1d13b0a3d4b]
+      baseline sig was: pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d
+      stderr line 1   : just lint failed:
+  1d: exit=2  elapsed=0.059s  state=[block dee90b51b0cf25d00776e5b90b40fc4811f9714c85f10f1b676770d2905e4f1f]
+      baseline sig was: pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d
+      stderr line 1   : just lint failed:
+  clean tree, FIXED hook, cold then warm:
+    exit=0  elapsed=3.380s  state=[pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d]
+    exit=0  elapsed=0.038s  state=[pass 4cae18dd0c3ec4cb86be8a826c30871937b730baed705ee6d60092662e4a4a1d]
+
+########## END RX-F1

@@ -1,0 +1,63 @@
+########## RX-F8 — .claude/skills/delivery/SKILL.md:20 cites scripts/bundle.sh:52
+# target aed962d
+
+$ sed -n 18,24p .claude/skills/delivery/SKILL.md
+    18	
+    19	`just bundle` assembles what ships **from what `just scan` already wrote**. It
+    20	does not build anything itself. `scripts/bundle.sh:52` checks for the archive,
+    21	the SBOM and the trivy report and dies with:
+    22	
+    23	    no <name> -- run 'just scan' first, which writes it
+    24	
+
+===== A. where the die actually is, at HEAD =====
+$ grep -n "die " scripts/bundle.sh
+35:    [ -n "$config" ] || die "no manifest.json in $archive -- not a docker-archive?"
+37:    [ -n "$value" ] || die "image in $archive carries no $key label"
+51:        [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
+
+$ sed -n 46,53p scripts/bundle.sh
+    46	    scan="$REPO/.cache/scan"
+    47	    archive="$scan/image.tar"
+    48	    sbom="$scan/sbom.spdx.json"
+    49	    report="$scan/trivy.json"
+    50	    for f in "$archive" "$sbom" "$report"; do
+    51	        [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
+    52	    done
+    53	
+
+# :51 is the die. :52 is the done.
+
+===== B. bundle.sh HAS changed since the review pin 672a500 =====
+$ git log --oneline 672a500..aed962d -- scripts/bundle.sh
+454ee7c Section 4 of the tooling survey, decided item by item (#21) (#72)
+$ git diff --stat 672a500..aed962d -- scripts/bundle.sh
+ scripts/bundle.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+$ git diff 672a500..aed962d -- scripts/bundle.sh
+diff --git a/scripts/bundle.sh b/scripts/bundle.sh
+index e0c66a2..f326611 100755
+--- a/scripts/bundle.sh
++++ b/scripts/bundle.sh
+@@ -104,7 +104,7 @@ main() {
+ 
+     log ""
+     log "bundle  $out"
+-    log "  $name  ($(du -h "$out/$name" | cut -f1))"
++    log "  $name  ($(du -h "$out/$name" | cut -f1 || true))"
+     log "  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS"
+     log ""
+     log "on receipt:  sha256sum -c SHA256SUMS"
+
+# The change is at :107, below the die. The die did NOT move.
+
+===== C. the die line at each commit in play =====
+  053869f: 52 
+  672a500: 51 
+  aed962d: 51 
+
+# 053869f (skill shipped): 52 -- the citation was correct when written.
+# 672a500 (review pin)   : 51
+# aed962d (HEAD)         : 51 -- still 51. The review's number holds.
+
+########## END RX-F8

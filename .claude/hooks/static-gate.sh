@@ -18,8 +18,8 @@
 # of an already-modified file, because the porcelain line stays ` M path` either
 # way -- and a second edit is the common case inside a turn. A guard that misses
 # it rebuilds the failure conftest.py:7 names, so this hashes the contents of
-# the files the six gates actually read. 0.033s against lint's 2.9s: correctness
-# is free here.
+# the files the six gates read or are configured by. 0.033s against lint's 2.9s:
+# correctness is free here.
 #
 # **A given tree state blocks at most once.** Exit 2 continues the turn, which
 # produces another Stop, so an unconditional block would wedge the session.
@@ -28,9 +28,10 @@
 # signature already recorded as `block` reports and exits 0. Blocking a second
 # time requires the model to have actually changed something.
 #
-# Measured on 26627ad: ./scripts/lint.sh 2.85/3.26/2.84s, `ty check` 0.33s,
-# signature 0.034/0.033/0.033s over 70 files. `just check` stays rejected -- the
-# suite is ~24s and shells out to the real tofu binary.
+# Measured on 26627ad: ./scripts/lint.sh 2.85/3.26/2.84s, `ty check` 0.33s.
+# Signature 0.033/0.034/0.039s over the 74 files the pattern below selects, on
+# d9d9252. `just check` stays rejected -- the suite is ~24s and shells out to
+# the real tofu binary.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -44,14 +45,16 @@ cd "$REPO"
 # needs no new ignore rule. It does not exist on a fresh clone.
 STATE="$REPO/.cache/static-gate.state"
 
-# Every file the six gates read: ruff and ty over *.py, tofu fmt over *.tf,
+# Every file the six gates read or are configured by: ruff and ty over *.py and
+# their [tool.*] tables in pyproject.toml, tofu fmt over *.tf and *.tftest.hcl,
 # hadolint over Containerfile, shellcheck over scripts/*.sh and
-# .claude/hooks/*.sh, and workflows_carry_no_logic over the two pipeline files.
+# .claude/hooks/*.sh, workflows_carry_no_logic over the two pipeline files, and
+# the justfile that runs lint and typecheck.
 # Enumerated through git so .venv/, .cache/ and .tools/ fall out of scope via
 # .gitignore rather than via a second list that would drift from it.
 signature() {
     { git ls-files -z; git ls-files -o --exclude-standard -z; } \
-        | grep -zE '\.(py|sh|tf|ya?ml)$|(^|/)Containerfile$' \
+        | grep -zE '\.(py|sh|tf|ya?ml|toml)$|\.tftest\.hcl$|(^|/)(Containerfile|justfile)$' \
         | sort -z \
         | xargs -0 -r sha256sum \
         | sha256sum \
@@ -84,7 +87,7 @@ fi
 record() {
     [ -n "$cur" ] || return 0
     mkdir -p "$(dirname "$STATE")"
-    printf '%s %s\n' "$1" "$cur" > "$STATE"
+    printf '%s %s\n' "$1" "$cur" > "$STATE" || true
 }
 
 fail() {

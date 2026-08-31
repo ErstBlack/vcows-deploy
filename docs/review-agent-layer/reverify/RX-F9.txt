@@ -1,0 +1,83 @@
+########## RX-F9 — CLAUDE.md:49-51 undercounts the banned skip forms
+# target aed962d
+
+===== A. what CLAUDE.md says =====
+$ sed -n 47,51p CLAUDE.md
+    47	`tests/conftest.py:7`: "A gate that quietly passes because it did not run is
+    48	worse than no gate." Every conditional skip goes through `conftest.gate()`
+    49	(`:44`) or `conftest.require()` (`:61`), and `tests/test_gates.py` AST-walks the
+    50	suite and fails on any bare `pytest.skip`, `pytest.importorskip` or
+    51	`pytest.mark.skip`. Introducing one is a test failure, not a style note.
+# names THREE: pytest.skip, pytest.importorskip, pytest.mark.skip
+
+===== B. what tests/test_gates.py enforces =====
+$ sed -n 70,93p tests/test_gates.py
+    70	
+    71	
+    72	#: `skipif` is here because it is the exact idiom `gate()` itself returns
+    73	#: (conftest.py:53), so it is the form a developer copying house style writes --
+    74	#: and one written by hand goes straight past the mechanism. `xfail` is here
+    75	#: because it is worse than a skip: the test runs, fails, and reports green.
+    76	BANNED = {
+    77	    "pytest.skip",
+    78	    "pytest.importorskip",
+    79	    "pytest.xfail",
+    80	    "pytest.mark.skip",
+    81	    "pytest.mark.skipif",
+    82	    "pytest.mark.xfail",
+    83	}
+    84	
+    85	
+    86	def test_every_skip_goes_through_the_gate_mechanism():
+    87	    """A skip conftest cannot see is a test that will never be made to run."""
+    88	    found = [
+    89	        f"{path.name}:{lineno}: {name}"
+    90	        for path in _sources()
+    91	        for name, lineno in _references(ast.parse(path.read_text()))
+    92	        if name in BANNED
+    93	    ]
+
+===== C. BANNED read out of the AST, not counted by eye =====
+$ python3 -c "<parse tests/test_gates.py, literal_eval the BANNED assignment>"
+BANNED line span : 76 - 83
+count            : 6
+    pytest.importorskip
+    pytest.mark.skip
+    pytest.mark.skipif
+    pytest.mark.xfail
+    pytest.skip
+    pytest.xfail
+
+===== D. the three CLAUDE.md omits =====
+named in CLAUDE.md : 3
+enforced by BANNED : 6
+omitted            :
+    pytest.mark.skipif
+    pytest.mark.xfail
+    pytest.xfail
+
+===== E. why pytest.mark.skipif is the costly omission =====
+$ sed -n 44,58p tests/conftest.py
+    44	def gate(name: str, available: bool, reason: str):
+    45	    """A skip, or -- when this gate was demanded -- a failure carrying the reason.
+    46	
+    47	    The failure is raised from `pytest_runtest_setup` rather than by letting the
+    48	    test run into whatever error the missing dependency produces: a rig test
+    49	    without `VCOWS_RIG_URI` would otherwise fail somewhere inside libvirt, which
+    50	    says nothing about the gate.
+    51	    """
+    52	    if available:
+    53	        return pytest.mark.skipif(False, reason=reason)
+    54	    return (
+    55	        pytest.mark.gate_missing(reason)
+    56	        if demanded(name)
+    57	        else pytest.mark.skip(reason=reason)
+    58	    )
+# conftest.gate() RETURNS pytest.mark.skipif at :53 on the available path,
+# so a reader has a live example in front of them of a form the AST walk rejects.
+
+===== F. the anchor #88 cites =====
+# #88 says tests/test_gates.py:76-83 -- the AST span above confirms 76-83. Correct.
+# (the finder report F-agent-layer.md said :76-81 and 'four'. Both wrong; F-lows.md corrected them.)
+
+########## END RX-F9
