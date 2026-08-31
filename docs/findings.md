@@ -307,6 +307,43 @@ returned and reported by `cmd_destroy`, and `Result.warnings` is recorded into
 `run.json` — not re-printed, because `tofu` inherits stdout and has already
 rendered them live.
 
+### The log is not a fifth carrier
+
+Added for #136, which filed the one thing the rule above does not cover:
+`Diagnostic.detail` is populated on every run, dropped by `__str__`, and
+flattened to one line by both consumers, so the terminal got OpenTofu's
+multi-line *why* and the persisted copy got the headline.
+
+The line drawn is **the printout carries the headline, the log carries the
+detail** — and, operationally, **log only where information is destroyed and no
+carrier survives**. That second half is what keeps this from becoming the fifth
+carrier this section refuses: nothing logs a `Problem`, a `Decision` or an
+`Outcome`, because each of those is already printed where it arrives. Fourteen
+statements in four files; `schema.py`, `prepare.py`, `render.py`, `marker.py`,
+`qcow2.py`, `config.py` and `base.py` got none, and everything in `destroy.py`
+routed through `_fail` got none.
+
+Consequences worth keeping: stdlib `logging` only, no new dependency, no
+handler configuration (which is the plugin-discovery shape banned below). stderr
+only, so `podman logs` is the persistence and the log survives the `--run-dir`
+case where `run.json` is never written. Nothing above INFO, gated by
+`test_logging.test_nothing_is_logged_above_info` — WARNING+ reaches
+`logging.lastResort` and the real stderr in tests that do not go through `main`.
+`run.extra["tofu_warnings"]` stays `list[str]`, which is #89's RX-B6 cleared by
+construction rather than by argument.
+
+**OpenTelemetry was reconsidered here and stays cut.** §5's row below is still
+the decision; one of its grounds has moved and one has been strengthened.
+Moved: the propagation gap it cites (opentofu#3936) is *outbound* — tofu to
+`local-exec`, which vcows does not use. The direction vcows would need is
+inbound, and it works at the pinned 1.12.6: `internal/tracing/init.go` at that
+tag reads `TRACEPARENT` and `TRACESTATE`. Strengthened: `opentelemetry-api`,
+`-sdk` and `-exporter-otlp` have no Rocky 10 or EPEL 10 RPM, which is §5.6's
+`defusedxml` disqualifier verbatim and would mean the second air-gap mechanism
+`pyproject.toml` rejects by name. Nothing is foreclosed — `container/entrypoint.py`
+ends in `os.execv` and `tofu._env()` is `{**os.environ, ...}`, so `OTEL_*`
+already reaches the tofu child untouched if a site ever sets it.
+
 ### Explicitly not built
 
 No noop default implementations. No plugin discovery or entry points — an explicit dict in `backends/__init__.py`. No capability negotiation. No per-backend CLI subcommands. No backend-specific exception hierarchies. No `required_tools` declarations driving Containerfile generation.
@@ -367,7 +404,7 @@ Two rules to settle while drafting: `nics` is a list but the inventory carries o
 | §6.1, §6.4, §7, most of §2's table, §11 rows 2–3 | vSphere and Proxmox. ovftool, open-vmdk, `mkova.sh`, content libraries, govc, the `import` content type, the snippet/SFTP analysis. `image/convert.py` deletes outright. Move to `future-backends.md` so the research survives. |
 | §4 Stage 3, `ansible/`, `exec/ansible.py` | Nobody has asked for post-config. Golden images already contain cloud-init and `user_data` is in the schema. Stage 3 has no stated purpose, no inputs, and no config surface. It drags in ansible-core, ansible-runner, a second air-gap vendoring pipeline, and the GPLv3 half of F15. **The seam is free: write `inventory.json` with no consumer.** |
 | §4 Stages 0 and 4, `hooks/` | No downstream group has asked for a hook, and shipping one freezes an environment contract against zero requirements. An escape valve arriving before real extension points means downstream shells out instead of asking, inside sites you cannot debug. Adding later is backward-compatible; removing is not. Make CLI phases separably invocable instead. |
-| §8, `telemetry.py` | Its purpose was correlating two child processes; there is one. The propagation gap it cites closed upstream (issue #3936, shipped in 1.13.0). Air-gap would mean a collector per site. |
+| §8, `telemetry.py` | Its purpose was correlating two child processes; there is one. The propagation gap it cites closed upstream (issue #3936, shipped in 1.13.0). Air-gap would mean a collector per site. **Reconsidered for #136 and still cut** — see §3's "The log is not a fifth carrier", which corrects the #3936 ground and adds the RPM measurement. |
 | The `:9` tag | Answered by the Haswell confirmation. Never the one-line diff §3 claims anyway — Rocky 9's platform Python is 3.9, `python3-libvirt` there is built against 3.9 only, and current ansible-core needs 3.12+. |
 | S3/MinIO, `lifecycle: oneshot \| stateful` | State is always written. §10 conflated *shared* state with *a record of what you created*; "one-shot" should have meant unshared, not amnesiac. |
 

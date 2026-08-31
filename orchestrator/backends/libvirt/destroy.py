@@ -28,6 +28,7 @@ Three things are load-bearing:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -60,6 +61,11 @@ FLOOR = UNDEFINE_MANAGED_SAVE | UNDEFINE_SNAPSHOTS_METADATA | UNDEFINE_NVRAM
 
 #: ``version`` here is libvirt's packed form: major * 1e6 + minor * 1e3 + release.
 _GATED = ((5006000, UNDEFINE_CHECKPOINTS_METADATA), (8009000, UNDEFINE_TPM))
+
+
+#: Only the three swallows with no `Outcome` to carry them. Everything that goes
+#: through `_fail` already reaches `run.json` and is not repeated here.
+log = logging.getLogger(__name__)
 
 
 def undefine_mask(version: int) -> int:
@@ -144,7 +150,10 @@ def _is_off(dom: Any) -> bool:
 
     try:
         return not dom.isActive()
-    except libvirt.libvirtError:
+    except libvirt.libvirtError as exc:
+        # "Not confirmed off" is the safe reading and it stays. The error behind
+        # it has nowhere else to go: the caller gets a bool.
+        log.debug("could not confirm the domain is off: %s", exc)
         return False
 
 
@@ -232,9 +241,11 @@ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
 
     try:
         path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
-    except (libvirt.libvirtError, ET.ParseError):
+    except (libvirt.libvirtError, ET.ParseError) as exc:
+        log.debug("could not read the pool's target path: %s", exc)
         return None
     if not path:
+        log.debug("pool answered with no <target><path>")
         return None
     return sorted(p for p in wanted if str(PurePosixPath(p).parent) == path)
 
@@ -356,7 +367,8 @@ def _claimed_elsewhere(
     claimed: set[str] = set()
     try:
         domains = conn.listAllDomains(0)
-    except libvirt.libvirtError:
+    except libvirt.libvirtError as exc:
+        log.debug("could not list domains to check disk claims: %s", exc)
         return None
     # The twin of preflight._domains. Deliberately not shared: the filter below
     # runs before the read, and a shared iterator would have to move it after,

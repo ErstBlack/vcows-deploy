@@ -34,6 +34,7 @@ already define domains here.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -55,6 +56,22 @@ from .schema import connection_uri, mac_of
 #: xmlns and would need a different tag; spike A2 caught the disagreement.
 MARKER_TAG = f"{{{MARKER_XMLNS}}}{MARKER_ELEMENT}"
 
+#: Only the paths that destroy something. Every `Problem` this module builds is
+#: already carried to the operator and into `run.json`, so none of them is
+#: repeated here (findings.md §3).
+log = logging.getLogger(__name__)
+
+
+def _chatter(_ctx: Any, err: Any) -> None:
+    """libvirt's error handler: log at DEBUG rather than discard.
+
+    Indexes defensively because this runs inside libvirt's own callback, where an
+    ``IndexError`` would surface as something far stranger than a missing log
+    line. The binding passes ``virGetLastError``'s 9-tuple and element 2 is the
+    message; anything else is logged whole rather than guessed at.
+    """
+    log.debug("libvirt: %s", err[2] if isinstance(err, tuple) and len(err) > 2 else err)
+
 
 @contextmanager
 def connect(cfg: dict) -> Iterator[Any]:
@@ -67,11 +84,21 @@ def connect(cfg: dict) -> Iterator[Any]:
     ``registerErrorHandler`` silences libvirt's unconditional stderr chatter.
     Lookup misses are the normal case here, not errors, and every one of them would
     otherwise print a traceback-looking line an operator has to learn to ignore.
+    Keeping them off stderr is the point of that handler; *destroying* them was
+    incidental, and the handler now routes them to DEBUG instead. Off by default,
+    so the operator's terminal is unchanged, and recoverable when something is
+    wrong -- this is the only account of a libvirt failure anywhere in the
+    process, and `%s` formatting means it costs nothing while DEBUG is off.
     """
     import libvirt
 
-    libvirt.registerErrorHandler(lambda _ctx, _err: None, None)
-    conn = libvirt.open(connection_uri(cfg["target"]["libvirt"]))
+    libvirt.registerErrorHandler(_chatter, None)
+    uri = connection_uri(cfg["target"]["libvirt"])
+    # Derived from config rather than given, so the config does not say what was
+    # actually dialed and nothing else records it. Paths only -- `ssh_keyfile` and
+    # `known_hosts` name files here, they do not carry their contents.
+    log.info("connecting to %s", uri)
+    conn = libvirt.open(uri)
     try:
         yield conn
     finally:
@@ -93,7 +120,12 @@ def marker_of(root: ET.Element) -> Marker | None:
         return None
     try:
         return Marker.from_json(element.text)
-    except MarkerError:
+    except MarkerError as exc:
+        # D12 stands: this domain is read as unmarked, which is the safe
+        # direction. But "damaged marker" and "no marker" are different facts and
+        # the return value makes them one, so a VM that vcows created and can no
+        # longer recognise is otherwise indistinguishable from a stranger's.
+        log.info("damaged marker read as unmarked: %s", exc)
         return None
 
 

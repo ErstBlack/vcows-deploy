@@ -30,6 +30,7 @@ and SIGKILLs.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -42,6 +43,11 @@ from pathlib import Path
 #: image through the SSH tunnel with no resume, so any timeout long enough to be
 #: safe is too long to be useful, and one that fires kills a live upload.
 SHORT_TIMEOUT = 120
+
+#: `Diagnostic.detail` is what this exists for (#136). The operator saw it live on
+#: the inherited stdout; the log is what carries it past the terminal, without
+#: `__str__` growing a multi-line rendering its two callers would flatten anyway.
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -126,7 +132,11 @@ def _read_stream(path: Path) -> tuple[tuple[Diagnostic, ...], dict[str, int]]:
     """
     try:
         text = path.read_text()
-    except OSError:
+    except OSError as exc:
+        # Not fatal, and not silent either: every diagnostic tofu produced for
+        # this step is gone, and the record about to be written will look like a
+        # step that produced none.
+        log.info("no diagnostics: %s could not be read (%s)", path, exc.strerror)
         return (), {}
 
     diagnostics: list[Diagnostic] = []
@@ -135,6 +145,7 @@ def _read_stream(path: Path) -> tuple[tuple[Diagnostic, ...], dict[str, int]]:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
+            log.debug("%s: skipping a line that is not JSON: %r", path, line[:200])
             continue
         if message.get("type") == "diagnostic":
             d = message.get("diagnostic", {})
@@ -172,6 +183,10 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
         argv.append("-no-color")
     argv.append(f"-json-into={stream}")
     argv.extend(args)
+    # What was actually executed. Nothing else records it, and it is the first
+    # question asked of any tofu invocation that misbehaved -- the -no-color
+    # decision and the resolved -chdir are both computed here, not given.
+    log.info("running %s", " ".join(argv))
 
     # Not `start_new_session`: Ctrl-C must reach tofu so it shuts down the way it
     # would if the operator had run it themselves.
@@ -199,6 +214,12 @@ def _run(cmd: str, workdir: Path, args: tuple[str, ...] = ()) -> Result:
         raise
 
     diagnostics, changes = _read_stream(stream)
+    # #136. `str(d)` is the headline both consumers keep; `detail` is OpenTofu's
+    # multi-line "why", which `__str__` drops and which nothing else persists.
+    # Errors and warnings alike -- a failing step's own diagnostics are the ones
+    # worth having, and `TofuError`'s message flattens them to one line.
+    for d in diagnostics:
+        log.info("tofu %s: %s%s", cmd, d, f"\n{d.detail}" if d.detail else "")
     result = Result(proc.returncode, diagnostics, changes)
     if proc.returncode != 0:
         errors = "; ".join(str(d) for d in result.errors)
@@ -247,13 +268,15 @@ def _capture(cmd: str, workdir: Path | None = None) -> dict:
     want the bytes rather than the view. ``workdir`` is optional because
     ``version`` answers without one.
     """
+    argv = [
+        _binary(),
+        *([f"-chdir={workdir.resolve()}"] if workdir else []),
+        cmd,
+        "-json",
+    ]
+    log.info("running %s", " ".join(argv))
     completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
-        [
-            _binary(),
-            *([f"-chdir={workdir.resolve()}"] if workdir else []),
-            cmd,
-            "-json",
-        ],
+        argv,
         env=_env(),
         capture_output=True,
         text=True,

@@ -27,15 +27,26 @@ wrote into it would be overstepping.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import pwd
 import re
 import sys
+import time
 from pathlib import Path
 
 import yaml
 
 VCOWS = "/usr/local/bin/vcows"
+
+#: Duplicated from `orchestrator/cli.py` rather than imported, for the same
+#: reason `SSH_PATH` below is: this runs *before* `vcows` is a process, it lives
+#: outside `/opt/vcows`, and it imports nothing from the package today. Importing
+#: `orchestrator` here would make a package-level import error surface as a
+#: broken entrypoint instead of the sentence `vcows` itself would have printed a
+#: moment later.
+log = logging.getLogger("vcows.entrypoint")
 
 #: An absolute path with no whitespace in it. Mirrors ``SSH_PATH_PATTERN`` in
 #: ``orchestrator/backends/libvirt/schema.py``, and is duplicated rather than
@@ -140,10 +151,15 @@ def install(argv: list[str]) -> None:
 
     try:
         cfg = yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError):
-        # Not our error to report. `vcows validate` says it properly.
+    except (OSError, yaml.YAMLError) as exc:
+        # Not our error to report -- `vcows validate` says it properly, which is
+        # why this stays DEBUG. What is only knowable here is the consequence:
+        # no SSH config was installed, so the connection failure that follows
+        # will not mention the config that caused it.
+        log.debug("%s could not be read, so no SSH config was installed: %s", path, exc)
         return
     if not isinstance(cfg, dict):
+        log.debug("no SSH config installed: %s is not a mapping", path)
         return
 
     # Two `isinstance` checks rather than `or {}`, because this is the operator's
@@ -152,9 +168,11 @@ def install(argv: list[str]) -> None:
     # `vcows validate`, a moment later, has a sentence.
     target = cfg.get("target")
     if not isinstance(target, dict):
+        log.debug("no SSH config installed: `target` is not a mapping")
         return
     libvirt = target.get("libvirt")
     if not isinstance(libvirt, dict):
+        log.debug("no SSH config installed: `target.libvirt` is not a mapping")
         return
     keyfile, known_hosts = libvirt.get("ssh_keyfile"), libvirt.get("known_hosts")
     if not keyfile and not known_hosts:
@@ -248,6 +266,18 @@ def verb(argv: list[str]) -> str | None:
 
 
 def main() -> None:
+    # `vcows` configures its own logging a moment from now; this covers the
+    # window before the exec. An unusable VCOWS_LOG_LEVEL is left entirely to
+    # `cli._log_level`, which reports it in one place rather than two.
+    logging.Formatter.converter = time.gmtime
+    with contextlib.suppress(ValueError):
+        logging.basicConfig(
+            level=os.environ.get("VCOWS_LOG_LEVEL", "INFO").upper(),
+            stream=sys.stderr,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%SZ",
+            force=True,
+        )
     if verb(sys.argv[1:]) not in OFFLINE:
         install(sys.argv[1:])
     # S606 flags shell-less execution, which is the safe half of the pair:
