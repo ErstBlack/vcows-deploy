@@ -1,0 +1,103 @@
+########## RX-F7 — an unwritable .cache/ downgrades a block to a non-blocking error
+# target aed962d, scratch clone, hook invoked as settings.json:8 invokes it
+
+$ sed -n 84,95p .claude/hooks/static-gate.sh
+    84	record() {
+    85	    [ -n "$cur" ] || return 0
+    86	    mkdir -p "$(dirname "$STATE")"
+    87	    printf '%s %s\n' "$1" "$cur" > "$STATE"
+    88	}
+    89	
+    90	fail() {
+    91	    record block
+    92	    printf '%s\n' "$1" >&2
+    93	    printf '%s\n' "$2" >&2
+    94	    exit 2
+    95	}
+
+===== A. break the tree so just lint fails =====
+$ echo "import os" >> orchestrator/marker.py ; ./scripts/lint.sh >/dev/null ; echo $?
+lint.sh exit=1
+
+===== B. ARM A: chmod 700 .cache (writable) =====
+$ ls -ld .cache
+drwx------. 2 ssullivan ssullivan 6 Aug 31 02:07 .cache
+hook exit=2   <-- 2 = correct block
+state:              block ebc9ced840798c45d5e453b33b61b92633679cfdc1dcd101154190186c7ba1b2
+stderr line count:  46
+stderr first 3:
+just lint failed:
+./scripts/lint.sh
+lint
+
+===== C. ARM B: chmod 500 .cache (read+execute, not writable) =====
+$ ls -ld .cache
+dr-x------. 2 ssullivan ssullivan 6 Aug 31 02:08 .cache
+hook exit=1   <-- 1 = non-blocking error
+stderr line count:  1
+stderr in full:
+.claude/hooks/static-gate.sh: line 87: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+state file:
+total 4
+dr-x------.  2 ssullivan ssullivan    6 Aug 31 02:08 .
+drwxr-xr-x. 15 ssullivan ssullivan 4096 Aug 31 02:07 ..
+# 46 lines of lint diagnostic in ARM A; 1 line in ARM B. The block AND the output are lost.
+
+===== D. WHICH COMMAND FAILS — :86 mkdir -p, or :87 the printf redirect? =====
+$ sed -n 86,87p .claude/hooks/static-gate.sh
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s %s\n' "$1" "$cur" > "$STATE"
+
+:86 in isolation, on the existing mode-500 directory:
+$ mkdir -p "$W/.cache" ; echo $?
+  mkdir -p exit=0   <-- succeeds; mkdir -p on an existing dir ignores its mode
+
+:87 in isolation:
+$ printf "%s %s\n" block deadbeef > "$W/.cache/static-gate.state" ; echo $?
+/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/run-f7.sh: line 44: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+  redirect exit=1   <-- THIS is the failing command
+
+both, under set -e, in the order record() runs them:
+  reached-after-mkdir
+_: line 1: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+  combined exit=1
+# 'reached-after-mkdir' prints, 'reached-after-printf' does not. :86 is not the failure.
+
+===== E. fail() dies before its two printf >&2 at :92-93 =====
+fail() harness exit=1   <-- 1, not 2
+stderr:
+environment: line 4: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+does THE-DIAGNOSTIC appear on either stream? 0
+
+===== F. :105 record pass has the same exposure on the HEALTHY path =====
+clean-tree lint.sh exit=0
+hook exit=1   <-- 1 on a tree with nothing wrong with it
+.claude/hooks/static-gate.sh: line 87: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+
+===== G. the fix: record block || true  /  record pass || true =====
+$ sed -n 90,95p; sed -n 104,106p   (patched copy)
+fail() {
+    record block || true
+    printf '%s\n' "$1" >&2
+    printf '%s\n' "$2" >&2
+    exit 2
+}
+
+record pass || true
+exit 0
+
+broken tree, chmod 500 .cache, PATCHED hook:
+  exit=2   <-- 2, the block is restored
+  stderr line count: 47   (1 permission warning + the 46 diagnostic lines)
+  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/static-gate-F7FIX.sh: line 87: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+  just lint failed:
+  ./scripts/lint.sh
+
+broken tree, chmod 700 .cache, PATCHED hook (no regression):
+  exit=2   stderr lines=46   state=block ebc9ced840798c45d5e453b33b61b92633679cfdc1dcd101154190186c7ba1b2
+
+clean tree, chmod 500 .cache, PATCHED hook (healthy path no longer breaks):
+  exit=0   <-- 0
+  /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/static-gate-F7FIX.sh: line 87: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.cache/static-gate.state: Permission denied
+
+########## END RX-F7

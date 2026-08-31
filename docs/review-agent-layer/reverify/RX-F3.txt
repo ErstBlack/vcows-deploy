@@ -1,0 +1,80 @@
+########## RX-F3 — .claude/settings.json:8,19, unquoted $CLAUDE_PROJECT_DIR
+# target aed962d
+
+$ sed -n 1,25p /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/clone/.claude/settings.json
+     1	{
+     2	  "hooks": {
+     3	    "Stop": [
+     4	      {
+     5	        "hooks": [
+     6	          {
+     7	            "type": "command",
+     8	            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh",
+     9	            "timeout": 60
+    10	          }
+    11	        ]
+    12	      }
+    13	    ],
+    14	    "SessionStart": [
+    15	      {
+    16	        "hooks": [
+    17	          {
+    18	            "type": "command",
+    19	            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh",
+    20	            "timeout": 15
+    21	          }
+    22	        ]
+    23	      }
+    24	    ]
+    25	  },
+
+===== A. is this firing in the lane worktree right now? =====
+$ cd /home/ssullivan/vcows-wt/agent-layer && pwd
+/home/ssullivan/vcows-wt/agent-layer
+  no space -> RX-F3 is NOT firing here
+$ pwd
+/home/ssullivan/vcows-deploy
+  no space -> RX-F3 is NOT firing there either
+
+===== B. a real repo checked out under a path containing a space =====
+CLAUDE_PROJECT_DIR=[/home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/space dir]
+$ git -C "$CLAUDE_PROJECT_DIR" log --oneline -1
+aed962d Fix the eight masked returns in smoke-libvirt.sh that turned master's check job red
+
+--- settings.json:19, session-probe.sh, the command string EXACTLY as written (unquoted) ---
+$ sh -c '$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh'
+  exit=127
+  stderr: sh: line 1: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/space: No such file or directory
+
+--- the same string with the variable quoted ---
+$ sh -c '"$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh"'
+  exit=0
+  stderr: 
+
+--- settings.json:8, static-gate.sh, unquoted ---
+$ sh -c '$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh' < <Stop payload>
+  exit=127
+  stderr: sh: line 1: /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L6/space: No such file or directory
+
+--- settings.json:8, static-gate.sh, quoted ---
+$ sh -c '"$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh"' < <Stop payload>
+  exit=0  elapsed=4.090s
+  stderr: 
+  state:  pass 098b6aa62df3a3457101940572eb2efe79faaa4b9ad833fc09fc189139a892eb
+
+===== C. why 127 and not 2 =====
+# exit 127 = 'command not found'. For a Stop hook only exit 2 blocks;
+# every other non-zero status is a non-blocking error routed to the debug log.
+# Consequence: under a space path the Stop gate is absent for the whole session.
+
+===== D. PROVEN vs ASSUMED =====
+# PROVEN here: the two command strings, expanded by a POSIX shell against a
+#   CLAUDE_PROJECT_DIR containing a space, resolve to a nonexistent path and
+#   exit 127; adding two double-quotes makes both exit 0 against a real repo.
+# ASSUMED: that the harness expands these strings through a shell WITHOUT
+#   quoting the result. The sh -c form models the harness, it does not observe it.
+#   What IS observable: the harness must expand $CLAUDE_PROJECT_DIR somehow, since
+#   the hook demonstrably runs in this repo, where the literal string is not a path.
+#   Whether it word-splits the expansion is not measured by anything above.
+
+########## END RX-F3
