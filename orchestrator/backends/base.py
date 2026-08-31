@@ -170,7 +170,15 @@ class Discovered:
 
 @dataclass(frozen=True)
 class Prepared:
-    """Whatever ``prepare`` produced for ``render`` to consume."""
+    """Whatever ``prepare`` produced for ``render`` to consume.
+
+    ``artifacts`` is the half in use. Nothing reads ``workdir`` at v0.1 -- the
+    seam is free, the same way ``Inventory``'s below is. ``prepare`` is a context
+    manager for backends that stage bytes locally, and ``findings.md`` guarantees
+    it cannot reach the target, so a backend serving an image over HTTP or writing
+    an OVA has no other way to tell ``render`` where it put them. Deleting the
+    field narrows that contract before the backend that exercises it exists.
+    """
 
     workdir: Path
     artifacts: dict[str, Any] = field(default_factory=dict)

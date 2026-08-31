@@ -54,6 +54,10 @@ class Diagnostic:
 
     severity: str
     summary: str
+    #: OpenTofu's multi-line "why". Kept out of ``__str__`` because both callers
+    #: join into one line -- ``_run``'s "; " into the ``TofuError`` message, and
+    #: ``cli._note_warnings``' ``list[str]``. The operator already saw it live on
+    #: the inherited stdout; it is the persisted copy that drops it, in #136.
     detail: str = ""
     address: str = ""
 
