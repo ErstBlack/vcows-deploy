@@ -157,8 +157,11 @@ def test_a_real_stop_failure_aborts_that_domain_and_is_fatal():
 
 
 def test_a_domain_already_gone_still_has_its_disks_collected():
-    """The crash window between destroy and undefine, resumed. Also the case where
-    somebody undefined it by hand and left the qcow2 behind."""
+    """A domain that vanished between preflight and this teardown still has its
+    recorded disks collected: another operator's destroy inside our confirm
+    window, or somebody who undefined it by hand and left the qcow2. Not the
+    destroy/undefine crash window -- that leaves the domain defined, and it
+    resumes through the live branch."""
     pool = FakePool("images", {"app01.qcow2": ""})
     conn = FakeConnection(domains=[], pools=[pool])
     ghost = Existing(
@@ -172,7 +175,7 @@ def test_a_domain_already_gone_still_has_its_disks_collected():
 
 
 def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
-    """#9. The deletion stays -- it is the crash-window resume above -- but with
+    """#9. The deletion stays -- it is the same vanished target as above -- but with
     no live document to re-read, `_deletable`'s two remaining guards are "no
     existing domain claims this path" and a basename match, and a volume created
     after preflight ran satisfies both by construction.
@@ -219,6 +222,52 @@ def test_a_live_target_deletes_its_disks_without_the_name_alone_warning():
     assert pool.deleted == ["app01.qcow2"]
     assert out.destroyed == ["app01", "/pool/app01.qcow2"]
     assert out.problems == []
+
+
+def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
+    """#81. The other half of the pair above, and the commoner one: the domain
+    went and took its disks with it, so every path resolves NO_STORAGE_VOL and
+    nothing is unlinked. The name-alone warning reports a delete, so with no
+    delete there is nothing to report and `destroyed` and `problems` must agree."""
+    pool = FakePool("images", {})
+    conn = FakeConnection(domains=[], pools=[pool])
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2", "/pool/app01-seed.iso"),
+    )
+
+    out = d.destroy({}, conn, [ghost])
+
+    assert pool.deleted == []
+    assert out.destroyed == []
+    assert out.skipped == ["app01", "/pool/app01.qcow2", "/pool/app01-seed.iso"]
+    assert out.problems == []
+    assert not out.failed
+
+
+def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
+    """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+    so `_fail` fires. `str(DestroyError)` is what `main` prints and what
+    `run.json["error"]` carries; it must not say "could not delete X" and
+    "X was deleted" about the same path."""
+    pool = FakePool("images", {"app01.qcow2": ""})
+    pool.volume_delete_error = lv_error(38, "cannot unlink: Permission denied")
+    conn = FakeConnection(domains=[], pools=[pool])
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2",),
+    )
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [ghost])
+
+    said = str(caught.value)
+    assert "could not delete /pool/app01.qcow2" in said
+    assert "name alone" not in said
 
 
 def test_a_lookup_that_failed_for_any_other_reason_is_fatal_and_touches_no_disk():

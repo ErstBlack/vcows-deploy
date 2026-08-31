@@ -49,6 +49,8 @@ class FakeVolume:
 
     def delete(self, flags: int = 0) -> None:
         assert flags == 0, "the dir/fs backend accepts no delete flags"
+        if self.pool.volume_delete_error is not None:
+            raise self.pool.volume_delete_error
         self.pool.deleted.append(self._name)
         del self.pool.volumes[self._name]
 
@@ -78,6 +80,9 @@ class FakePool:
         self.xml_error: libvirt.libvirtError | None = None
         #: Raised by every volume this pool hands out, not by the pool itself.
         self.volume_xml_error: libvirt.libvirtError | None = None
+        #: The refusal that is not "already gone": `_delete_volume` reports it
+        #: through `_fail`, and must not also report the path as deleted.
+        self.volume_delete_error: libvirt.libvirtError | None = None
 
     def name(self) -> str:
         if self.name_error is not None:
