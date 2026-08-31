@@ -47,27 +47,42 @@ log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# `have` plus the message, for the tools whose absence should stop a script. The
-# hint has to be right, so the case is a table of which installer provides what:
-# os-deps.sh installs jq, curl, unzip, git, xorriso and shellcheck;
-# install-tools.sh installs uv, just, tofu, hadolint, trivy and syft. **gzip is
-# in neither** -- it is assumed present -- so it falls through to the bare
-# message rather than being told to run a script that would not supply it.
+# Which installer provides which tool, for `need`'s message. Data rather than
+# case arms: an entry nothing has asked for yet costs a line of a table, where an
+# arm nothing reaches is a dead branch, and adding a tool is one entry instead of
+# editing control flow. Seven of the twelve below are not passed to `need` from
+# anywhere in the tree today.
+#
+# **Keyed by command, not by package, and it cannot be generated from either
+# installer.** os-deps.sh installs ShellCheck on dnf and shellcheck on apt, and
+# its python3-libvirt puts no command on PATH at all.
+#
+# **gzip is deliberately absent**, as are qemu-img and the rest of what `need` is
+# passed: they are in neither installer, so naming one would send the reader to a
+# script that would not supply it. A miss falls through to the bare message.
+declare -rA TOOL_INSTALLER=(
+    [jq]=os-deps             [curl]=os-deps        [unzip]=os-deps
+    [git]=os-deps            [xorriso]=os-deps     [shellcheck]=os-deps
+    [uv]=install-tools       [just]=install-tools  [tofu]=install-tools
+    [hadolint]=install-tools [trivy]=install-tools [syft]=install-tools
+)
+
+# `have` plus the message, for the tools whose absence should stop a script.
 #
 # A tool whose absence needs more explanation than "install it" keeps its own
 # `have ... || die`: test-image.sh's podman line says the gate needs a runtime
-# rather than a builder, which no table can express.
+# rather than a builder, which no table can express. So does a tool whose absence
+# should be *reported* rather than stop the run: lint.sh runs hadolint and
+# `shellcheck` through `gate`, which prints FAIL and carries on, so a box missing
+# one still learns whether the other five gates pass.
 need() {
-    local tool
+    local tool script
     for tool in "$@"; do
         have "$tool" && continue
-        case "$tool" in
-            jq|curl|unzip|git|xorriso|shellcheck)
-                die "$tool not on PATH -- run scripts/os-deps.sh" ;;
-            uv|just|tofu|hadolint|trivy|syft)
-                die "$tool not on PATH -- run scripts/install-tools.sh" ;;
-            *)  die "$tool not on PATH" ;;
-        esac
+        # `:-` because this file sets `set -u`.
+        script="${TOOL_INSTALLER[$tool]:-}"
+        [ -n "$script" ] && die "$tool not on PATH -- run scripts/$script.sh"
+        die "$tool not on PATH"
     done
 }
 
@@ -135,6 +150,10 @@ provider_version() {
 # suffix that fires for everything means nothing.
 source_revision() {
     local provider ship sha dirt
+    # The two git calls below are the reason: the comment on `dirt` explains that
+    # a *failing* git has to reach `set -e` rather than read as a clean tree. A
+    # missing git takes that same path and names nothing, so name it here.
+    need git
     provider="$(provider_version)"
     ship=(orchestrator container licenses Containerfile .containerignore
           "docs/provider-${provider}.lock.hcl")

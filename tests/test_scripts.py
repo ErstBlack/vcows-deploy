@@ -470,3 +470,115 @@ def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
     assert passed is must_pass, stderr
     if not must_pass:
         assert HOSTILE in stderr or "actions/checkout@v7" in stderr, stderr
+
+
+#: One row per shape `need`'s table can be asked about: a hit on each installer,
+#: the tool `lib.sh` names as deliberately absent, one that is passed to `need`
+#: today and is in neither installer, and one nothing has heard of. The last
+#: three must name no script -- pointing at `os-deps.sh` for something it does
+#: not install is worse than the bare message.
+NEED_ROWS = [
+    ("os-deps", "curl", "curl not on PATH -- run scripts/os-deps.sh"),
+    ("install-tools", "tofu", "tofu not on PATH -- run scripts/install-tools.sh"),
+    ("assumed-present", "gzip", "gzip not on PATH"),
+    ("neither-installer", "qemu-img", "qemu-img not on PATH"),
+    ("unheard-of", "nosuchtool", "nosuchtool not on PATH"),
+]
+
+
+@pytest.mark.parametrize(
+    ("tool", "message"),
+    [row[1:] for row in NEED_ROWS],
+    ids=[row[0] for row in NEED_ROWS],
+)
+def test_need_names_the_installer_that_provides_the_missing_tool(
+    tmp_path, tool, message
+):
+    """`need` against an empty PATH, which is how a tool is made absent here.
+
+    Seven of `TOOL_INSTALLER`'s twelve entries are not passed to `need` from
+    anywhere in the tree, so this is the only thing that reaches them. An entry
+    whose hint is wrong is worse than no entry, and nothing else would say.
+    """
+    tree = _tree(tmp_path)
+    empty = tree / "emptybin"
+    empty.mkdir()
+    done = _run(tree, f'PATH="{empty}"\nneed {tool}\necho REACHED')
+    assert done.returncode != 0, done.stdout
+    assert "REACHED" not in done.stdout
+    assert message in done.stderr
+    if "run scripts/" not in message:
+        assert "run scripts/" not in done.stderr, done.stderr
+
+
+#: The six `install-tools.sh` walks, in `main`'s order. `syft` is last, which is
+#: what makes it the marker for "the run got past the tool under test".
+PINNED_TOOLS = ("uv", "just", "tofu", "hadolint", "trivy", "syft")
+
+#: `install-tools.sh`'s `main` reads TOFU_VERSION out of the Containerfile rather
+#: than pinning it, so the fixture has to carry one.
+TOOLS_CONTAINERFILE = CONTAINERFILE + "ARG TOFU_VERSION=1.12.6\n"
+
+
+def _tools_tree(tmp_path: Path, **bodies: str) -> Path:
+    """A scratch root where all six pinned tools are already on PATH.
+
+    On PATH but *not* in `.tools/bin`: `installed` is tested before `have`, so a
+    fake in `.tools/bin` returns at "already in .tools/bin" and never reaches
+    `version_of`. `expose_on_path` then finds that directory empty and links
+    nothing, so nothing here touches /usr/local/bin or reaches for sudo.
+
+    Every tool prints a dotted version unless `bodies` overrides it, so one test
+    can make one tool misbehave and read the other five as the control.
+    """
+    tree = _tree(tmp_path, "install-tools.sh", containerfile=TOOLS_CONTAINERFILE)
+    fakebin = tree / "fakebin"
+    fakebin.mkdir()
+    for tool in PINNED_TOOLS:
+        body = bodies.get(tool, f"echo '{tool} 9.9.9'")
+        (fakebin / tool).write_text(f"#!/usr/bin/env bash\n{body}\n")
+        (fakebin / tool).chmod(0o755)
+    return tree
+
+
+def _install_tools(tree: Path) -> subprocess.CompletedProcess:
+    """`install-tools.sh` end to end. Nothing is downloaded: every tool is
+    already on PATH, so each one takes the early return."""
+    return _run(
+        tree,
+        "bash scripts/install-tools.sh",
+        PATH=f"{tree / 'fakebin'}:{os.environ['PATH']}",
+    )
+
+
+def test_a_path_tool_reports_the_version_it_prints(tmp_path):
+    """The vacuity guard for the two below: the harness reaches the report."""
+    tree = _tools_tree(tmp_path)
+    done = _install_tools(tree)
+    assert done.returncode == 0, done.stderr
+    assert f"trivy: using {tree / 'fakebin' / 'trivy'} (9.9.9)" in done.stderr
+
+
+def test_a_path_tool_with_no_dotted_version_is_reported_rather_than_silent(tmp_path):
+    """`#95`. The `grep -oE` in `version_of` matched nothing, `pipefail` made the
+    whole pipeline status 1, and `set -e` aborted `install_one` before its own
+    log line -- so `${found:-version unknown}`, written for exactly this tool,
+    could never fire and `just tools` failed saying nothing."""
+    tree = _tools_tree(tmp_path, trivy="echo 'trivy, build 2026-08-31'")
+    done = _install_tools(tree)
+    assert done.returncode == 0, done.stderr
+    assert f"trivy: using {tree / 'fakebin' / 'trivy'} (version unknown)" in done.stderr
+    assert "trivy of unknown version is on PATH" in done.stderr
+    assert "syft: using" in done.stderr, "the run stopped at trivy"
+
+
+def test_a_path_tool_that_will_not_run_is_named_rather_than_read_as_unknown(tmp_path):
+    """The other half of `#95`, and why `|| true` on the assignment is not the
+    fix: a tool that cannot be run is not a tool of unknown version, and the two
+    must not print the same line. This one still stops the run, but says why."""
+    tree = _tools_tree(tmp_path, trivy="exit 3")
+    done = _install_tools(tree)
+    assert done.returncode != 0, done.stderr
+    assert "trivy --version' failed" in done.stderr
+    assert str(tree / "fakebin" / "trivy") in done.stderr
+    assert "syft: using" not in done.stderr
