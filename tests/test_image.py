@@ -253,26 +253,29 @@ def test_the_labels_are_ours_and_not_the_bases():
 #: shapes `container/manifest.py` will record.
 GIT_SHA = re.compile(r"[0-9a-f]{40}(-dirty)?\Z")
 
-#: The paths the Containerfile COPYs. A change anywhere else cannot reach the
-#: image, so it must not decide whether this build was clean.
-SHIPPED = ("orchestrator", "container", "licenses", "docs/provider-0.9.8.lock.hcl")
 
+def built_revision() -> str:
+    """What the build records in the manifest, asked of the build.
 
-def head_if_clean() -> str | None:
-    """``git rev-parse HEAD``, when HEAD is really what is on disk.
+    Not restated here, and that is the whole point. This file used to carry its
+    own four-path copy of the shipped set, and the copy went stale: it omitted
+    the ``Containerfile`` and ``.containerignore``, so an image built before an
+    edit to either still matched a clean ``HEAD`` and the gate passed on an
+    image the Containerfile no longer described (#63).
 
-    ``None`` when it is not, because then no value in the manifest is checkable
-    against this working tree and asserting one would be asserting the tree.
+    ``scripts/lib.sh`` is sourceable by design -- its own header says it holds
+    no commands of its own -- so ``source_revision`` can be asked directly. It
+    also interpolates the pinned provider version, which the copy hardcoded.
+
+    Returns the ``-dirty`` form on a modified tree, which is exactly what the
+    build writes, so there is no case where this cannot be compared.
     """
-
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=True
-        ).stdout
-
-    if git("status", "--porcelain", "--", *SHIPPED).strip():
-        return None
-    return git("rev-parse", "HEAD").strip()
+    return subprocess.run(
+        ["bash", "-c", f"source {REPO}/scripts/lib.sh && source_revision"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
 
 
 def test_the_build_manifest_records_what_shipped():
@@ -292,12 +295,11 @@ def test_the_build_manifest_records_what_shipped():
     assert GIT_SHA.match(manifest["git_sha"]), (
         f"{manifest['git_sha']!r} is neither a commit nor a commit marked dirty"
     )
-    head = head_if_clean()
-    if head is not None:
-        assert manifest["git_sha"] == head, (
-            f"the image was built from {manifest['git_sha']}, this tree is {head}; "
-            f"rebuild before trusting the gate"
-        )
+    revision = built_revision()
+    assert manifest["git_sha"] == revision, (
+        f"the image was built from {manifest['git_sha']}, this tree is {revision}; "
+        f"rebuild before trusting the gate"
+    )
     assert manifest["tofu"]["terraform_version"] == "1.12.6"
     assert manifest["provider"]["version"] == "0.9.8"
     assert manifest["provider"]["lock_hash"].startswith("h1:")
