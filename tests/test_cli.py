@@ -19,6 +19,7 @@ import re
 import stat
 import subprocess
 import textwrap
+from typing import Any
 
 import pytest
 
@@ -786,6 +787,31 @@ def test_a_destroy_that_raises_still_records_what_it_removed(
     assert record["destroyed"] == ["app01"]
     assert record["skipped"] == ["/pool/app01-seed.iso"]
     assert any("could not delete volume" in p for p in record["problems"])
+
+
+def test_an_interrupted_destroy_records_what_it_removed(
+    backend, config, tmp_path, monkeypatch
+):
+    """The same argument one test up, for the exception that is not an `Exception`.
+    A Ctrl-C is the teardown least likely to have finished and the one whose record
+    an operator most needs, and `except Exception` here dropped it on the floor."""
+    from orchestrator.backends.base import Outcome
+
+    def interrupt(*a, **k):
+        # Attached the way `destroy` attaches it: onto an exception whose type
+        # has no such attribute, which is why both sides go through `Any`.
+        exc: Any = KeyboardInterrupt()
+        exc.outcome = Outcome(destroyed=["app01"], skipped=["/pool/app02-seed.iso"])
+        raise exc
+
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(backend, "destroy", interrupt)
+
+    assert cli.main(["destroy", config, "--yes"]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert record["destroyed"] == ["app01"]
+    assert record["skipped"] == ["/pool/app02-seed.iso"]
 
 
 def test_a_destroy_that_raises_without_an_outcome_still_records_the_failure(

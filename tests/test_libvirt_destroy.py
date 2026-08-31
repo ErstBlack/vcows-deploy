@@ -11,6 +11,7 @@ whether a partial failure is reported or swallowed.
 from __future__ import annotations
 
 from importlib.util import find_spec
+from typing import Any
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -513,6 +514,29 @@ def test_a_clean_run_raises_nothing_and_says_what_it_removed():
     assert outcome.destroyed == ["app01", "/pool/app01.qcow2"]
     assert outcome.skipped == []
     assert outcome.problems == []
+
+
+def test_an_interrupt_carries_out_what_was_already_torn_down(monkeypatch):
+    """Ctrl-C mid-teardown. `out` is a local and `DestroyError` is the only route
+    that carries it, so an interrupt used to leave `cmd_destroy` with nothing to
+    record for the run that can least afford to lose it."""
+
+    def interrupt(flags):
+        raise KeyboardInterrupt
+
+    ok = domain("app01", active=False)
+    interrupted = domain("app02", active=True)
+    # Not `stop_error`: that one is a libvirtError, and the whole point here is an
+    # exception `_stop`'s except clause does *not* catch.
+    monkeypatch.setattr(interrupted, "destroyFlags", interrupt)
+    conn = FakeConnection(domains=[ok, interrupted])
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        d.destroy({}, conn, [target(ok), target(interrupted)])
+
+    # What `cmd_destroy` reads off the exception, whatever the exception is.
+    carried: Any = caught.value
+    assert carried.outcome.destroyed == ["app01"]
 
 
 def test_the_error_names_everything_left_behind_not_only_what_failed():

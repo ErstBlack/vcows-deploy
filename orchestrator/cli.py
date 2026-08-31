@@ -603,11 +603,15 @@ def _destroy(
 
         try:
             out = backend.destroy(cfg, session, targets)
-        except Exception as exc:
+        except BaseException as exc:
             # The teardown with a fatal problem is the run with the most to
             # record, and it is the one that reaches `_guard` as an exception
             # rather than a return value -- so the `destroyed`/`skipped` record
-            # below never runs for it. `getattr` rather than catching the
+            # below never runs for it. `BaseException`, because a Ctrl-C
+            # mid-teardown arrives here too and carries the same accumulator;
+            # widening this alone records nothing, though -- `destroy` has to
+            # attach `out` to the interrupt for there to be anything to read.
+            # `getattr` rather than catching the
             # backend's own error type: core stays backend-agnostic, and a
             # backend that carries no outcome simply records nothing extra.
             partial = getattr(exc, "outcome", None)
