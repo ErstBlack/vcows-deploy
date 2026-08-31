@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import shutil
@@ -97,9 +98,7 @@ def module_dir(backend: Backend) -> Path:
     ``__init__.py``. A backend defining its class in a submodule gets that
     submodule's directory, and ``_stage_module`` then reports an empty one.
     """
-    package = sys.modules[type(backend).__module__]
-    assert package.__file__ is not None  # noqa: S101  every backend is a file on disk
-    return Path(package.__file__).parent / "tofu"
+    return Path(inspect.getfile(type(backend))).parent / "tofu"
 
 
 def _timestamp() -> str:
@@ -169,9 +168,24 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+#: The report layout: a name, a short verb, then free text. Written once because
+#: the widths were previously repeated as literal padding -- `"skip    "` and
+#: `"destroy "` are hand-cut to match `{:<7}` plus a separator -- so changing
+#: either width silently misaligned two of the three sites.
+_NAME_W = 20
+_VERB_W = 7
+
+
+def _row(name: str, verb: str, detail: str) -> str:
+    """One report line. `_report` and the destroy loop cannot share a *function*
+    -- one prints `Decision`s and the other `Existing`s, which findings.md §3
+    keeps as separate carriers -- so they share the shape instead."""
+    return f"  {name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}"
+
+
 def _report(decisions: list[Decision], problems: list[Problem]) -> None:
     for d in decisions:
-        print(f"  {d.vm_name:<20} {d.action.value:<7} {d.reason}")
+        print(_row(d.vm_name, d.action.value, d.reason))
     for p in problems:
         print(f"  {p}", file=sys.stderr)
 
@@ -510,11 +524,15 @@ def _destroy(
         for e in others:
             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
             print(
-                f"  {e.name:<20} skip    belongs to deployment "
-                f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}"
+                _row(
+                    e.name,
+                    "skip",
+                    f"belongs to deployment "
+                    f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}",
+                )
             )
         for e in targets:
-            print(f"  {e.name:<20} destroy {e.marker.name if e.marker else ''}")
+            print(_row(e.name, "destroy", e.marker.name if e.marker else ""))
 
         if not targets:
             _record(run, "nothing-to-destroy")

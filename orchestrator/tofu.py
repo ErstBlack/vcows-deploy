@@ -235,11 +235,21 @@ def apply(workdir: Path, planfile: Path) -> Result:
     return _run("apply", workdir, (str(planfile.resolve()),))
 
 
-def outputs(workdir: Path) -> dict:
-    """``tofu output -json``, captured rather than inherited: it is short, it is
-    the handoff, and it is the one place we want the bytes rather than the view."""
+def _capture(cmd: str, workdir: Path | None = None) -> dict:
+    """One short ``tofu <cmd> -json``, captured rather than inherited.
+
+    ``run`` rather than the ``Popen`` above: nothing here is long enough for the
+    Ctrl-C unwinding that paragraph is about, and these are the two places we
+    want the bytes rather than the view. ``workdir`` is optional because
+    ``version`` answers without one.
+    """
     completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
-        [_binary(), f"-chdir={workdir.resolve()}", "output", "-json"],
+        [
+            _binary(),
+            *([f"-chdir={workdir.resolve()}"] if workdir else []),
+            cmd,
+            "-json",
+        ],
         env=_env(),
         capture_output=True,
         text=True,
@@ -248,10 +258,16 @@ def outputs(workdir: Path) -> dict:
     )
     if completed.returncode != 0:
         raise TofuError(
-            f"tofu output failed (exit {completed.returncode}): "
+            f"tofu {cmd} failed (exit {completed.returncode}): "
             f"{completed.stderr.strip()}"
         )
     return json.loads(completed.stdout or "{}")
+
+
+def outputs(workdir: Path) -> dict:
+    """``tofu output -json``, captured rather than inherited: it is short, it is
+    the handoff, and it is the one place we want the bytes rather than the view."""
+    return _capture("output", workdir)
 
 
 def version(workdir: Path | None = None) -> dict:
@@ -262,19 +278,4 @@ def version(workdir: Path | None = None) -> dict:
     is empty unless this is asked inside an initialised directory, which is why
     ``workdir`` is here at all.
     """
-    completed = subprocess.run(  # noqa: S603  argv list, no shell=True, tofu from our own PATH
-        [
-            _binary(),
-            *([f"-chdir={workdir.resolve()}"] if workdir else []),
-            "version",
-            "-json",
-        ],
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=SHORT_TIMEOUT,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise TofuError(f"tofu version failed (exit {completed.returncode})")
-    return json.loads(completed.stdout or "{}")
+    return _capture("version", workdir)

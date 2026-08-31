@@ -15,7 +15,6 @@ the *hypervisor* through libvirt. Verified byte-for-byte against
 
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 
 QCOW_MAGIC = b"QFI\xfb"
@@ -41,8 +40,7 @@ def virtual_size(path: str | Path) -> int:
         raise NotAQcow2(f"{path}: too short to be a qcow2 ({len(header)} bytes)")
     if header[:4] != QCOW_MAGIC:
         raise NotAQcow2(f"{path}: bad magic {header[:4]!r}, expected {QCOW_MAGIC!r}")
-    (version,) = struct.unpack(">I", header[4:8])
+    version = int.from_bytes(header[4:8], "big")
     if version not in (2, 3):
         raise NotAQcow2(f"{path}: qcow2 version {version} is not supported")
-    (size,) = struct.unpack(">Q", header[_SIZE_OFFSET : _SIZE_OFFSET + 8])
-    return size
+    return int.from_bytes(header[_SIZE_OFFSET : _SIZE_OFFSET + 8], "big")
