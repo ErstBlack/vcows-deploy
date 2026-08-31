@@ -1,0 +1,269 @@
+# RX-D5 -- tests/test_gates.py:76-83, four scanner bypasses -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### CONTROL, unmutated
+$ .venv/bin/python -m pytest -q tests/test_gates.py tests/test_version.py
+....................                                                     [100%]
+20 passed in 0.76s
+exit=0
+
+### The six BANNED spellings ARE caught -- one control
+$ .venv/bin/python -m pytest -q tests/test_gates.py
+E       AssertionError: these skips bypass conftest's gate mechanism, so no VCOWS_GATES value can ever turn them into a failure -- route them through gate() or require() instead:
+E           test_version.py:58: pytest.skip
+E       assert not ['test_version.py:58: pytest.skip']
+
+tests/test_gates.py:94: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_gates.py::test_every_skip_goes_through_the_gate_mechanism
+1 failed, 15 passed in 0.78s
+exit=1
+======================================================================
+BYPASS: bare module-scope  pytestmark = pytest.mark.skip  (no alias needed)
+--- appended to tests/test_version.py ---
+  52a53,56
+  > 
+  > import pytest
+  > 
+  > pytestmark = pytest.mark.skip(reason="bypass 1")
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+FAILED tests/test_gates.py::test_every_skip_goes_through_the_gate_mechanism
+1 failed, 15 passed in 0.75s
+exit=1
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+ssss                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [4] tests/test_version.py: bypass 1
+4 skipped in 0.44s
+exit=0
+======================================================================
+BYPASS: aliased import: import pytest as _pt ; pytestmark = _pt.mark.skip
+--- appended to tests/test_version.py ---
+  52a53,56
+  > 
+  > import pytest as _pt
+  > 
+  > pytestmark = _pt.mark.skip(reason="bypass 2")
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+................                                                         [100%]
+16 passed in 0.99s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+ssss                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [4] tests/test_version.py: bypass 2
+4 skipped in 0.37s
+exit=0
+======================================================================
+BYPASS: from-import alias: from pytest import skip as _s ; _s(...)
+--- appended to tests/test_version.py ---
+  52a53,58
+  > 
+  > from pytest import skip as _s
+  > 
+  > 
+  > def test_bypass_3():
+  >     _s("bypass 3")
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+................                                                         [100%]
+16 passed in 0.65s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+....s                                                                    [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_version.py:58: bypass 3
+4 passed, 1 skipped in 0.43s
+exit=0
+======================================================================
+BYPASS: raise unittest.SkipTest(...)
+--- appended to tests/test_version.py ---
+  52a53,58
+  > 
+  > import unittest
+  > 
+  > 
+  > def test_bypass_4():
+  >     raise unittest.SkipTest("bypass 4")
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+................                                                         [100%]
+16 passed in 0.60s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+....s                                                                    [100%]
+=========================== short test summary info ============================
+SKIPPED [1] .venv/lib64/python3.12/site-packages/_pytest/unittest.py:523: bypass 4
+4 passed, 1 skipped in 0.37s
+exit=0
+======================================================================
+BYPASS: pytest.param(marks=pytest.mark.skip)
+--- appended to tests/test_version.py ---
+  52a53,59
+  > 
+  > import pytest
+  > 
+  > 
+  > @pytest.mark.parametrize("x", [pytest.param(1, marks=pytest.mark.skip(reason="bypass 5"))])
+  > def test_bypass_5(x):
+  >     assert x
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+FAILED tests/test_gates.py::test_every_skip_goes_through_the_gate_mechanism
+1 failed, 15 passed in 0.67s
+exit=1
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+....s                                                                    [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_version.py:57: bypass 5
+4 passed, 1 skipped in 0.29s
+exit=0
+======================================================================
+### _sources() is non-recursive -- is there anything under tests/<subdir>/ today?
+$ find tests -name '*.py' -mindepth 2
+(empty output means the glob hole is inert today)
+
+REVERTED:
+clean
+
+======================================================================
+SPELLING NOTE -- the called and uncalled forms of the same attribute differ.
+The two rows below are the *uncalled* spellings; the called ones are caught.
+
+----------------------------------------------------------------------
+BYPASS (uncalled form): bare-pytestmark
+  52a53,56
+  > 
+  > import pytest
+  > 
+  > pytestmark = pytest.mark.skip
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+................                                                         [100%]
+16 passed in 0.71s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+ssss                                                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [4] tests/test_version.py: unconditional skip
+4 skipped in 0.29s
+exit=0
+----------------------------------------------------------------------
+BYPASS (uncalled form): param-marks
+  52a53,59
+  > 
+  > import pytest
+  > 
+  > 
+  > @pytest.mark.parametrize("x", [pytest.param(1, marks=pytest.mark.skip)])
+  > def test_bypass_5(x):
+  >     assert x
+$ .venv/bin/python -m pytest -q tests/test_gates.py           # the scanner
+................                                                         [100%]
+16 passed in 0.55s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_version.py -rs     # what it let through
+....s                                                                    [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_version.py:57: unconditional skip
+4 passed, 1 skipped in 0.28s
+exit=0
+
+For contrast, the CALLED forms of the same two -- both caught:
+  pytestmark = pytest.mark.skip(reason=...)              -> scanner FAILED (see above section)
+  pytest.param(1, marks=pytest.mark.skip(reason=...))    -> scanner FAILED (see above section)
+
+REVERTED:
+clean
+
+### CANDIDATE FIX v2 for RX-D5 (outermost-attribute only)
+45c45,47
+<     defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+---
+>     # Outermost only: `pytest.skip.Exception` is a legitimate reference to the
+>     # exception type, and its inner `pytest.skip` is not a call to it.
+>     inner = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+47,54c49,53
+<         if not isinstance(node, defs):
+<             continue
+<         found += [
+<             (_dotted(d), d.lineno)
+<             for d in node.decorator_list
+<             if not isinstance(d, ast.Call)
+<         ]
+<     return found
+---
+>         if isinstance(node, ast.Attribute) and id(node) not in inner:
+>             found.append((_dotted(node), node.lineno))
+>         elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+>             found += [(a.name, node.lineno) for a in node.names]
+>     return sorted(set(found))
+77,82c76,82
+<     "pytest.skip",
+<     "pytest.importorskip",
+<     "pytest.xfail",
+<     "pytest.mark.skip",
+<     "pytest.mark.skipif",
+<     "pytest.mark.xfail",
+---
+>     "skip",
+>     "importorskip",
+>     "xfail",
+>     "mark.skip",
+>     "mark.skipif",
+>     "mark.xfail",
+>     "SkipTest",
+85a86,91
+> def _is_banned(name: str) -> bool:
+>     """Match the trailing attribute path, so `import pytest as _pt` is no escape."""
+>     parts = name.split(".")
+>     return any(".".join(parts[i:]) in BANNED for i in range(len(parts)))
+> 
+> 
+92c98
+<         if name in BANNED
+---
+>         if _is_banned(name)
+
+-- 1. green on the suite as it stands --
+$ .venv/bin/python -m pytest -q tests/test_gates.py
+................                                                         [100%]
+16 passed in 0.80s
+exit=0
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 31.41s
+exit=0
+
+-- 2. each of the four bypasses now caught --
+--- bare pytestmark = pytest.mark.skip ---
+E           test_version.py:56: pytest.mark.skip
+1 failed, 15 passed in 1.05s
+--- aliased _pt.mark.skip ---
+E           test_version.py:56: _pt.mark.skip
+1 failed, 15 passed in 0.80s
+--- from pytest import skip as _s ---
+E           test_version.py:54: skip
+1 failed, 15 passed in 0.75s
+--- raise unittest.SkipTest ---
+E           test_version.py:58: unittest.SkipTest
+1 failed, 15 passed in 0.62s
+--- pytest.param(marks=pytest.mark.skip) ---
+E           test_version.py:57: pytest.mark.skip
+1 failed, 15 passed in 0.70s
+--- control: pytest.importorskip (already banned) ---
+E           test_version.py:58: pytest.importorskip
+1 failed, 15 passed in 0.80s

@@ -1,0 +1,87 @@
+# RX-D10 -- citation drift at tests/libvirt-module.tftest.hcl:39 -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### RX-D10 -- citation drift at tests/libvirt-module.tftest.hcl:39, reverified at aed962d
+
+$ sed -n '36,41p' tests/libvirt-module.tftest.hcl
+  // The domain name above is the one destroy does *not* use -- discovery is by
+  // marker and UUID. These two are: `_deletable` matches every candidate disk
+  // against `{overlay_name(marker.name), seed_name(marker.name)}` before it will
+  // unlink anything (destroy.py:456-461). A module naming the overlay `app01`
+  // rather than `app01.qcow2` deploys clean and then makes every teardown refuse
+  // every disk, with nothing left but hand-deleting on the hypervisor.
+
+$ grep -n 'destroy.py:' tests/libvirt-module.tftest.hcl
+39:  // unlink anything (destroy.py:456-461). A module naming the overlay `app01`
+
+### What is actually at those lines in orchestrator/backends/libvirt/destroy.py
+$ sed -n '422p;440,445p;456p;459p' orchestrator/backends/libvirt/destroy.py
+422: def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> bool:
+440:     owned = (
+441:         {overlay_name(target.marker.name), seed_name(target.marker.name)}
+442:         if target.marker is not None
+443:         else set()
+444:     )
+445:     if PurePosixPath(path).name not in owned:
+456:     return True
+459: def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
+
+$ sed -n '456,461p' orchestrator/backends/libvirt/destroy.py   # what the comment points a reader at
+    return True
+
+
+def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
+    """Report a delete taken against the preflight snapshot rather than a domain.
+
+
+CORRECT CITATION: destroy.py:440-445
+  :422       def _deletable(...)
+  :440-444   owned = {overlay_name(...), seed_name(...)} if marker else set()
+  :445       if PurePosixPath(path).name not in owned:
+  :456       _deletable's closing 'return True'
+  :459       def _deleted_on_name_alone(...)  -- a different function
+
+### Confirming the file has not moved since the pin
+$ git diff --stat 672a500..HEAD -- orchestrator/backends/libvirt/destroy.py tests/libvirt-module.tftest.hcl
+(no output for destroy.py = unchanged since the pin)
+
+### The same drift in 3be2c28's commit message (record-only: a message cannot be edited)
+$ git log -1 --format=%B 3be2c28 | grep -n 'image.yml\|gitlab-ci'
+35:(.github/workflows/image.yml:21-22, .gitlab-ci.yml:96-97). The sentence is
+$ for l in 20 21 22 23; do sed -n "${l}p" .github/workflows/image.yml; done
+ 20:   pull_request:
+ 21:     paths:
+ 22:       - 'Containerfile'
+ 23:       - '.containerignore'
+$ for l in 134 135 136 137; do sed -n "${l}p" .gitlab-ci.yml; done
+134:     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+135:       changes:
+136:         - Containerfile
+137:         - .containerignore
+
+$ git diff --stat 672a500..HEAD -- .gitlab-ci.yml
+ .gitlab-ci.yml | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+CONFIRMED at HEAD: .github/workflows/image.yml:22-23 and .gitlab-ci.yml:136-137.
+The 2026-08-31 verify record corrected 3be2c28's numbers to :22-23 and :102-103;
+the GitLab half was right at 672a500 and is stale at aed962d, because a3068e3
+added 34 lines to .gitlab-ci.yml above the filter. scripts/lib.sh:124-125's own
+sentence about the two filters carries no line numbers and is still correct.

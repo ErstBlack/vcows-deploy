@@ -1,0 +1,77 @@
+# RX-D2 -- tests/conftest.py:37, the gate set can be emptied silently -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### CONTROL, unmutated
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 33.27s
+exit=0
+$ VCOWS_GATES=all .venv/bin/python -m pytest -q
+ERROR tests/test_libvirt_rig.py::test_a_mac_already_on_the_rig_refuses - Fail...
+411 passed, 25 errors in 30.00s
+exit=1
+$ VCOWS_GATES='tofu, image' .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 31.34s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_gates.py
+................                                                         [100%]
+16 passed in 0.72s
+exit=0
+
+### MUTATION A -- conftest.py:37 GATES: set = set()
+37c37
+< GATES = {g for g in os.environ.get("VCOWS_GATES", "").split(",") if g}
+---
+> GATES: set = set()
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 32.67s
+exit=0
+$ VCOWS_GATES=all .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 32.85s
+exit=0
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q tests/test_gates.py
+................                                                         [100%]
+16 passed in 0.88s
+exit=0
+
+### MUTATION B -- conftest.py:37 gains .strip()
+37c37
+< GATES = {g for g in os.environ.get("VCOWS_GATES", "").split(",") if g}
+---
+> GATES = {g.strip() for g in os.environ.get("VCOWS_GATES", "").split(",") if g.strip()}
+$ .venv/bin/python -m pytest -q tests/test_gates.py
+................                                                         [100%]
+16 passed in 0.64s
+exit=0
+$ VCOWS_GATES='tofu, image' .venv/bin/python -m pytest -q
+ERROR tests/test_image.py::test_the_build_manifest_records_what_shipped - Fai...
+ERROR tests/test_image.py::test_the_provider_licence_travels_with_the_provider
+411 passed, 15 skipped, 10 errors in 32.22s
+exit=1
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 30.54s
+exit=0
+
+REVERTED:
+clean

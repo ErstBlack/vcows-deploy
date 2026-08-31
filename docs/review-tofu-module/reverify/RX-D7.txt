@@ -1,0 +1,87 @@
+# RX-D7 -- orchestrator/tofu.py:256, _capture's timeout is unpinned -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### CITATION at HEAD
+$ sed -n '238,240p;254,258p' orchestrator/tofu.py
+def _capture(cmd: str, workdir: Path | None = None) -> dict:
+    """One short ``tofu <cmd> -json``, captured rather than inherited.
+
+        capture_output=True,
+        text=True,
+        timeout=SHORT_TIMEOUT,
+        check=False,
+    )
+$ grep -n 'SHORT_TIMEOUT' orchestrator/tofu.py
+44:SHORT_TIMEOUT = 120
+176:        proc.wait(timeout=SHORT_TIMEOUT if cmd == "init" else None)
+256:        timeout=SHORT_TIMEOUT,
+$ grep -c 'SHORT_TIMEOUT' tests/test_tofu_driver.py
+303:    `SHORT_TIMEOUT` exists for `init`, where a hang is a name lookup or a stuck
+313:    assert child.timeouts == [tofu.SHORT_TIMEOUT]
+
+### CONTROL
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 33.43s
+exit=0
+
+### MUTATION -- tofu.py:256 timeout=SHORT_TIMEOUT -> timeout=None
+256c256
+<         timeout=SHORT_TIMEOUT,
+---
+>         timeout=None,
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 31.18s
+exit=0
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 29.94s
+exit=0
+$ .venv/bin/python -m pytest -q tests/test_tofu_driver.py
+....................                                                     [100%]
+20 passed in 2.12s
+exit=0
+
+### CANDIDATE ASSERTION -- tests/test_tofu_driver.py only, orchestrator/tofu.py untouched
+--- appended (+21 lines) ---
+-- against unmutated tofu.py --
+$ .venv/bin/python -m pytest -q tests/test_tofu_driver.py
+.....................                                                    [100%]
+21 passed in 2.31s
+exit=0
+$ .venv/bin/python -m pytest -q
+.....                                                                    [100%]
+412 passed, 25 skipped in 30.69s
+exit=0
+-- against the mutation it must catch --
+$ .venv/bin/python -m pytest -q tests/test_tofu_driver.py
+E         
+E         At index 0 diff: None != 120
+E         Use -v to get more diff
+
+tests/test_tofu_driver.py:359: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tofu_driver.py::test_output_and_version_run_on_the_short_clock
+1 failed, 20 passed in 2.28s
+exit=1
+
+REVERTED:
+clean

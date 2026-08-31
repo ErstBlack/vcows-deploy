@@ -1,0 +1,199 @@
+# RX-D3 -- main.tf:88, the domain type is unasserted (issue #78) -- reverified at aed962d (lane/tofu-module), 2026-08-31
+#
+# Bench: cp -a copy of the worktree under /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8, its own .venv (the editable
+# install was removed from the copy so `import orchestrator` resolves to the
+# copy -- verified below), its own .tools/tofu-mirror (8.9 MB, real directory,
+# not the .tools/bin symlink). tofu 1.12.6, Python 3.12.14, provider mirror
+# dmacvicar/libvirt 0.9.8 against docs/provider-0.9.8.lock.hcl.
+#
+# Every mutation was applied in the copy and reverted; the worktree was never
+# edited outside docs/. The rig at qemu+ssh://vcows@vcows/system was not
+# contacted, scripts/smoke-libvirt.sh was not run, and --write-baseline was not
+# run.
+#
+# BASELINES, unmutated, in the copy:
+#   $ .venv/bin/python -m pytest -q                       411 passed, 25 skipped   exit=0
+#   $ VCOWS_GATES=all .venv/bin/python -m pytest -q       411 passed, 25 errors    exit=1
+#   $ VCOWS_GATES=tofu ... tests/test_tofu_module.py       10 passed               exit=0
+#   $ .venv/bin/python -c 'import orchestrator; print(orchestrator.__file__)'
+#     /home/ssullivan/.claude/jobs/1e5fc8c0/tmp/L8/base/orchestrator/__init__.py
+
+### 1. CITATION at HEAD
+$ sed -n '84,92p' orchestrator/backends/libvirt/tofu/main.tf
+resource "libvirt_domain" "vm" {
+  for_each = var.vms
+
+  name        = each.value.domain_name
+  type        = "kvm"
+  vcpu        = each.value.vcpus
+  memory      = each.value.memory_mib
+  memory_unit = "MiB"
+  running     = true
+$ grep -c 'assert {' tests/libvirt-module.tftest.hcl
+47
+$ grep -n 'libvirt_domain.vm\[[^]]*\].type\b' tests/libvirt-module.tftest.hcl  # nothing reads the domain type
+(no match)
+$ grep -rn 'kvm' orchestrator tests scripts container justfile --include='*' -l
+orchestrator/backends/libvirt/tofu/main.tf:88:  type        = "kvm"
+tests/test_libvirt_destroy.py:94:        f"<domain type='kvm'><metadata>{marker.to_xml()}</metadata>"
+tests/fixtures/libvirt/domain-marked.xml:1:<domain type='kvm'>
+tests/fixtures/libvirt/domain-old-namespace.xml:1:<domain type='kvm'>
+tests/fixtures/libvirt/domain-unmarked-running.xml:1:<domain type='kvm'>
+scripts/smoke-libvirt.sh:34:# with swapping `type='kvm'` for `type='qemu'`. Measured against the mirrored
+scripts/smoke-libvirt.sh:37:# `main.tf` sets `type = "kvm"` explicitly, and an env-var default cannot beat a
+
+### 2. MUTATION at HEAD -- main.tf:88 kvm -> qemu
+88c88
+<   type        = "kvm"
+---
+>   type        = "qemu"
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 23.45s
+exit=0
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 30.53s
+exit=0
+
+### 3. THE SMOKE GATE'S ONLY DOMAIN-TYPE ASSERTION, line number at HEAD
+$ grep -n "domain type='qemu'" scripts/smoke-libvirt.sh
+391:        contains "$xml" "<domain type='qemu'"
+$ grep -n 'the domain runs under TCG' scripts/smoke-libvirt.sh
+390:    check "the domain runs under TCG, not KVM" \
+$ git -C /home/ssullivan/vcows-wt/tofu-module log --oneline -1 -- scripts/smoke-libvirt.sh
+aed962d Fix the eight masked returns in smoke-libvirt.sh that turned master's check job red
+$ git -C ... show a3068e3:scripts/smoke-libvirt.sh | grep -n "domain type='qemu'"   # the number the issue body carries
+389:        contains "$xml" "<domain type='qemu'"
+
+### 4. WHAT THE SMOKE GATE READS -- the tftest is not in it
+$ grep -n 'cp "$MODULE"\|tofu -chdir' scripts/smoke-libvirt.sh
+110:        tofu -chdir="$WORK" destroy -auto-approve -input=false >/dev/null 2>&1
+135:    cp "$MODULE"/*.tf "$WORK/"
+211:    tofu -chdir="$WORK" init -input=false >/dev/null
+212:    tofu -chdir="$WORK" validate >/dev/null
+474:    tofu -chdir="$WORK" apply -auto-approve -input=false
+481:    tofu -chdir="$WORK" destroy -auto-approve -input=false
+$ grep -n 'tftest' scripts/smoke-libvirt.sh
+6:# `tofu console` never evaluate an attribute value; `libvirt-module.tftest.hcl`
+$ sed -n '148,160p' scripts/smoke-libvirt.sh   # the override file it writes
+    cat > "$WORK/smoke_override.tf" <<'HCL'
+// Written by scripts/smoke-libvirt.sh into a copy of the module. The shipped
+// tree is not edited. See that script's header for why each of these two is
+// here; the short version is that a hosted runner has no /dev/kvm and that
+// `-cpu host` is a model QEMU registers only under KVM and HVF.
+//
+// An override naming a resource the module does not have is an error rather
+// than a silent no-op, so this cannot rot into nothing.
+resource "libvirt_domain" "vm" {
+  type = "qemu"
+  cpu  = null
+}
+HCL
+
+### 5. CANDIDATE ASSERTION in tests/libvirt-module.tftest.hcl
+patched
+68a69,83
+> 
+>   // Its own block rather than a clause in the sizing `alltrue` above, because
+>   // this is the one attribute here whose wrong value is silent end to end: a
+>   // domain with type='qemu' defines, boots, runs cloud-init and reports success,
+>   // under TCG. Nothing downstream reads it -- not render.py, not outputs.tf, not
+>   // preflight or destroy -- and the smoke gate's only domain-type assertion
+>   // (scripts/smoke-libvirt.sh:391) expects `qemu`, because that job overrides
+>   // this attribute to run without /dev/kvm. This file reads the module with no
+>   // override, so it is the only place the shipped value can be pinned.
+>   assert {
+>     condition = alltrue([
+>       for k, v in var.vms : libvirt_domain.vm[k].type == "kvm"
+>     ])
+>     error_message = "a domain is not asking for KVM: it boots under TCG emulation and the deploy still reports success"
+>   }
+--- +15 lines ---
+-- against the shipped module (must pass) --
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q tests/test_tofu_module.py
+..........                                                               [100%]
+10 passed in 23.17s
+exit=0
+$ .venv/bin/python -m pytest -q
+....                                                                     [100%]
+411 passed, 25 skipped in 29.57s
+exit=0
+-- against the mutation it exists to catch (must fail) --
+$ VCOWS_GATES=tofu .venv/bin/python -m pytest -q tests/test_tofu_module.py
+E         Failure! 2 passed, 1 failed.
+E         
+E         Error: Test assertion failed
+E         
+E           on libvirt-module.tftest.hcl line 79, in run "the_module_renders_what_the_acceptance_run_settled":
+E           79:     condition = alltrue([
+E           80:       for k, v in var.vms : libvirt_domain.vm[k].type == "kvm"
+E           81:     ])
+E             ├────────────────
+E             │ libvirt_domain.vm is object with 2 attributes
+E             │ var.vms is object with 2 attributes
+E         
+E         a domain is not asking for KVM: it boots under TCG emulation and the deploy
+E         still reports success
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/usr/bin/tofu', '-chdir=/tmp/pytest-of-ssullivan/pytest-719/tofu-test0', 'test', '-no-color'],... 2 attributes\n\na domain is not asking for KVM: it boots under TCG emulation and the deploy\nstill reports success\n').returncode
+
+tests/test_tofu_module.py:196: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tofu_module.py::test_the_module_renders_what_the_acceptance_run_settled
+1 failed, 9 passed in 23.12s
+exit=1
+
+REVERT CHECK:
+main.tf clean
+
+### COUNTERFACTUAL -- what WOULD happen if the tftest were run inside the smoke gate's overridden copy
+(the smoke gate does not do this; this measures the hypothetical the issue asks about)
+$ tofu -chdir=<copy+smoke_override.tf> init
+init exit= 0
+$ tofu -chdir=<copy+smoke_override.tf> test -no-color
+libvirt-module.tftest.hcl... fail
+  run "the_module_renders_what_the_acceptance_run_settled"... fail
+  run "a_prebuilt_base_volume_is_used_in_place"... skip
+  run "a_bridged_nic_renders_source_bridge"... skip
+
+Failure! 0 passed, 1 failed, 2 skipped.
+
+
+Error: Test assertion failed
+
+  on libvirt-module.tftest.hcl line 71, in run "the_module_renders_what_the_acceptance_run_settled":
+  71:     condition = alltrue([
+  72:       for k, v in var.vms : libvirt_domain.vm[k].type == "kvm"
+  73:     ])
+    ├────────────────
+    │ libvirt_domain.vm is object with 2 attributes
+    │ var.vms is object with 2 attributes
+
+a domain is not asking for KVM: it boots under TCG emulation and the deploy
+still reports success
+
+Error: Test assertion failed
+
+  on libvirt-module.tftest.hcl line 86, in run "the_module_renders_what_the_acceptance_run_settled":
+  86:     condition = alltrue([
+  87:       for k, v in var.vms : libvirt_domain.vm[k].type == "kvm"
+  88:     ])
+    ├────────────────
+    │ libvirt_domain.vm is object with 2 attributes
+    │ var.vms is object with 2 attributes
+
+a domain is not asking for KVM: it boots under TCG emulation and the deploy
+still reports success
+
+Error: Attempt to get attribute from null value
+
+  on libvirt-module.tftest.hcl line 176, in run "the_module_renders_what_the_acceptance_run_settled":
+ 176:     condition     = libvirt_domain.vm["app01"].cpu.mode == "host-passthrough"
+    ├────────────────
+    │ libvirt_domain.vm["app01"].cpu is null
+
+This value is null, so it does not have any attributes.
+
+test exit= 1
