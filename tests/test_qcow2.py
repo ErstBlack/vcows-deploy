@@ -57,3 +57,39 @@ def test_rejects_truncated_file(tmp_path):
     p.write_bytes(b"QFI\xfb" + b"\x00" * 4)
     with pytest.raises(NotAQcow2, match="too short"):
         virtual_size(p)
+
+
+def test_a_version_whose_high_byte_is_set_is_rejected(tmp_path):
+    """The version is the four bytes at offset 4, not the low three.
+
+    `0x01000003` reads as 3 if the slice starts one byte late, so a header no
+    version check should accept would be accepted as a v3 image and its size read
+    out of a layout that is not qcow2's.
+    """
+    p = make_qcow2(tmp_path / "d.qcow2", 2**30, version=0x01000003)
+    with pytest.raises(NotAQcow2, match="version 16777219"):
+        virtual_size(p)
+
+
+def test_only_the_header_is_read(tmp_path, monkeypatch):
+    """32 bytes, never the file. The golden images this is pointed at are
+    multi-GB, and `read()` with no argument returns all of one -- the same answer
+    from the same offsets, arrived at by loading the image into memory."""
+    sizes: list[int | None] = []
+    real = open
+
+    def recording(path, mode="r", *args, **kwargs):
+        handle = real(path, mode, *args, **kwargs)
+        read = handle.read
+
+        def counting(size=None):
+            sizes.append(size)
+            return read(size)
+
+        handle.read = counting
+        return handle
+
+    p = make_qcow2(tmp_path / "d.qcow2", 2**30)
+    monkeypatch.setattr("builtins.open", recording)
+    assert virtual_size(p) == 2**30
+    assert sizes == [32]

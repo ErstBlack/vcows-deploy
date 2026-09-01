@@ -72,6 +72,10 @@ def test_a_bad_filename_stem_blames_the_file_not_the_key(tmp_path, registry):
     message = str(exc.value)
     assert "9 bad name" in message and "filename" in message
     assert "[deployment]" not in message
+    # The rewrite has to *carry* a message. Both substrings above also occur in
+    # `tmp_path`, which `where` renders, so this assertion passed for a Problem
+    # whose message was None.
+    assert isinstance(exc.value.problems[0].message, str)
     assert [p.where for p in exc.value.problems] == [str(config)]
 
 
@@ -233,3 +237,52 @@ def test_a_file_that_cannot_become_a_config_is_blamed_on_the_file(
     with pytest.raises(ConfigError, match=match) as exc:
         load(config, registry)
     assert [p.where for p in exc.value.problems] == [str(config)]
+
+
+def test_a_problem_with_no_key_to_point_at_is_blamed_on_the_document(registry):
+    """`<root>` is the `where` a document-level failure carries, and the CLI
+    prints it and `run.json` records it exactly as it does any other. Nothing
+    asserted it, so the sentinel could become the empty string -- a problem
+    reported against nothing at all -- and every existing test still passed."""
+    problems = validate({}, registry)
+    # One per missing required key, and every one of them points at the document
+    # rather than at a key -- there is no key to point at.
+    assert len(problems) == 5
+    assert {p.where for p in problems} == {"<root>"}
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        # Each of these is one jsonschema keyword doing its job. A keyword whose
+        # name is mistyped is not an error -- jsonschema ignores what it does not
+        # recognise -- so the constraint simply stops applying, and every config
+        # that was already valid stays valid.
+        ("deployment: lab-a", "deployment:\n  not: a string"),
+        ("target:\n  fake:\n    endpoint: good://example", "target:\n  - fake"),
+        ("vms:\n  - name: app01\n  - name: app02", "vms:\n  app01: {}"),
+        ("vms:\n  - name: app01\n  - name: app02", "vms: []"),
+        ("vms:\n  - name: app01\n  - name: app02", "vms:\n  - app01"),
+    ],
+    ids=[
+        "deployment-type",
+        "target-type",
+        "vms-type",
+        "vms-empty",
+        "vm-type",
+    ],
+)
+def test_the_document_shape_is_checked_keyword_by_keyword(
+    tmp_path, registry, before, after
+):
+    assert before in CONFIG
+    with pytest.raises(ConfigError):
+        load(write(tmp_path, CONFIG.replace(before, after)), registry)
+
+
+def test_one_vm_is_enough(tmp_path, registry):
+    """The other side of `minItems`. Every other config here carries two, so a
+    floor of two would have been indistinguishable from a floor of one."""
+    text = CONFIG.replace("  - name: app02\n", "")
+    cfg, _ = load(write(tmp_path, text), registry)
+    assert vm_names(cfg) == ["app01"]
