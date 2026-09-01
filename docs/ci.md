@@ -23,8 +23,9 @@ nothing, because nothing lives there.
 
 | Job | When | What |
 |---|---|---|
-| `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, ty, pytest |
+| `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, workflows, gitleaks, ty, pytest |
 | `tofu` | PRs/MRs and master pushes | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
+| `mutation` | PRs/MRs and master pushes | `just mutants` — differential against `docs/mutation-baseline.json` |
 | `smoke` | PRs/MRs and master pushes | `just smoke-libvirt` — the module applied to a real libvirtd, then destroyed |
 | `image` | master, tags, and PR/MRs touching the image's inputs | build, `just test-image`, `just scan` |
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
@@ -35,9 +36,57 @@ runs neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
 trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
 `rules:`, so there both also run on every push.
 
-There is no mutation-testing job. `just mutants` exists and its configuration is
-correct, but `mutmut run` does not complete here (see `pyproject.toml`), and a
-scheduled job that always fails is no better than one that always passes.
+The `mutation` job asks what the coverage floor cannot: the suite *runs* this
+line, but would it notice the line being wrong? Measured at the current tree:
+3835 mutants, 2726 killed, **964 survived** and 145 reached by no test at all — a
+71% mutation score against a 95.85% coverage figure. Most of that gap is code the
+floor already calls covered.
+
+It is a gate and not a report, which took work. **`mutmut run` exits 0 whatever
+it finds** — measured, 964 survivors and exit 0 — so a job that merely called it
+would have been green forever, the vacuous pass this repo names elsewhere.
+`scripts/mutants.sh` therefore compares against `docs/mutation-baseline.json` and
+fails only when `survived` or `no_tests` rises, the same differential shape
+`scripts/image-scan.sh` uses against the CVE baseline. Red means the change under
+review made the suite blinder. A drop is reported, not failed, with a note that
+the baseline is now loose — a ceiling nobody tightens stops being a ceiling.
+
+The mutation score itself is deliberately not gated: the denominator moves when
+code is added or deleted, so deleting dead code would "improve" it without a test
+being written.
+
+It runs on pull requests rather than on a schedule because it is a question about
+a change. Measured at 156s for the full 3835 on 16 cores; a hosted runner has 4,
+so budget roughly four times that cold. `mutants/` is cached and mutmut re-tests
+only the mutants whose function hash changed, so a warm run is far less. A stale
+cache entry is safe in a way the provider mirror's is not — it is a verdict
+mutmut recomputes, not an artifact it trusts.
+
+The `gitleaks` gate is inside `just lint`, so it runs in `check` on every PR and
+master push rather than as a job of its own. It replaces nothing: the
+`.pre-commit-config.yaml` hook scans the staged diff and only for developers who
+ran `pre-commit install`, while this walks the whole tree on every run.
+
+**`gitleaks dir` does not honour `.gitignore`** — measured with a `ghp_`-shaped
+canary planted under `mutants/`, `.venv/` and `.tools/`, all three reported. The
+scanned-bytes figure gitleaks prints is misleading here: it counts decoded text,
+so `.tools/` at 462 MB barely registers in it and looks skipped when it is not.
+Left alone the gate would read ~570 MB of other people's code, and a credential-
+shaped test fixture inside a dependency would turn `just lint` red for a secret
+this repository neither contains nor can remove. `.gitleaks.toml` excludes those
+paths, and `scripts/lint.sh` passes it with `-c` rather than relying on
+gitleaks' fourth config source, which is discovered beside the target path and
+would silently fall back to the default config if this file moved.
+
+Measured after that: **1.0s over 5.98 MB**, down from 6.9s over 66 MB. The gate
+is verified in both directions — a canary in `docs/` fails it, the same canary
+in `.venv/` does not. Note that the obvious canary does *not* work: gitleaks
+allowlists AWS's published example key, so a test using it passes everywhere and
+proves nothing.
+
+`gitleaks git`, which scans history, is deliberately not in the gate: that is a
+one-time question, and a leak found there stays found after the file is removed,
+which is an always-red gate rather than an actionable one.
 
 `image` is not gated to post-merge because `tests/test_image.py` is the only
 thing exercising the air-gap properties — the provider resolved from the baked
@@ -115,14 +164,41 @@ of them CI supplies.
 demanding it would either fail every run or get "fixed" by re-adding a skip,
 which is the vacuous-pass pattern the review already recorded once.
 
-## Coverage is not a CI gate
+## Coverage is a CI gate
 
-`pytest --cov` works and `pyproject.toml` carries a `fail_under`, but neither
-pipeline runs it, on purpose. The figure depends on which gates ran: the `check`
-job has no provider mirror and so legitimately covers less of `tofu.py` than the
-`tofu` job does. One threshold across both would either sit low enough to be
-vacuous or fail honest runs, and a coverage gate that fails honest runs is a
-coverage gate somebody turns off. Run it locally when the number is the question.
+It did not used to be. `just test` now passes `--cov`, and `just test` is inside
+`just check`, so `pyproject.toml`'s `fail_under = 90` blocks every developer run
+and the `check` job with it.
+
+The old argument against this was that the figure depends on which gates ran —
+the `check` job has no provider mirror, so it legitimately covers less than the
+`tofu` job, and one threshold across both would either sit low enough to be
+vacuous or fail honest runs. That reasoning was sound and the measurement does
+not bear out the premise. Measured on 2026-09-01, same tree, same suite:
+
+| | total | tests |
+|---|---|---|
+| mirror present | 95.90% | 500 passed, 61 skipped |
+| mirror absent (the `check` job's shape) | 95.85% | 490 passed, 71 skipped |
+
+**0.05 points.** The mirror gate turns off `tests/test_tofu_module.py`, which
+drives `tofu` as a subprocess against HCL and executes almost no Python of ours,
+plus the rig and image gates, which were never going to run on a hosted runner.
+What actually covers `orchestrator/tofu.py` is `tests/test_tofu_driver.py`, and
+that file is ungated — it runs everywhere. So the spread the old threshold
+argument was sized against does not exist, and 90 clears both shapes by more
+than five points.
+
+Two things the floor deliberately does not cover. `container/manifest.py` is
+omitted: it shells out to `rpm -qa` and `tofu version -json` and only runs inside
+the image, where `test_image.test_the_build_manifest_records_what_shipped`
+asserts what it produced. And `VCOWS_GATES` is still never set in CI, so the floor
+is a floor on the ungated suite — it does not turn a skip into coverage.
+
+If a legitimate run ever fails this gate, the fix is a test, not a lower number.
+A coverage gate that fails honest runs is a coverage gate somebody turns off, and
+that argument has not stopped being true; it simply no longer describes this
+repo's spread.
 
 ## Runner assumptions
 

@@ -66,20 +66,25 @@ LOG_LEVEL_DEFAULT = "INFO"
 log = logging.getLogger("vcows")
 
 
-def _log_level() -> str:
-    """``VCOWS_LOG_LEVEL``, or the default if it is unset or not a level name.
+def _log_level() -> tuple[str, str | None]:
+    """``VCOWS_LOG_LEVEL``, and the value rejected to reach it.
 
     Never fatal: `basicConfig` raises `ValueError` on an unknown level, which
     would turn a typo in an environment variable into a run that does not start.
+
+    The rejection is *returned* rather than logged here, because the logger is
+    configured immediately below and does not exist yet -- so this has to be the
+    level's own decision rather than something it reports through. Returning it
+    is also what lets the variable be read, upper-cased and checked against
+    `getLevelNamesMapping` exactly once: `configure_logging` passes the second
+    half of this tuple back out to the one caller that can say anything about it.
     """
     raw = os.environ.get("VCOWS_LOG_LEVEL")
     if raw is None:
-        return LOG_LEVEL_DEFAULT
+        return LOG_LEVEL_DEFAULT, None
     if raw.upper() not in logging.getLevelNamesMapping():
-        # Deferred: the logger is configured immediately below, and this has to
-        # be the level's own decision rather than something it reports through.
-        return LOG_LEVEL_DEFAULT
-    return raw.upper()
+        return LOG_LEVEL_DEFAULT, raw
+    return raw.upper(), None
 
 
 class _Short(logging.Filter):
@@ -118,11 +123,20 @@ class _Stderr(logging.StreamHandler):
         """Swallowed: the property above is the only answer."""
 
 
-def configure_logging() -> None:
-    """Configure the root logger. Idempotent -- handlers are replaced, not added.
+def configure_logging() -> str | None:
+    """Configure the root logger, and hand back any rejected ``VCOWS_LOG_LEVEL``.
 
-    Clearing rather than appending is what makes a second call safe. Left to
-    accumulate, every line would be emitted once per call.
+    Idempotent -- handlers are replaced, not added. Clearing rather than
+    appending is what makes a second call safe. Left to accumulate, every line
+    would be emitted once per call.
+
+    The environment is re-read on every call rather than resolved once at import,
+    because that is what lets a caller set the variable and reconfigure -- which
+    the tests do, and which is the only way to change the level in-process.
+
+    The return value is the raw value that was *not* usable as a level, or
+    ``None``. It exists so the module-level call below can report a typo without
+    reading, upper-casing and re-checking the variable a second time.
     """
     logging.Formatter.converter = time.gmtime
     handler = _Stderr()
@@ -131,7 +145,9 @@ def configure_logging() -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    root.setLevel(_log_level())
+    level, rejected = _log_level()
+    root.setLevel(level)
+    return rejected
 
 
 # Configured at package import, deliberately, and this is the one place it can
@@ -145,14 +161,10 @@ def configure_logging() -> None:
 #
 # Configuring as an import side effect is wrong for a library and right for an
 # application package. `orchestrator` is only ever imported to be run.
-configure_logging()
-
-if (_bad := os.environ.get("VCOWS_LOG_LEVEL")) is not None and _bad.upper() not in (
-    logging.getLevelNamesMapping()
-):
+if (_rejected := configure_logging()) is not None:
     log.warning(
         "ignoring VCOWS_LOG_LEVEL=%r: not a level name. Using %s.",
-        _bad,
+        _rejected,
         LOG_LEVEL_DEFAULT,
     )
 

@@ -176,21 +176,26 @@ def test_the_default_is_info(monkeypatch):
     """Not WARNING. The purpose is traceability *after* delivery, and `destroy`
     cannot be re-run to recover what was not captured the first time."""
     monkeypatch.delenv("VCOWS_LOG_LEVEL", raising=False)
-    assert orchestrator._log_level() == "INFO"
+    assert orchestrator._log_level() == ("INFO", None)
 
 
 @pytest.mark.parametrize("given, wanted", [("debug", "DEBUG"), ("WARNING", "WARNING")])
 def test_the_level_is_taken_from_the_environment(monkeypatch, given, wanted):
     monkeypatch.setenv("VCOWS_LOG_LEVEL", given)
-    assert orchestrator._log_level() == wanted
+    assert orchestrator._log_level() == (wanted, None)
 
 
 def test_an_unusable_level_falls_back_without_raising(monkeypatch):
     """`basicConfig` raises ValueError on an unknown level, which would turn a
-    typo in an environment variable into a run that does not start."""
+    typo in an environment variable into a run that does not start.
+
+    The second half of the tuple is the rejected value, carried back out so the
+    variable is read and checked once rather than twice. `configure_logging`
+    returns it, which is what the module-level warning at import reports.
+    """
     monkeypatch.setenv("VCOWS_LOG_LEVEL", "chatty")
-    assert orchestrator._log_level() == "INFO"
-    orchestrator.configure_logging()  # must not raise
+    assert orchestrator._log_level() == ("INFO", "chatty")
+    assert orchestrator.configure_logging() == "chatty"  # must not raise
 
 
 def test_quiet_mode_drops_the_report_and_keeps_the_problems(monkeypatch, capsys):

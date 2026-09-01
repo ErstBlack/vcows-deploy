@@ -52,6 +52,17 @@ default:
 # that file, GitLab substitutes a placeholder for a file it cannot find, and the
 # key collapses to a constant -- a stale-mirror hit on exactly the run where the
 # mirror changed. docs/ci.md records the same.
+# mutmut re-tests only the mutants whose function hash changed, so this is the
+# difference between re-running all 3835 and re-running the few an MR touched. A
+# stale entry is harmless here, unlike the mirror below: it is only a verdict
+# mutmut recomputes, because it hashes each function and resets whatever moved.
+# Keyed on the dependency files mutmut's own change detection already watches.
+.mutants_cache: &mutants_cache
+  key:
+    prefix: mutants
+    files: [pyproject.toml, uv.lock]
+  paths: [mutants]
+
 .mirror_cache: &mirror_cache
   key:
     prefix: tofu-mirror
@@ -86,6 +97,23 @@ tofu:
     - just ensure-mirror
     - just verify-provider
     - just test-tofu
+
+# Mutation testing: does the suite notice when a line is wrong, not merely run it?
+# `just check` enforces a 90% coverage floor and 964 of these mutants live in code
+# that floor calls covered.
+#
+# A gate rather than a report. `mutmut run` exits 0 whatever it finds -- measured:
+# 3835 mutants, 964 surviving, exit 0 -- so scripts/mutants.sh compares against
+# docs/mutation-baseline.json and fails only when a number rose.
+mutation:
+  stage: check
+  # Measured on 16 cores: 3835 mutants in 156s. A shared runner has fewer, so a
+  # cold cache is several times that; the ceiling is sized against a wedge.
+  timeout: 30m
+  cache: [*tools_cache, *uv_cache, *mutants_cache]
+  script:
+    - *bootstrap
+    - just mutants
 
 # The end-to-end gate. `tofu` above reads the module through a mocked provider;
 # this one applies it to a libvirtd installed on the runner and asserts against

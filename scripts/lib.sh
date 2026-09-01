@@ -65,6 +65,7 @@ declare -rA TOOL_INSTALLER=(
     [git]=os-deps            [xorriso]=os-deps     [shellcheck]=os-deps
     [uv]=install-tools       [just]=install-tools  [tofu]=install-tools
     [hadolint]=install-tools [trivy]=install-tools [syft]=install-tools
+    [gitleaks]=install-tools
 )
 
 # `have` plus the message, for the tools whose absence should stop a script.

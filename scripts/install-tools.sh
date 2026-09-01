@@ -27,6 +27,7 @@ JUST_VERSION=1.46.0
 HADOLINT_VERSION=2.15.1
 TRIVY_VERSION=0.74.0
 SYFT_VERSION=1.51.1
+GITLEAKS_VERSION=8.30.1
 
 # tool:version -> sha256 of the artifact named in fetch() below.
 digest() {
@@ -36,6 +37,7 @@ digest() {
         hadolint:2.15.1)  echo c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 ;;
         trivy:0.74.0)     echo 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a ;;
         syft:1.51.1)      echo 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3 ;;
+        gitleaks:8.30.1)  echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
         tofu:1.12.6)      echo 5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8 ;;
         *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
     esac
@@ -48,6 +50,10 @@ url() {
         hadolint)   echo "https://github.com/hadolint/hadolint/releases/download/v${2}/hadolint-linux-x86_64" ;;
         trivy)      echo "https://github.com/aquasecurity/trivy/releases/download/v${2}/trivy_${2}_Linux-64bit.tar.gz" ;;
         syft)       echo "https://github.com/anchore/syft/releases/download/v${2}/syft_${2}_linux_amd64.tar.gz" ;;
+        # `linux_x64`, not `linux_amd64`: gitleaks is the one project here that
+        # spells it that way, and the wrong spelling 404s rather than failing the
+        # digest check, which reads as a network problem.
+        gitleaks)   echo "https://github.com/gitleaks/gitleaks/releases/download/v${2}/gitleaks_${2}_linux_x64.tar.gz" ;;
         # The .zip rather than the .rpm the image installs: one artifact that
         # works on any runner, with no package manager and no second digest to
         # keep in step with TOFU_RPM_SHA256.
@@ -180,6 +186,7 @@ main() {
     install_one hadolint "$HADOLINT_VERSION"
     install_one trivy    "$TRIVY_VERSION"
     install_one syft     "$SYFT_VERSION"
+    install_one gitleaks "$GITLEAKS_VERSION"
     expose_on_path
     log "done"
 }
