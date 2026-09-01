@@ -7,6 +7,7 @@ one. A validator that rejects everything passes half a suite.
 from __future__ import annotations
 
 import hashlib
+import logging
 import struct
 
 import pytest
@@ -649,6 +650,20 @@ def test_an_unreadable_image_warns_rather_than_failing(cfg):
     assert [p.where for p in problems if "cannot read" in p.message] == [
         "image.source_qcow2"
     ]
+
+
+def test_a_readable_image_is_logged_at_debug(cfg, tmp_path, caplog):
+    """#163: the success path returns no Problem, so the DEBUG line is the only
+    evidence that `validate` opened the image and what it measured."""
+    img = tmp_path / "golden.qcow2"
+    img.write_bytes(qcow2_header(40 * 1024**3))
+    cfg["image"]["source_qcow2"] = str(img)
+    with caplog.at_level(logging.DEBUG, logger="orchestrator.imagecheck"):
+        schema.validate(cfg)
+    # Equality, not `in`: a substring match let mutmut's padded-string mutant
+    # of the message survive, measured (476 -> 477 on the first CI run).
+    mine = [r for r in caplog.records if r.name == "orchestrator.imagecheck"]
+    assert [r.getMessage() for r in mine] == [f"{img}: virtual size 40.0 GiB"]
 
 
 def test_a_non_qcow2_image_is_an_error(cfg, tmp_path):
