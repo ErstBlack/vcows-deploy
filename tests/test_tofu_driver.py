@@ -365,3 +365,115 @@ def test_warnings_are_the_half_that_did_not_stop_the_run():
     )
     assert [d.summary for d in result.warnings] == ["deprecated attribute"]
     assert [d.summary for d in result.errors] == ["nope"]
+
+
+# -- the stream's own defaults ------------------------------------------------
+#
+# `_read_stream` reads every field through a fallback chain, because OpenTofu's
+# stream is a contract we do not own: `diagnostic` is optional on a message that
+# declares itself one, and `severity` and `summary` are optional inside it. Each
+# link in those chains was reachable and unasserted, so a fallback could be
+# removed, renamed or pointed at the wrong key and every test still passed.
+
+
+def stream(tmp_path, *messages) -> Path:
+    path = tmp_path / "read.json"
+    path.write_text("".join(json.dumps(m) + "\n" for m in messages))
+    return path
+
+
+def test_a_diagnostic_body_with_nothing_in_it_falls_back_to_the_envelope(tmp_path):
+    """`@level` and `@message` sit on the message, `severity` and `summary`
+    inside `diagnostic`, and the inner pair is optional."""
+    (d,), changes = tofu._read_stream(
+        stream(
+            tmp_path,
+            {
+                "@level": "warn",
+                "@message": "envelope headline",
+                "type": "diagnostic",
+                "diagnostic": {},
+            },
+        )
+    )
+    assert (d.severity, d.summary) == ("warn", "envelope headline")
+    # Empty strings rather than None: `Diagnostic` is frozen and typed `str`, and
+    # `__str__` and `_log_diagnostic` both branch on their truthiness.
+    assert (d.detail, d.address) == ("", "")
+    # A stream carrying no `change_summary` has no counts, not no dictionary.
+    assert changes == {}
+
+
+def test_a_diagnostic_that_names_no_severity_anywhere_is_an_error(tmp_path):
+    """The end of the chain. Treating an unlabelled diagnostic as an error is
+    the safe direction: it is reported and it fails the run rather than being
+    filed as a warning nothing acts on."""
+    (d,), _ = tofu._read_stream(stream(tmp_path, {"type": "diagnostic"}))
+    assert (d.severity, d.summary) == ("error", "")
+
+
+def test_the_diagnostics_own_severity_beats_the_envelopes(tmp_path):
+    """The first link, and the one every fixture hides: OpenTofu sets `@level`
+    and `diagnostic.severity` to the same word, so a lookup on the wrong key
+    falls through to a fallback that happens to agree."""
+    (d,), _ = tofu._read_stream(
+        stream(
+            tmp_path,
+            {
+                "@level": "error",
+                "type": "diagnostic",
+                "diagnostic": {"severity": "warning", "summary": "s"},
+            },
+        )
+    )
+    assert d.severity == "warning"
+
+
+def test_a_change_summary_with_no_counts_is_empty_rather_than_fatal(tmp_path):
+    assert tofu._read_stream(stream(tmp_path, {"type": "change_summary"})) == ((), {})
+
+
+# -- the captured commands ---------------------------------------------------
+
+
+def test_a_capture_that_fails_raises_rather_than_returning_nothing(
+    fake_tofu, workdir, monkeypatch
+):
+    """`_run` has `test_a_failure_with_no_diagnostics_still_raises`; `_capture` is
+    the other half of the driver and had nothing. Left on `check=True` the failure
+    arrives as `CalledProcessError`, which nothing above catches."""
+    monkeypatch.setenv("FAKE_TOFU_EXIT", "1")
+    with pytest.raises(tofu.TofuError, match="exit 1"):
+        tofu.outputs(workdir)
+
+
+def test_a_capture_that_prints_nothing_is_an_empty_document(
+    fake_tofu, workdir, monkeypatch
+):
+    """`tofu output -json` in a directory with no outputs prints nothing at all,
+    and `json.loads("")` is a decode error rather than an empty inventory."""
+    monkeypatch.setenv("FAKE_TOFU_STDOUT", "")
+    assert tofu.outputs(workdir) == {}
+
+
+def test_the_captured_commands_get_the_same_child_environment(
+    fake_tofu, workdir, monkeypatch
+):
+    """`_run`'s environment is asserted; `_capture` builds its own and nothing
+    read it, so it could have inherited the caller's."""
+    monkeypatch.setenv("FAKE_TOFU_STDOUT", "{}")
+    tofu.outputs(workdir)
+    (env,) = [c["env"] for c in calls(fake_tofu)]
+    assert env["CHECKPOINT_DISABLE"] == "1"
+    assert env["TF_IN_AUTOMATION"] == "1"
+
+
+def test_version_asked_inside_a_directory_asks_that_directory(
+    fake_tofu, workdir, monkeypatch
+):
+    """`provider_selections` is empty unless the question is asked inside an
+    initialised directory, which is the only reason `version` takes one."""
+    monkeypatch.setenv("FAKE_TOFU_STDOUT", "{}")
+    tofu.version(workdir)
+    (argv,) = [c["argv"] for c in calls(fake_tofu)]
+    assert f"-chdir={workdir}" in argv

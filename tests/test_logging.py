@@ -276,6 +276,43 @@ def test_configuring_twice_does_not_double_a_line(capsys):
     assert capsys.readouterr().err.count("once") == 1
 
 
+def test_configure_logging_installs_the_format_rather_than_inheriting_one(capsys):
+    """The whole line shape, asserted after an explicit call.
+
+    Every other assertion in this file reads a line produced by the handler the
+    *package import* installed, so nothing covered `configure_logging` putting the
+    formatter on. Replace it with the default one and the timestamp, the level and
+    the `short` column all vanish while the rest of the file still passes.
+    """
+    orchestrator.configure_logging()
+    capsys.readouterr()
+    logging.getLogger("orchestrator.cli").warning("a line")
+    line = capsys.readouterr().err.strip()
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z WARNING\s+cli\s+a line", line
+    ), line
+
+
+@pytest.mark.parametrize(
+    "name, short",
+    [
+        ("orchestrator.backends.libvirt.preflight", "preflight"),
+        ("orchestrator.cli", "cli"),
+        # The `vcows` logger in `orchestrator/__init__.py` has no dot in it at
+        # all, so an index of 1 into the split is an IndexError rather than a
+        # differently-wrong name.
+        ("vcows", "vcows"),
+    ],
+)
+def test_short_is_the_last_segment_however_deep_the_name(name, short):
+    """`rsplit(".", 1)[-1]`, and both halves of it matter. Every other assertion
+    here uses `orchestrator.cli`, whose two segments make `split` and `rsplit`,
+    and `[-1]` and `[1]`, agree."""
+    record = logging.LogRecord(name, logging.INFO, __file__, 0, "m", (), None)
+    assert orchestrator._Short().filter(record) is True
+    assert vars(record)["short"] == short
+
+
 # -- the one thing that is not a log line ----------------------------------
 
 
@@ -418,6 +455,32 @@ def test_an_unrecognised_diagnostic_severity_is_visible_not_dropped(capsys):
     assert "WARNING" in capsys.readouterr().err
 
 
+def test_a_diagnostic_with_neither_an_address_nor_a_detail_is_one_bare_line(capsys):
+    """The two optional halves of the rendering, both of which fall back to the
+    empty string. A non-empty fallback is not a crash -- it is a line that reads
+    `plan: headlineNone`, which nothing was looking at closely enough to notice."""
+    tofu._log_diagnostic("plan", tofu.Diagnostic("warning", "just the headline"))
+    (line,) = capsys.readouterr().err.splitlines()
+    assert line.endswith("plan: just the headline")
+
+
+def test_a_logged_diagnostic_names_the_command_that_produced_it(
+    fake_tofu, tmp_path, monkeypatch, caplog
+):
+    """`_log_diagnostic` is asserted directly above, but nothing checked what
+    `_run` hands it. A whole `apply`'s worth of errors attributed to `None` is
+    the log saying which invocation failed and getting it wrong."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setenv("FAKE_TOFU_STREAM", DIAGNOSTIC)
+    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
+        tofu.plan(workdir, workdir / "plan.bin")
+    assert any(
+        r.getMessage().startswith("plan [libvirt_volume.overlay")
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
 def test_a_multi_line_detail_reads_as_continuation(capsys):
     """Unindented, the second line starts at column 0 and is indistinguishable
     from the next record -- which is what makes a wall of these unreadable."""
@@ -440,7 +503,15 @@ def test_an_invocation_logs_its_exit_code_and_duration(fake_tofu, tmp_path, capl
         tofu.init(workdir)
     messages = [r.getMessage() for r in caplog.records]
     assert any(m.startswith("running ") for m in messages)
-    assert any(re.fullmatch(r"init: exit 0 in \d+\.\ds", m) for m in messages), messages
+    elapsed = [
+        m.group(1)
+        for m in (re.fullmatch(r"init: exit 0 in (\d+\.\d)s", x) for x in messages)
+        if m
+    ]
+    # An upper bound as well as a shape. `time.monotonic()` counts from boot, so
+    # a duration computed as a sum rather than a difference is still a number
+    # with a decimal point in it -- six or seven digits of one.
+    assert elapsed and float(elapsed[0]) < 60, messages
 
 
 def test_a_report_row_carries_no_trailing_padding(caplog):

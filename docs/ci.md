@@ -38,9 +38,9 @@ trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
 
 The `mutation` job asks what the coverage floor cannot: the suite *runs* this
 line, but would it notice the line being wrong? Measured at the current tree:
-3835 mutants, 2726 killed, **964 survived** and 145 reached by no test at all — a
-71% mutation score against a 95.85% coverage figure. Most of that gap is code the
-floor already calls covered.
+3835 mutants, 3159 killed, **676 survived** and none reached by no test at all —
+an 82% mutation score against a 97.32% coverage figure. Most of that gap is code
+the floor already calls covered.
 
 It is a gate and not a report, which took work. **`mutmut run` exits 0 whatever
 it finds** — measured, 964 survivors and exit 0 — so a job that merely called it
