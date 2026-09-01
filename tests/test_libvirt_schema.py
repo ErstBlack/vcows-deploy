@@ -6,6 +6,7 @@ one. A validator that rejects everything passes half a suite.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import struct
@@ -14,6 +15,7 @@ import pytest
 
 from orchestrator import cloudinit, imagecheck, limits
 from orchestrator.backends.libvirt import schema
+from orchestrator.backends.libvirt.render import overlay_name
 from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
@@ -933,3 +935,80 @@ def test_an_explicit_null_replaces_the_default_and_then_fails(cfg, registry):
     cfg["vms"][0]["vcpus"] = None
     problems = errors(core_validate(cfg, registry))
     assert wheres(problems) == ["vms[0].vcpus"], messages(problems)
+
+
+# -- the every-problem contract across the field/document boundary ----------
+#
+# `config.load` promises "every problem rather than the first", and these pin the
+# half of that promise nothing else pins: a *field* defect in one VM must not
+# suppress a check that spans records. The cross-VM address case is covered above
+# by `test_a_structural_error_outside_nics_does_not_hide_a_duplicate_address`;
+# what follows covers the MAC registry and the three document-level checks, which
+# run after the per-VM loop. Each is tested in isolation elsewhere in this file;
+# none was tested against a coexisting field defect, which is the case a single
+# whole-document validator cannot report.
+
+
+def third_vm(cfg, name: str = "app03", ip_cidr: str = "192.168.122.80/24") -> dict:
+    """A third VM cloned from app01, so a defect can sit in the middle one."""
+    vm = copy.deepcopy(cfg["vms"][0])
+    vm["name"] = name
+    vm["nics"][0]["ip_cidr"] = ip_cidr
+    cfg["vms"].append(vm)
+    return vm
+
+
+def test_a_field_defect_does_not_hide_a_duplicate_mac(cfg):
+    """The MAC registry is threaded through the same loop as the address one, so
+    it fails the same way and separately: a `vcpus` out of range in the VM that
+    would have *claimed* a MAC leaves the collision unreported."""
+    cfg["vms"][0]["nics"][0]["mac"] = "52:54:00:ab:cd:ef"
+    cfg["vms"][1]["nics"][0]["mac"] = "52:54:00:ab:cd:ef"
+    cfg["vms"][1]["vcpus"] = 0
+    out = messages(schema.validate(cfg))
+    assert "is less than the minimum" in out
+    assert "already used by" in out
+
+
+def test_a_blank_nic_field_does_not_hide_a_duplicate_address_elsewhere(cfg):
+    """#112's shape, one level out. The VM whose nic will not parse is skipped --
+    that is `_nic_checks_are_safe` doing its job -- but skipping it must not cost
+    the *other* VMs their cross-check."""
+    third_vm(cfg, ip_cidr=cfg["vms"][0]["nics"][0]["ip_cidr"])
+    cfg["vms"][1]["nics"][0]["ip_cidr"] = None
+    out = messages(schema.validate(cfg))
+    assert "is not of type 'string'" in out
+    assert "already used by" in out
+
+
+def test_a_field_defect_does_not_hide_a_volume_name_collision(cfg):
+    """`_check_volume_names` runs after the per-VM loop and reads every VM's name.
+    A field defect in an unrelated VM says nothing about the pool, so both belong
+    in one report."""
+    cfg["image"]["base_volume_name"] = overlay_name(cfg["vms"][0]["name"])
+    cfg["vms"][1]["vcpus"] = 0
+    out = messages(schema.validate(cfg))
+    assert "is less than the minimum" in out
+    assert "is also the name vcows derives" in out
+
+
+def test_a_field_defect_does_not_hide_an_undersized_disk(cfg, tmp_path):
+    img = tmp_path / "golden.qcow2"
+    img.write_bytes(qcow2_header(50 * 1024**3))
+    cfg["image"]["source_qcow2"] = str(img)  # app01 asks for 40
+    cfg["vms"][1]["vcpus"] = 0
+    out = messages(schema.validate(cfg))
+    assert "is less than the minimum" in out
+    assert "virtual size" in out
+
+
+def test_a_field_defect_does_not_hide_a_mismatched_image_digest(cfg, tmp_path):
+    """The digest check reads the image off disk and is the most expensive thing
+    `validate` does; losing it to an unrelated typo costs the operator the whole
+    read on the next round trip as well."""
+    golden(tmp_path, cfg)
+    cfg["image"]["sha256"] = "0" * 64
+    cfg["vms"][1]["vcpus"] = 0
+    out = messages(schema.validate(cfg))
+    assert "is less than the minimum" in out
+    assert "is not the image the config describes" in out
