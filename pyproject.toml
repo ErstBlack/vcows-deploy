@@ -8,15 +8,28 @@ version = "0.1.0.0"
 description = "Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh"
 requires-python = ">=3.12"
 
-# Declared for tooling and for the build manifest. **The image installs none of
-# this via pip.** Every runtime dependency exists as an RPM, so the container
-# installs them from a local repo mirror and carries no pip, no virtualenv and no
-# vendored wheels -- one air-gap mechanism instead of two:
+# Declared for tooling and for the build manifest. **The image installs all but
+# one of these as RPMs**, from a local repo mirror, and carries no pip and no
+# virtualenv of its own:
 #
 #   jsonschema  -> python3-jsonschema  (appstream)
 #   PyYAML      -> python3-pyyaml      (appstream)
 #   pycdlib     -> python3-pycdlib     (epel; 1.16.0 verified against the A1 API)
 #   libvirt     -> python3-libvirt     (appstream)
+#   requests    -> python3-requests    (appstream; proxmoxer's https backend)
+#
+# **`proxmoxer` is the one exception, and it is deliberate.** Measured
+# 2026-09-01: `dnf repoquery python3-proxmoxer` returns nothing across Rocky 10
+# baseos/appstream/crb/extras or EPEL 10 -- `python3-pycdlib` returns a hit from
+# the same query, so the absence is real and not a broken lookup -- and repology
+# shows no Fedora or RHEL-derived packaging anywhere. It is pure Python with
+# `requires_dist: null`, so the image installs one hash-pinned wheel in a build
+# stage and copies the result forward; pip never lands in the delivered image.
+# See the Containerfile's `pydeps` stage.
+#
+# `requests` is declared even though proxmoxer does not require it: proxmoxer
+# marks it optional, so nothing would install it, and the https backend is the
+# only one this project uses.
 #
 # `libvirt-python` is absent from this list on purpose: PyPI publishes sdist
 # only, so pip would need gcc and network access. Because there is no virtualenv
@@ -38,6 +51,8 @@ dependencies = [
     "jsonschema>=4.19",
     "PyYAML>=6.0",
     "pycdlib>=1.16",
+    "proxmoxer>=2.3",
+    "requests>=2.32",
 ]
 
 [project.scripts]
@@ -130,7 +145,11 @@ source_paths = ["orchestrator", "container"]
 # `.tools/`. Nothing reads them unless a run sets `VCOWS_GATES`, which is why this
 # has never bitten -- `conftest.MIRROR` simply resolves under `mutants/`, is
 # absent, and `needs_tofu` degrades to a skip.
-also_copy = ["docs", "Containerfile"]
+# `licenses` joins them because tests/test_manifest.py reads
+# licenses/proxmoxer/PROVENANCE.md -- the second record of the wheel's pinned
+# version and digest. Without it that test raises FileNotFoundError under
+# mutmut and takes the whole run down before it reports anything.
+also_copy = ["docs", "Containerfile", "licenses"]
 # `tests/test_scripts.py` runs `scripts/*.sh` under bash and symlinks the repo's
 # `.venv` into a scratch tree, and neither `scripts/` nor `.venv` exists under
 # `mutants/`. Copying them is the wrong fix: mutmut mutates Python inside

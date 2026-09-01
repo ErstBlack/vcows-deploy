@@ -39,6 +39,16 @@ VCOWS_NS = uuid.UUID("43a00ff6-89be-57a1-8596-246f665e9f4b")
 #: break if the marker format ever needs an incompatible one.
 MARKER_XMLNS = "urn:vcows:1"
 
+#: Line prefix for the Proxmox form. Same role as ``MARKER_XMLNS``: it is what
+#: says "this line is a vcows marker" in a field that is otherwise free text.
+#:
+#: Proxmox has no structured per-VM metadata -- only ``description``, which the
+#: web UI renders as notes, and ``tags``, which are lowercased and charset
+#: limited. So the marker shares a field an operator also writes in, and must
+#: survive them typing above and below it. A prefixed line does; a bare JSON
+#: document in the field does not.
+MARKER_PREFIX = "vcows: "
+
 #: Element name inside ``<metadata>``.
 MARKER_ELEMENT = "vcows"
 
@@ -138,6 +148,47 @@ class Marker:
             f'<{MARKER_ELEMENT} xmlns="{MARKER_XMLNS}">'
             f"{self.to_json()}</{MARKER_ELEMENT}>"
         )
+
+    def to_description(self, note: str = "") -> str:
+        """The Proxmox form: one prefixed line, optionally under operator text.
+
+        ``description`` is what the PVE UI shows as a VM's notes, so this is a
+        field a human reads and edits. The marker therefore takes one line and
+        announces itself, rather than owning the field -- ``note`` renders above
+        it, and anything an operator adds later is preserved by
+        ``from_description``, which reads the marker line and ignores the rest.
+
+        **This is the whole of Proxmox's marker storage.** There is no structured
+        metadata to nest in the way libvirt's ``<metadata>`` allows, and ``tags``
+        cannot carry it: PVE lowercases every tag and restricts the charset, so a
+        base64 or JSON payload does not survive a round trip.
+        """
+        line = f"{MARKER_PREFIX}{self.to_json()}"
+        return f"{note.rstrip()}\n\n{line}\n" if note.strip() else f"{line}\n"
+
+
+def from_description(text: str | None) -> Marker | None:
+    """The marker out of a Proxmox description, or None if there is not one.
+
+    Absent and unparseable are **not** the same answer, and only the first is
+    None: a description with no marker line belongs to a VM vcows did not create,
+    while a marker line that will not parse is a VM whose ownership record has
+    been damaged. The second raises ``MarkerError`` so the caller decides, which
+    is the same split ``Marker.from_json`` already makes.
+
+    The last marker line wins. An operator who copied a VM's notes onto a second
+    VM leaves two, and taking the last one is arbitrary -- but the ambiguity that
+    actually matters is two *VMs* holding one marker, which ``decide()`` catches
+    and refuses on.
+    """
+    if not text:
+        return None
+    found = [
+        line for line in text.splitlines() if line.strip().startswith(MARKER_PREFIX)
+    ]
+    if not found:
+        return None
+    return Marker.from_json(found[-1].strip()[len(MARKER_PREFIX) :])
 
 
 def _text(data: dict, key: str, default: str | None = None) -> str:

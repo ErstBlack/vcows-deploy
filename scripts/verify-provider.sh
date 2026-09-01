@@ -74,10 +74,76 @@ main() {
     check "mirror index h1: vs committed lock" "$lock_h1" "$index_h1"
     check "mirror index zh: vs Containerfile"  "$cf_sha"  "$index_zh"
 
-    # Exactly one provider, no strays left by an earlier version's mirror run.
+    # Exactly one *libvirt* zip, no strays left by an earlier version's mirror
+    # run. Scoped to this provider's directory since the mirror gained a second
+    # one: a bare count over the whole mirror now says only how many backends
+    # there are, which is not a fact worth asserting here.
     local n
-    n="$(find "$mirror" -name '*.zip' | wc -l)"
-    check "mirror holds exactly one provider zip" "1" "$n"
+    n="$(find "$dir" -name '*.zip' | wc -l)"
+    check "mirror holds exactly one libvirt zip" "1" "$n"
+
+    # -- the Proxmox provider, the same four places -------------------------
+    local pve_module pve_version pve_cf_version pve_cf_sha pve_lock
+    local pve_lock_h1 pve_dir pve_zip pve_zip_sha pve_index_h1 pve_index_zh
+    pve_module="$REPO/orchestrator/backends/proxmox/tofu"
+    pve_version="$(provider_version "$pve_module")"
+    pve_cf_version="$(containerfile_arg PVE_PROVIDER_VERSION)"
+    pve_cf_sha="$(containerfile_arg PVE_PROVIDER_SHA256)"
+    check "Containerfile PVE_PROVIDER_VERSION" "$pve_version" "$pve_cf_version"
+
+    pve_lock="$REPO/docs/provider-${pve_version}.lock.hcl"
+    [ -f "$pve_lock" ] || die "no committed lock at docs/provider-${pve_version}.lock.hcl"
+    pve_lock_h1="$(sed -n 's/.*"\(h1:[^"]*\)".*/\1/p' "$pve_lock" | head -1)"
+    # Assigned first, then compared: inside `check "$(...)"` a failing sed is
+    # indistinguishable from an empty match. Same reason lib.sh's
+    # `source_revision` splits its git calls out (SC2312).
+    local pve_lock_version
+    pve_lock_version="$(sed -n 's/ *version *= *"\([^"]*\)".*/\1/p' "$pve_lock" | head -1)"
+    check "proxmox lock file version" "$pve_version" "$pve_lock_version"
+
+    pve_dir="$mirror/registry.opentofu.org/bpg/proxmox"
+    pve_zip="$pve_dir/terraform-provider-proxmox_${pve_version}_linux_amd64.zip"
+    if [ -f "$pve_zip" ]; then
+        pve_zip_sha="$(sha256sum "$pve_zip" | cut -d' ' -f1)"
+        check "mirrored proxmox zip sha256 vs Containerfile" "$pve_cf_sha" "$pve_zip_sha"
+        pve_index_h1="$(jq -r '.archives.linux_amd64.hashes[] | select(startswith("h1:"))' "$pve_dir/${pve_version}.json")"
+        pve_index_zh="$(jq -r '.archives.linux_amd64.hashes[] | select(startswith("zh:")) | ltrimstr("zh:")' "$pve_dir/${pve_version}.json")"
+        check "proxmox mirror index h1: vs committed lock" "$pve_lock_h1" "$pve_index_h1"
+        check "proxmox mirror index zh: vs Containerfile"  "$pve_cf_sha"  "$pve_index_zh"
+    else
+        die "mirror has no $(basename "$pve_zip")"
+    fi
+
+    # -- the one pip-installed dependency ------------------------------------
+    # Not a provider, but the same kind of pin and the same failure: a version
+    # bumped in one place and not the other. The provenance note is the second
+    # record, and it is what a licence audit reads.
+    local whl_version whl_sha prov
+    whl_version="$(containerfile_arg PROXMOXER_VERSION)"
+    whl_sha="$(containerfile_arg PROXMOXER_SHA256)"
+    prov="$REPO/licenses/proxmoxer/PROVENANCE.md"
+    local whl_v_hits whl_s_hits
+    whl_v_hits="$(grep -c "\`$whl_version\`" "$prov" || true)"
+    whl_s_hits="$(grep -c "$whl_sha" "$prov" || true)"
+    check "proxmoxer version in PROVENANCE.md" "1" "$whl_v_hits"
+    check "proxmoxer sha256 in PROVENANCE.md" "1" "$whl_s_hits"
+    # The URL must name the version the ARG pins, or the build downloads one
+    # wheel and every record describes another.
+    grep -q "proxmoxer-${whl_version}-py3-none-any.whl" "$REPO/Containerfile" \
+        || die "PROXMOXER_URL does not name proxmoxer-${whl_version}-py3-none-any.whl"
+    log "  ok    proxmoxer URL names the pinned version"
+
+    # Every backend's pinned version must have a committed lock beside it. The
+    # filename carries only the version, so two providers that ever pin the same
+    # version string would collide -- 0.9.8 and 0.111.1 do not. Renaming the
+    # scheme to carry the provider is filed work, not done here.
+    local module lock_v modules
+    modules="$(backend_modules)"
+    while read -r module; do
+        lock_v="$(provider_version "$module")"
+        [ -f "$REPO/docs/provider-${lock_v}.lock.hcl" ] \
+            || die "no committed lock at docs/provider-${lock_v}.lock.hcl for $module"
+    done <<< "$modules"
 
     [ "$fail" -eq 0 ] || die "provider facts disagree -- see FAIL lines above"
     log "all provider facts agree"

@@ -78,12 +78,63 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10
 ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 
+# `proxmoxer` is the one runtime dependency with no RPM anywhere -- measured
+# 2026-09-01 across Rocky 10 baseos/appstream/crb/extras and EPEL 10, and
+# repology shows no Fedora or RHEL-derived packaging at all (pyproject.toml says
+# so at length). It is pure Python with `requires_dist: null`, so this stage
+# installs one hash-pinned wheel and the runtime stage copies the result.
+#
+# **A separate stage so the delivered image never carries pip.** `dnf remove`
+# afterwards would leave the layer behind and the removal is not free; a stage
+# boundary is. `python3-pip` itself comes from the same repo as everything else,
+# so this adds no air-gap mechanism to the *build* either.
+# Declared before the first FROM so **both** stages can see them: the pydeps
+# stage downloads the wheel, and the runtime stage passes the version and digest
+# to the manifest. An ARG declared inside a stage is scoped to that stage, and a
+# bare re-declaration in another one inherits the *global* value -- so with these
+# below the FROM the manifest silently recorded an empty `pip_packages`.
+ARG PROXMOXER_VERSION=2.3.0
+# The wheel's own sha256 from PyPI. A fifth pin nothing can automate.
+ARG PROXMOXER_SHA256=1c03445e95cf9c53b6e50614dbaf561e0e1eb3ec878cf45ddde4bc4421c56743
+ARG PROXMOXER_URL=https://files.pythonhosted.org/packages/f3/fa/598ceae13e96ac97cf8e9b481433587b87edddb4bb9200632bd8bd80e448/proxmoxer-2.3.0-py3-none-any.whl
+
+FROM ${BASE_IMAGE}@${BASE_DIGEST} AS pydeps
+
+ARG PROXMOXER_VERSION
+ARG PROXMOXER_SHA256
+ARG PROXMOXER_URL
+
+# `--no-deps` and `--no-index`: the wheel declares no dependencies and there is
+# nothing to resolve, so pip is only being used to unpack it correctly. Same
+# curl-then-`sha256sum -c -` shape as the OpenTofu RPM below.
+#
+# The canonical wheel filename, not a convenient one: pip refuses to install a
+# wheel whose name it cannot parse ("is not a valid wheel filename"), because the
+# name is where the version and the compatibility tags live.
+#
+# Three suppressions, and the directive must be the line immediately above the
+# instruction -- a comment between the two makes hadolint ignore the ignore.
+# DL3041 wants a dnf version pin, which this repo pins by digest instead.
+# DL3040 wants `dnf clean all`, pointless in a stage nothing is copied out of
+# but /pydeps. DL3013 wants a pip version pin, and the wheel is pinned harder
+# than that: by exact filename and by sha256 before pip is handed it.
+# hadolint ignore=DL3041,DL3040,DL3013
+RUN dnf -y install --nodocs --setopt=install_weak_deps=0 python3-pip \
+ && WHL="/tmp/proxmoxer-${PROXMOXER_VERSION}-py3-none-any.whl" \
+ && curl -fsSLo "${WHL}" "${PROXMOXER_URL}" \
+ && echo "${PROXMOXER_SHA256}  ${WHL}" | sha256sum -c - \
+ && pip3 install --no-cache-dir --no-deps --no-index --target /pydeps "${WHL}" \
+ && rm -f "${WHL}"
+
+
 FROM ${BASE_IMAGE}@${BASE_DIGEST}
 
 # Repeated after FROM: an ARG declared before the first FROM is out of scope
 # inside the stage, and both of these are recorded in the manifest and the labels.
 ARG BASE_IMAGE
 ARG BASE_DIGEST
+ARG PROXMOXER_VERSION
+ARG PROXMOXER_SHA256
 
 ARG VCOWS_VERSION=0.1.0.0
 ARG GIT_SHA=unknown
@@ -101,6 +152,12 @@ ARG TOFU_RPM_SHA256=547fe4544d3091ede04478f143fbb17bb0e010999237d904bf8950ad7542
 # not contain.
 ARG PROVIDER_VERSION=0.9.8
 ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
+
+# The Proxmox backend's provider, pinned the same way and for the same reasons.
+# bpg/proxmox is pre-1.0 and states it does not guarantee backward compatibility
+# across minor versions, so a bump is a deliberate edit with the notes read.
+ARG PVE_PROVIDER_VERSION=0.111.1
+ARG PVE_PROVIDER_SHA256=6ed47bc00d0913a1d0880618fa1376115e9edab6b4a658c081061a7f0e4ca360
 
 # Taken from the manifest's own licence fields rather than asserted, and
 # deliberately not exhaustive -- the true conjunction across roughly 160 packages runs to
@@ -121,6 +178,7 @@ RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
       python3-pyyaml \
       python3-jsonschema \
       python3-pycdlib \
+      python3-requests \
       openssh-clients \
  && dnf -y remove epel-release \
  && dnf clean all \
@@ -141,6 +199,8 @@ COPY container/tofurc /opt/tofu/tofurc
 # hash -- but only at a site, inside a deploy, which is the wrong place to learn
 # that the wrong artifact was baked in. This says it at build time.
 RUN echo "${PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_${PROVIDER_VERSION}_linux_amd64.zip" \
+  | sha256sum -c - \
+ && echo "${PVE_PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/bpg/proxmox/terraform-provider-proxmox_${PVE_PROVIDER_VERSION}_linux_amd64.zip" \
   | sha256sum -c -
 
 # Redistributing the provider means shipping its licence, which upstream does not
@@ -150,10 +210,16 @@ COPY licenses /opt/vcows/licenses
 
 COPY orchestrator /opt/vcows/orchestrator
 
+# The one pip-installed dependency, built in the `pydeps` stage above. Its own
+# directory rather than site-packages so `rpm -qa` stays the whole truth about
+# what dnf put in the image, and so the manifest can name it separately.
+COPY --from=pydeps /pydeps /opt/vcows/vendor
+
 # The module directory the CLI stages from, written once because four copies of a
 # path is how one of them gets missed. Build-time only: nothing in the running
 # image reads it.
 ARG TOFU_MODULE=/opt/vcows/orchestrator/backends/libvirt/tofu
+ARG PVE_TOFU_MODULE=/opt/vcows/orchestrator/backends/proxmox/tofu
 
 # The committed lock, in that directory, so a deploy at a site cannot silently
 # select a differently-built provider. A lock produced against a registry records
@@ -166,6 +232,8 @@ ARG TOFU_MODULE=/opt/vcows/orchestrator/backends/libvirt/tofu
 # this COPY placed, so the image would report the old provider truthfully (#118).
 COPY docs/provider-${PROVIDER_VERSION}.lock.hcl \
      ${TOFU_MODULE}/.terraform.lock.hcl
+COPY docs/provider-${PVE_PROVIDER_VERSION}.lock.hcl \
+     ${PVE_TOFU_MODULE}/.terraform.lock.hcl
 
 # `vcows` rather than `python3 -m orchestrator.cli`, because the entrypoint is
 # what an operator types and reads in `podman ps`.
@@ -179,7 +247,7 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
 # directory. See container/entrypoint.py for the measurements behind it.
 COPY --chmod=0755 container/entrypoint.py /usr/local/bin/vcows-entrypoint
 
-ENV PYTHONPATH=/opt/vcows \
+ENV PYTHONPATH=/opt/vcows:/opt/vcows/vendor \
     PYTHONDONTWRITEBYTECODE=1 \
     VCOWS_MANIFEST=/opt/vcows/manifest.json \
     CHECKPOINT_DISABLE=1 \
@@ -190,10 +258,12 @@ ENV PYTHONPATH=/opt/vcows \
 # provider into every run directory -- and D40 makes every deploy a new one, so
 # the cost recurs forever. With it, `.terraform` is symlinks into this directory
 # and a run directory holds nothing but its own artifacts. Costs 26 MB once.
-RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm \
+RUN mkdir -p "${TF_PLUGIN_CACHE_DIR}" /tmp/warm /tmp/warm-pve \
  && cp "${TOFU_MODULE}"/*.tf "${TOFU_MODULE}/.terraform.lock.hcl" /tmp/warm/ \
+ && cp "${PVE_TOFU_MODULE}"/*.tf "${PVE_TOFU_MODULE}/.terraform.lock.hcl" /tmp/warm-pve/ \
  && tofu -chdir=/tmp/warm init -input=false -no-color > /dev/null \
- && rm -rf /tmp/warm
+ && tofu -chdir=/tmp/warm-pve init -input=false -no-color > /dev/null \
+ && rm -rf /tmp/warm /tmp/warm-pve
 
 # Last, so it describes the finished image. Everything above is already in place
 # by the time `rpm -qa` runs.
@@ -202,6 +272,10 @@ RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DA
     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}" \
     PROVIDER_SHA256="${PROVIDER_SHA256}" \
     PROVIDER_LOCK="${TOFU_MODULE}/.terraform.lock.hcl" \
+    PVE_PROVIDER_SHA256="${PVE_PROVIDER_SHA256}" \
+    PVE_PROVIDER_LOCK="${PVE_TOFU_MODULE}/.terraform.lock.hcl" \
+    PROXMOXER_VERSION="${PROXMOXER_VERSION}" \
+    PROXMOXER_SHA256="${PROXMOXER_SHA256}" \
     python3 /tmp/manifest.py > /opt/vcows/manifest.json \
  && rm -f /tmp/manifest.py
 

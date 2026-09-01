@@ -93,15 +93,15 @@ def git_sha() -> str:
     return value if SHA_PATTERN.match(value) else "unknown"
 
 
-def provider() -> dict:
-    """Version and hash from the committed lock, not from build args.
+def _provider(lock_env: str, sha_env: str, source: str) -> dict:
+    """Version and hash from a committed lock, not from build args.
 
     The ARGs and the lock are two records of one fact, and the *deploy* uses the
     lock -- it is copied into the module directory the CLI stages from. A manifest
     reading the ARGs can therefore name a provider the image does not install,
     which is the git-SHA untruth one layer down.
     """
-    path = Path(os.environ["PROVIDER_LOCK"])
+    path = Path(os.environ[lock_env])
     text = path.read_text()
     version, lock_hash = LOCK_VERSION.search(text), LOCK_HASH.search(text)
     if version is None or lock_hash is None:
@@ -110,13 +110,61 @@ def provider() -> dict:
             f"cannot say what provider this image installs"
         )
     return {
-        "source": "registry.opentofu.org/dmacvicar/libvirt",
+        "source": source,
         "version": version.group(1),
-        "artifact_sha256": os.environ.get("PROVIDER_SHA256", "unknown"),
-        # The registry serves no signature for this provider, so the lock hash is
-        # the only integrity anchor. See licenses/dmacvicar-libvirt/.
+        "artifact_sha256": os.environ.get(sha_env, "unknown"),
+        # The registry serves no signature for dmacvicar/libvirt, so the lock hash
+        # is the only integrity anchor there. See licenses/dmacvicar-libvirt/.
         "lock_hash": lock_hash.group(1),
     }
+
+
+def provider() -> dict:
+    return _provider(
+        "PROVIDER_LOCK", "PROVIDER_SHA256", "registry.opentofu.org/dmacvicar/libvirt"
+    )
+
+
+def providers() -> list[dict]:
+    """Every provider the image installs, one per backend module.
+
+    A list rather than the single `provider` above, which stays because it is the
+    shape existing readers of manifest.json already parse. Both are emitted; the
+    list is the one that stays true when a third backend arrives.
+    """
+    found = [provider()]
+    if os.environ.get("PVE_PROVIDER_LOCK"):
+        found.append(
+            _provider(
+                "PVE_PROVIDER_LOCK",
+                "PVE_PROVIDER_SHA256",
+                "registry.opentofu.org/bpg/proxmox",
+            )
+        )
+    return found
+
+
+def pip_packages() -> list[dict]:
+    """What is in the image but not in the RPM database.
+
+    `rpm -qa` is the whole truth about what dnf installed, and deliberately so --
+    which means it is silent about `/opt/vcows/vendor`. One package lives there
+    (proxmoxer, the only runtime dependency with no RPM anywhere), and a manifest
+    that did not name it would disagree with the SBOM, which finds the
+    `.dist-info` and reports it.
+    """
+    version = os.environ.get("PROXMOXER_VERSION")
+    if not version:
+        return []
+    return [
+        {
+            "name": "proxmoxer",
+            "version": version,
+            "license": "MIT",
+            "artifact_sha256": os.environ.get("PROXMOXER_SHA256", "unknown"),
+            "source": "https://pypi.org/project/proxmoxer/",
+        }
+    ]
 
 
 def tofu_version() -> dict:
@@ -141,7 +189,13 @@ def main() -> int:
         },
         "tofu": tofu_version(),
         "provider": provider(),
+        # Every provider, including the one `provider` above cannot name. Both
+        # are emitted rather than the old key being replaced: `provider` is the
+        # shape existing readers already parse.
+        "providers": providers(),
         "packages": installed,
+        # What `rpm -qa` cannot see. Empty on a build that vendored nothing.
+        "pip_packages": pip_packages(),
         # Deduplicated, because binaries outnumber their sources and it is the
         # sources that have to be mirrored -- roughly 160 down to roughly 116 as
         # built. Approximate on purpose: the exact pair moves with every base

@@ -39,9 +39,20 @@ export UV_CACHE_DIR="$REPO/.cache/uv"
 PY="$REPO/.venv/bin/python"
 readonly PY
 
+# The libvirt module. Still named `MODULE` and still the libvirt one, because
+# every caller that wants *the* module -- smoke-libvirt.sh, verify-provider.sh --
+# means that one. Callers that want all of them use `backend_modules`.
 MODULE="$REPO/orchestrator/backends/libvirt/tofu"
 MIRROR="$REPO/.tools/tofu-mirror"
 readonly MODULE
+
+# Every backend's OpenTofu module, one path per line. Discovered rather than
+# listed: `cli.module_dir` resolves `backends/<name>/tofu` by convention, so a
+# list here would be a second place to forget when a backend is added.
+backend_modules() {
+    find "$REPO/orchestrator/backends" -mindepth 2 -maxdepth 2 -type d -name tofu \
+        | sort
+}
 
 log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -124,14 +135,28 @@ image_tag() {
     printf '%s\n' "localhost/vcows-deploy:$version"
 }
 
-# The provider version the module pins. Derived rather than hardcoded: a bump
+# The provider version a module pins. Derived rather than hardcoded: a bump
 # renames docs/provider-<version>.lock.hcl, and a literal 0.9.8 here would
 # quietly stop watching the file that ships.
+#
+# Takes a module directory, defaulting to the libvirt one so every existing
+# caller keeps its meaning -- which is why SC2120 is silenced rather than fixed:
+# most callers correctly pass nothing.
+# shellcheck disable=SC2120
 provider_version() {
-    local version
-    version="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$MODULE/main.tf" | head -1)"
-    [ -n "$version" ] || die "no pinned provider version in $MODULE/main.tf"
+    local module="${1:-$MODULE}" version
+    version="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$module/main.tf" | head -1)"
+    [ -n "$version" ] || die "no pinned provider version in $module/main.tf"
     printf '%s\n' "$version"
+}
+
+# The provider a module pins, as `namespace/name`.
+# shellcheck disable=SC2120
+provider_source() {
+    local module="${1:-$MODULE}" src
+    src="$(sed -n 's/.*source *= *"\([^"]*\)".*/\1/p' "$module/main.tf" | head -1)"
+    [ -n "$src" ] || die "no provider source in $module/main.tf"
+    printf '%s\n' "$src"
 }
 
 # The commit the shipped tree is at, with a `-dirty` suffix when anything the

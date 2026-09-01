@@ -39,9 +39,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # that reads like corruption. CI's job is to prove the committed lock is still
 # correct, not to quietly rewrite it.
 lock_matches() {
-    local mirror="$1" version="$2" tmp
-    tmp="$TMP/lockdir"; mkdir -p "$tmp"
-    cp "$MODULE"/*.tf "$tmp/"
+    local mirror="$1" version="$2" module="${3:-$MODULE}" tmp
+    tmp="$TMP/lockdir-$version"; mkdir -p "$tmp"
+    cp "$module"/*.tf "$tmp/"
     tofu -chdir="$tmp" providers lock \
         -fs-mirror="$mirror" -platform=linux_amd64 >/dev/null
     if diff -u "$REPO/docs/provider-${version}.lock.hcl" "$tmp/.terraform.lock.hcl"; then
@@ -51,10 +51,50 @@ lock_matches() {
     fi
 }
 
+# One mirror holds every backend's provider, assembled one provider at a time.
+# container/tofurc names a single filesystem_mirror path, so a mirror per backend
+# would need a second CLI config.
+#
+# **Each provider is mirrored into its own directory and then copied in, never
+# mirrored into the shared one.** Measured 2026-09-01 against tofu 1.12.6:
+# pointing `providers mirror` at a directory that already holds another provider
+# rewrites *that* provider's index too, and it can only record the hash it can
+# recompute locally -- so libvirt's `zh:` disappeared from its index the moment
+# proxmox was mirrored beside it. `tofu init` still works, because the lock's
+# `h1:` is what it verifies, but verify-provider.sh compares that `zh:` against
+# the Containerfile's PROVIDER_SHA256 and it is the only cross-check that the
+# artifact in the mirror is the artifact the image build asserts. It caught this.
+mirror_all() {
+    local into="$1" module version source modules n=0
+    modules="$(backend_modules)"
+    mkdir -p "$into"
+    while read -r module; do
+        version="$(provider_version "$module")"
+        source="$(provider_source "$module")"
+        log "mirroring $source $version"
+        n=$((n + 1))
+        # -platform explicitly, never the host default: free today, and the
+        # difference between working and silently producing a darwin or arm64
+        # mirror the day someone runs this somewhere else.
+        tofu -chdir="$module" providers mirror \
+            -platform=linux_amd64 "$TMP/one-$n" >/dev/null
+        cp -r "$TMP/one-$n/." "$into/"
+    done <<< "$modules"
+}
+
+# Each backend's committed lock, against the one mirror.
+check_locks() {
+    local mirror="$1" module version modules
+    modules="$(backend_modules)"
+    while read -r module; do
+        version="$(provider_version "$module")"
+        lock_matches "$mirror" "$version" "$module"
+    done <<< "$modules"
+}
+
 main() {
     need tofu
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local version; version="$(provider_version)"
 
     local mode="${1:-}"
     if [ "$mode" = "--ensure" ]; then
@@ -62,15 +102,10 @@ main() {
     fi
 
     if [ "$mode" != "--verify-only" ]; then
-        log "mirroring dmacvicar/libvirt $version"
-        # -platform explicitly, never the host default: free today, and the
-        # difference between working and silently producing a darwin or arm64
-        # mirror the day someone runs this somewhere else.
-        tofu -chdir="$MODULE" providers mirror \
-            -platform=linux_amd64 "$TMP/mirror" >/dev/null
+        mirror_all "$TMP/mirror"
         # Verify before installing, so a bad download never becomes the mirror.
         "$REPO/scripts/verify-provider.sh" "$TMP/mirror"
-        lock_matches "$TMP/mirror" "$version"
+        check_locks "$TMP/mirror"
         rm -rf "$MIRROR"
         mkdir -p "$(dirname "$MIRROR")"
         mv "$TMP/mirror" "$MIRROR"
@@ -78,7 +113,7 @@ main() {
     else
         [ -d "$MIRROR" ] || die "no mirror at .tools/tofu-mirror -- run 'just mirror'"
         "$REPO/scripts/verify-provider.sh"
-        lock_matches "$MIRROR" "$version"
+        check_locks "$MIRROR"
     fi
 }
 

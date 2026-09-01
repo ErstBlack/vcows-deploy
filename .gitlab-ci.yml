@@ -52,10 +52,15 @@ default:
 # that file, GitLab substitutes a placeholder for a file it cannot find, and the
 # key collapses to a constant -- a stale-mirror hit on exactly the run where the
 # mirror changed. docs/ci.md records the same.
+#
+# Every backend's module is listed, not just libvirt's: one mirror holds every
+# provider, so a bump in any of them has to invalidate it. Listed rather than
+# globbed because GitLab's `files:` takes at most two paths -- a third backend
+# needs a decision here rather than another entry.
 .mirror_cache: &mirror_cache
   key:
     prefix: tofu-mirror
-    files: [orchestrator/backends/libvirt/tofu/main.tf]
+    files: [orchestrator/backends/libvirt/tofu/main.tf, orchestrator/backends/proxmox/tofu/main.tf]
   paths: [.tools/tofu-mirror]
 
 .bootstrap: &bootstrap

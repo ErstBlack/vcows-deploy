@@ -98,6 +98,16 @@ needs_tofu = gate("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
 needs_tofu_binary = gate("tofu", TOFU is not None, "needs `tofu` on PATH")
 
 
+#: For tests that talk to a real Proxmox VE cluster. Both halves are needed: an
+#: endpoint says where, and the token is the only credential this backend has.
+PVE_ENDPOINT = os.environ.get("VCOWS_PVE_ENDPOINT")
+needs_proxmox = gate(
+    "proxmox",
+    bool(PVE_ENDPOINT) and bool(os.environ.get("PROXMOX_VE_API_TOKEN")),
+    "needs VCOWS_PVE_ENDPOINT and PROXMOX_VE_API_TOKEN to run against a cluster",
+)
+
+
 #: The CLI config the image ships, and the mirror path baked into it.
 SHIPPED_TOFURC = REPO / "container" / "tofurc"
 IMAGE_MIRROR = "/opt/tofu-mirror"
@@ -239,3 +249,81 @@ def _umask():
 def cfg() -> dict:
     """A fresh deep copy, so a test that mutates it cannot poison the next."""
     return copy.deepcopy(CONFIG)
+
+
+#: The Proxmox counterpart of CONFIG above, deliberately exercising what differs
+#: rather than mirroring it: a NIC attaches to a bridge and only a bridge, one VM
+#: carries a VLAN tag, and firmware is a choice with no host paths beside it.
+PROXMOX_CONFIG: dict = {
+    "schema_version": 1,
+    "deployment": "lab-a",
+    "backend": "proxmox",
+    "target": {
+        "proxmox": {
+            "endpoint": "https://pve.example.com:8006",
+            "node": "pve1",
+            "datastore": "local-lvm",
+            "import_datastore": "local",
+        }
+    },
+    "image": {
+        "source_qcow2": "/images/golden.qcow2",
+        "base_volume_name": "golden.qcow2",
+    },
+    "vms": [
+        {
+            "name": "app01",
+            "vcpus": 2,
+            "memory_mib": 4096,
+            "disk_gb": 40,
+            "nics": [
+                {
+                    "bridge": "vmbr0",
+                    "ip_cidr": "192.168.122.60/24",
+                    "gateway": "192.168.122.1",
+                    "nameservers": ["192.168.122.1"],
+                }
+            ],
+        },
+        {
+            "name": "app02",
+            "vcpus": 4,
+            "memory_mib": 8192,
+            "disk_gb": 60,
+            "firmware": "efi",
+            "machine": "q35",
+            "user_data": "#cloud-config\npackages:\n  - tmux\n",
+            "nics": [
+                {
+                    "bridge": "vmbr0",
+                    "vlan_id": 42,
+                    "ip_cidr": "192.168.122.61/24",
+                    "gateway": "192.168.122.1",
+                    "nameservers": ["192.168.122.1"],
+                    "mac": "52:54:00:aa:bb:cc",
+                }
+            ],
+        },
+    ],
+}
+
+
+@pytest.fixture
+def pve_cfg() -> dict:
+    """A fresh deep copy, for the same reason `cfg` is one."""
+    return copy.deepcopy(PROXMOX_CONFIG)
+
+
+@pytest.fixture
+def pve_token(monkeypatch) -> str:
+    """A syntactically valid token in the environment.
+
+    Every Proxmox verb reads it, so a test that does not set it is testing the
+    unset-token refusal whether it meant to or not. Not a real credential and
+    never sent anywhere: `FakeProxmox` does not authenticate.
+    """
+
+    # A fixed, obviously-fake UUID for a fake that never authenticates.
+    token = "vcows@pve!deploy=00000000-0000-4000-8000-000000000000"  # noqa: S105
+    monkeypatch.setenv("PROXMOX_VE_API_TOKEN", token)
+    return token

@@ -17,7 +17,11 @@ from __future__ import annotations
 
 from .base import Backend
 from .libvirt import LibvirtBackend
+from .proxmox import ProxmoxBackend
 
-REGISTRY: dict[str, Backend] = {"libvirt": LibvirtBackend()}
+REGISTRY: dict[str, Backend] = {
+    "libvirt": LibvirtBackend(),
+    "proxmox": ProxmoxBackend(),
+}
 
 __all__ = ["REGISTRY", "Backend"]

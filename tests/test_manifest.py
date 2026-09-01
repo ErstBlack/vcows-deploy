@@ -28,6 +28,7 @@ from container import manifest
 from tests.conftest import REPO
 
 LOCK = REPO / "docs" / "provider-0.9.8.lock.hcl"
+PVE_LOCK = REPO / "docs" / "provider-0.111.1.lock.hcl"
 
 CLEAN = "15e8dcfe0139e134093cb35f4e5c66760bb0d086"
 
@@ -326,3 +327,86 @@ def test_the_manifest_is_written_to_be_diffed(built, run, capsys):
 
     found, raw = emitted(capsys)
     assert raw == json.dumps(found, indent=2, sort_keys=True) + "\n"
+
+
+# -- every provider, and the one package rpm cannot see ----------------------
+
+
+def test_providers_names_both_backends_from_their_own_locks(monkeypatch):
+    """`provider()` can only ever describe one, and the image now installs two.
+    Both are read from the lock the deploy installs from rather than from build
+    args, for the reason the single-provider test above records."""
+    monkeypatch.setenv("PROVIDER_LOCK", str(LOCK))
+    monkeypatch.setenv("PROVIDER_SHA256", "0" * 64)
+    monkeypatch.setenv("PVE_PROVIDER_LOCK", str(PVE_LOCK))
+    monkeypatch.setenv("PVE_PROVIDER_SHA256", "1" * 64)
+
+    found = manifest.providers()
+    assert [p["source"] for p in found] == [
+        "registry.opentofu.org/dmacvicar/libvirt",
+        "registry.opentofu.org/bpg/proxmox",
+    ]
+    assert [p["version"] for p in found] == ["0.9.8", "0.111.1"]
+    assert found[1]["lock_hash"].startswith("h1:")
+    assert found[1]["artifact_sha256"] == "1" * 64
+
+
+def test_a_build_without_the_proxmox_lock_reports_only_libvirt(monkeypatch):
+    """The list is what the *image* carries. A build that shipped one provider
+    must not claim two -- that is the same untruth as the git SHA."""
+    monkeypatch.setenv("PROVIDER_LOCK", str(LOCK))
+    monkeypatch.delenv("PVE_PROVIDER_LOCK", raising=False)
+    assert len(manifest.providers()) == 1
+
+
+def test_the_vendored_wheel_is_reported_because_rpm_cannot_see_it(monkeypatch):
+    """`packages()` reads the RPM database, which is silent about
+    /opt/vcows/vendor. syft finds the .dist-info and reports proxmoxer, so a
+    manifest that stayed quiet would disagree with the SBOM shipped beside it."""
+    monkeypatch.setenv("PROXMOXER_VERSION", "2.3.0")
+    monkeypatch.setenv("PROXMOXER_SHA256", "a" * 64)
+
+    found = manifest.pip_packages()
+    assert len(found) == 1
+    assert found[0]["name"] == "proxmoxer"
+    assert found[0]["version"] == "2.3.0"
+    assert found[0]["license"] == "MIT"
+    assert found[0]["artifact_sha256"] == "a" * 64
+
+
+def test_a_build_that_vendored_nothing_reports_nothing(monkeypatch):
+    """Empty, not a placeholder entry: the field says what is there."""
+    monkeypatch.delenv("PROXMOXER_VERSION", raising=False)
+    assert manifest.pip_packages() == []
+
+
+def test_the_containerfile_and_the_provenance_note_agree_on_the_wheel():
+    """Two records of one fact, which is how one of them goes stale.
+    `just verify-provider` checks the same pair; this is the half that runs in
+    the default suite, with no mirror and no image."""
+    text = (REPO / "Containerfile").read_text()
+    version = re.search(r"^ARG PROXMOXER_VERSION=(\S+)$", text, re.M)
+    digest = re.search(r"^ARG PROXMOXER_SHA256=(\S+)$", text, re.M)
+    assert version is not None and digest is not None
+
+    prov = (REPO / "licenses" / "proxmoxer" / "PROVENANCE.md").read_text()
+    assert f"`{version.group(1)}`" in prov
+    assert digest.group(1) in prov
+    # The URL must name the version the ARG pins, or the build downloads one
+    # wheel while every record describes another.
+    assert f"proxmoxer-{version.group(1)}-py3-none-any.whl" in text
+
+
+def test_the_containerfile_states_the_proxmox_provider_version_once():
+    """Same rule as the libvirt provider's: a literal survives a bump that
+    updated every other place, and the manifest would then truthfully report a
+    provider nobody meant to ship."""
+    text = (REPO / "Containerfile").read_text()
+    declared = re.search(r"^ARG PVE_PROVIDER_VERSION=(\S+)$", text, re.M)
+    assert declared is not None
+    version = declared.group(1)
+    stated = [ln for ln in text.splitlines() if version in ln and "ARG " in ln]
+    assert stated == [f"ARG PVE_PROVIDER_VERSION={version}"], (
+        f"the Containerfile spells {version} somewhere beyond its ARG: {stated}. "
+        f"Use ${{PVE_PROVIDER_VERSION}} instead"
+    )
