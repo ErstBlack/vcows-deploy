@@ -1,8 +1,8 @@
 {
-  "generated": "2026-09-01T14:53:47Z",
-  "note": "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Roughly 330 of the 749 survivors mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog. See #146.",
+  "generated": "2026-09-01T15:05:40Z",
+  "note": "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Roughly 330 of them mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog. See #146.",
   "total": 3835,
-  "killed": 3086,
-  "survived": 749,
+  "killed": 3087,
+  "survived": 748,
   "no_tests": 0
 }

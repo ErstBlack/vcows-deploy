@@ -95,6 +95,27 @@ def config_file(tmp_path, keyfile=GOOD_KEY, known_hosts=GOOD_HOSTS):
     return path
 
 
+@pytest.fixture(autouse=True)
+def _entrypoint_logging():
+    """Configure logging the way `main()` does, because `install()` does not.
+
+    Four tests below assert on stderr, and `install()` is called directly by all
+    four -- but the only caller that configures logging is `main()`, one line
+    before it. So what those tests actually read was whatever handler some
+    *earlier* test module had left on the root logger, normally the one
+    `orchestrator` installs at package import. Running this file on its own left
+    the root logger unconfigured, and all four then read an empty stderr: three
+    failed, and `test_install_writes_nothing_for_a_poisoned_config` passed
+    vacuously, which is the worse half.
+
+    `conftest._root_logger` puts the handlers back afterwards, so this leaks into
+    nothing. Same defect as the `sys.modules` one #147 fixed and the same remedy:
+    a test that depends on global state has to establish it rather than inherit
+    it.
+    """
+    entrypoint._configure_logging()
+
+
 # -- whose home ---------------------------------------------------------------
 
 
