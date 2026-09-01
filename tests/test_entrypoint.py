@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,6 +93,37 @@ def config_file(tmp_path, keyfile=GOOD_KEY, known_hosts=GOOD_HOSTS):
         f"    known_hosts: {known_hosts!r}\n"
     )
     return path
+
+
+# -- whose home ---------------------------------------------------------------
+
+
+def test_the_home_written_into_is_the_one_ssh_will_read(monkeypatch):
+    """The passwd entry, not `$HOME`. OpenSSH and Go's `os/user` both resolve `~`
+    from the passwd database, so an exported `HOME` would move the file somewhere
+    neither client looks."""
+    monkeypatch.setenv("HOME", "/somewhere/else")
+    monkeypatch.setattr(entrypoint.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(
+        entrypoint.pwd,
+        "getpwuid",
+        lambda uid: SimpleNamespace(pw_dir=f"/home/uid-{uid}"),
+    )
+
+    assert entrypoint.home() == Path("/home/uid-4242")
+
+
+def test_a_uid_with_no_passwd_entry_has_no_home_to_write_to(monkeypatch):
+    """`podman run --user` with a UID absent from /etc/passwd -- R6's rootless
+    trap. `None` is what makes `install` write nothing rather than guess a path,
+    and the operator's own mounts have to be correct."""
+
+    def absent(uid):
+        raise KeyError(uid)
+
+    monkeypatch.setattr(entrypoint.pwd, "getpwuid", absent)
+
+    assert entrypoint.home() is None
 
 
 @pytest.fixture

@@ -10,12 +10,18 @@
 # the front door. Everything below exists to turn that run into a pass or a fail.
 #
 # **Differential, not absolute**, for the same reason `scripts/image-scan.sh` is.
-# A gate demanding zero survivors would be red from the first run and stay red:
-# 964 of these are reachable-but-unasserted branches, error paths and log strings,
-# and no pipeline can fix them -- only someone writing tests can. An always-red
+# A gate demanding zero survivors would be red from the first run and stay red, and
+# no pipeline can fix a survivor -- only someone writing tests can. An always-red
 # gate gets muted within a month and is then green by neglect. So
 # docs/mutation-baseline.json holds what has been looked at and accepted, and this
 # fails only on what is *new*. Red means the change under review made it worse.
+#
+# What the remaining survivors are, measured at #146 by decoding `mutants/*.meta`:
+# roughly 330 of 749 mutate the *text* of a log line or a `Problem` message --
+# `"XX...XX"`, a case flip, a format argument swapped for None. Killing one means
+# asserting on prose, which pins the wording of a message this repo revises
+# deliberately, so they are a floor rather than a backlog. The rest are branches
+# and constants a test executes and no test notices, and those are worth writing.
 #
 # Two counts are tracked rather than one, because they are different defects.
 # `survived` is a mutant some test executed and no test noticed. `no_tests` is a
@@ -88,7 +94,7 @@ main() {
               --argjson total "$total" --argjson killed "$killed" \
               --argjson survived "$survived" --argjson no_tests "$no_tests" \
               '{generated: $generated,
-                note: "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body.",
+                note: "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Roughly 330 of the 749 survivors mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog. See #146.",
                 total: $total, killed: $killed,
                 survived: $survived, no_tests: $no_tests}' > "$BASELINE"
         log "wrote $(basename "$BASELINE"): $survived survived, $no_tests with no tests"

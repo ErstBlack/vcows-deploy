@@ -1,10 +1,16 @@
-"""The build manifest's two claims that are not observations.
+"""Every claim the build manifest makes, and the two that were once wrong.
 
-`packages()` and `tofu_version()` shell out and can only run inside the image,
-which is where `tests/test_image.py` checks them. The two here are pure and are
-the two that were wrong: the git SHA the image built at `e5d5a2c` recorded for a
-tree it did not match, and the provider block that came from build args rather
-than from the lock the deploy installs from.
+`packages()` and `tofu_version()` shell out to `rpm` and `tofu`, so only the
+image can run them for real -- `test_image.test_the_build_manifest_records_what_shipped`
+is what checks the shipped file, behind the image gate. What is checked here is
+the shape either one is asked for and what `main()` does with the answer, against
+a faked `subprocess.run`: the `(none)` sentinel filter and the `source_rpms`
+deduplication are both measured behaviours that nothing asserted until now.
+
+`git_sha` and `provider` need no faking and are the two that were wrong: the git
+SHA the image built at `e5d5a2c` recorded for a tree it did not match, and the
+provider block that came from build args rather than from the lock the deploy
+installs from.
 
 Ungated and offline. `container/manifest.py` imports nothing but the standard
 library, on purpose -- it runs before the application exists.
@@ -12,7 +18,9 @@ library, on purpose -- it runs before the application exists.
 
 from __future__ import annotations
 
+import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,3 +133,196 @@ def test_a_lock_that_does_not_say_fails_the_build(tmp_path, monkeypatch, text):
 
     with pytest.raises(SystemExit):
         manifest.provider()
+
+
+# -- the two shellouts -------------------------------------------------------
+
+
+class _Run:
+    """A stand-in for `subprocess.run`, dispatching on the command it was given.
+
+    It records the keyword arguments as well as the argv, because how these two
+    are invoked is part of what they promise: `check=True` is what turns a failed
+    `rpm -qa` into a failed build rather than an empty package list.
+    """
+
+    def __init__(self, stdout_by_command: dict[str, str]):
+        self.stdout_by_command = stdout_by_command
+        self.calls: list[tuple[list[str], dict]] = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        return SimpleNamespace(stdout=self.stdout_by_command[argv[0]])
+
+
+def row(name, source, version="1.0-1.el10", license_="MIT", vendor="Fedora Project"):
+    return "\t".join([name, version, license_, source, vendor])
+
+
+@pytest.fixture
+def run(monkeypatch):
+    def _install(rpm_rows=(), tofu='{"terraform_version": "1.10.6"}'):
+        fake = _Run({"rpm": "".join(f"{r}\n" for r in rpm_rows), "tofu": tofu})
+        monkeypatch.setattr(manifest.subprocess, "run", fake)
+        return fake
+
+    return _install
+
+
+def test_every_field_the_query_asks_for_is_split_back_out(run):
+    fake = run([row("zlib", "zlib-1.3.1-2.el10.src.rpm", "1.3.1-2", "Zlib", "Fedora")])
+
+    assert manifest.packages() == [
+        {
+            "name": "zlib",
+            "version": "1.3.1-2",
+            "license": "Zlib",
+            "source_rpm": "zlib-1.3.1-2.el10.src.rpm",
+            "vendor": "Fedora",
+        }
+    ]
+    argv, kwargs = fake.calls[0]
+    assert argv == ["rpm", "-qa", "--qf", manifest.QUERY]
+    assert kwargs == {"capture_output": True, "text": True, "check": True}
+
+
+def test_the_package_list_is_sorted_by_name(run):
+    run([row(n, f"{n}.src.rpm") for n in ("zlib", "bash", "python3")])
+
+    assert [p["name"] for p in manifest.packages()] == ["bash", "python3", "zlib"]
+
+
+def test_a_package_rpm_gives_no_source_for_is_still_recorded(run):
+    """The asymmetry `NO_TAG` documents. `packages` is what rpm said, verbatim --
+    only the derived `source_rpms` list below is filtered, because only it is what
+    D22's reposync runs against."""
+    run([row("gpg-pubkey", manifest.NO_TAG)])
+
+    assert manifest.packages()[0]["source_rpm"] == manifest.NO_TAG
+
+
+def test_the_tofu_version_is_the_json_tofu_printed(run):
+    fake = run(tofu='{"terraform_version": "1.10.6", "platform": "linux_amd64"}')
+
+    assert manifest.tofu_version() == {
+        "terraform_version": "1.10.6",
+        "platform": "linux_amd64",
+    }
+    argv, kwargs = fake.calls[0]
+    assert argv == ["tofu", "version", "-json"]
+    assert kwargs == {"capture_output": True, "text": True, "check": True}
+
+
+# -- the assembled manifest --------------------------------------------------
+
+
+BUILT = {
+    "VCOWS_VERSION": "0.1.0.0",
+    "GIT_SHA": CLEAN,
+    "BUILD_DATE": "2026-09-01T00:00:00Z",
+    "BASE_IMAGE": "quay.io/centos/centos:stream10",
+    "BASE_DIGEST": "sha256:" + "0" * 64,
+    "PROVIDER_SHA256": "1" * 64,
+    "PROVIDER_LOCK": str(LOCK),
+}
+
+
+@pytest.fixture
+def built(monkeypatch):
+    for key, value in BUILT.items():
+        monkeypatch.setenv(key, value)
+
+
+def emitted(capsys) -> tuple[dict, str]:
+    out = capsys.readouterr().out
+    return json.loads(out), out
+
+
+def test_the_manifest_records_the_build_it_was_run_by(built, run, capsys):
+    run([row("zlib", "zlib-1.3.1-2.el10.src.rpm")])
+
+    assert manifest.main() == 0
+
+    found, _ = emitted(capsys)
+    assert found["vcows"] == "0.1.0.0"
+    assert found["git_sha"] == CLEAN
+    assert found["built"] == "2026-09-01T00:00:00Z"
+    assert found["base_image"] == {
+        "name": "quay.io/centos/centos:stream10",
+        "digest": "sha256:" + "0" * 64,
+    }
+    assert found["provider"]["artifact_sha256"] == "1" * 64
+    assert found["tofu"] == {"terraform_version": "1.10.6"}
+    assert [p["name"] for p in found["packages"]] == ["zlib"]
+
+
+@pytest.mark.parametrize(
+    "unset, key",
+    [
+        ("BUILD_DATE", "built"),
+        ("BASE_IMAGE", "base_image.name"),
+        ("BASE_DIGEST", "base_image.digest"),
+        ("PROVIDER_SHA256", "provider.artifact_sha256"),
+    ],
+)
+def test_a_build_arg_the_build_did_not_pass_reads_unknown(
+    built, run, capsys, monkeypatch, unset, key
+):
+    """`unknown` rather than a crash, and rather than a plausible-looking value:
+    the same reason `git_sha` refuses to record a clean SHA it cannot vouch for."""
+    monkeypatch.delenv(unset)
+    run([row("zlib", "zlib.src.rpm")])
+
+    manifest.main()
+
+    found, _ = emitted(capsys)
+    for part in key.split("."):
+        found = found[part]
+    assert found == "unknown"
+
+
+def test_a_build_that_does_not_know_its_own_version_fails(built, run, monkeypatch):
+    """The one build arg with no fallback. A manifest that cannot say which vcows
+    it describes is worse than no image."""
+    monkeypatch.delenv("VCOWS_VERSION")
+    run([row("zlib", "zlib.src.rpm")])
+
+    with pytest.raises(KeyError):
+        manifest.main()
+
+
+def test_the_source_list_drops_the_sentinel_and_deduplicates(built, run, capsys):
+    """Both measured behaviours, in one manifest. `(none)` is what rpm renders for
+    the `gpg-pubkey` pseudo-packages the EPEL key leaves in the rpmdb -- it is
+    truthy, so it would otherwise become a source RPM D22's reposync went looking
+    for. And binaries outnumber their sources, which is the whole point of the
+    list: roughly 160 packages down to roughly 116 sources as built."""
+    run(
+        [
+            row("python3-libs", "python3.13-3.13.5-1.el10.src.rpm"),
+            row("python3", "python3.13-3.13.5-1.el10.src.rpm"),
+            row("gpg-pubkey", manifest.NO_TAG),
+            row("hand-built", ""),
+            row("zlib", "zlib-1.3.1-2.el10.src.rpm"),
+        ]
+    )
+
+    manifest.main()
+
+    found, _ = emitted(capsys)
+    assert found["source_rpms"] == [
+        "python3.13-3.13.5-1.el10.src.rpm",
+        "zlib-1.3.1-2.el10.src.rpm",
+    ]
+    assert len(found["packages"]) == 5
+
+
+def test_the_manifest_is_written_to_be_diffed(built, run, capsys):
+    """Indented, key-sorted and newline-terminated. R5 wants releases comparable,
+    and two manifests that differ only in key order are not."""
+    run([row("zlib", "zlib.src.rpm"), row("bash", "bash.src.rpm")])
+
+    manifest.main()
+
+    found, raw = emitted(capsys)
+    assert raw == json.dumps(found, indent=2, sort_keys=True) + "\n"

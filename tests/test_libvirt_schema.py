@@ -50,6 +50,17 @@ def errors(problems) -> list:
     return [p for p in problems if p.fatal]
 
 
+def wheres(problems) -> list[str]:
+    """What each problem is filed against, in order.
+
+    The half a message cannot carry. `where` is a config path, read by the CLI
+    printout and recorded in `run.json`, and it is what tells an operator which
+    key to edit -- so a check that names the wrong one, or names nothing, sends
+    them to the wrong line of a file the message may not even mention.
+    """
+    return [p.where for p in problems]
+
+
 # -- the canonical config ---------------------------------------------------
 
 
@@ -164,11 +175,18 @@ def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
         # NUMBER SIGN in source, and the point of the row is what `urlsplit`
         # does with it under NFKC, not how it reads here.
         ("qemu+ssh://h\uff03x/system", "is not a URL"),
+        # A fragment is silently dropped by every client, so a URI carrying one
+        # means something other than it looks like.
+        ("qemu+ssh://vcows@vcows/system#frag", "fragment"),
     ],
 )
 def test_bad_uris_are_rejected(cfg, uri, expect):
     cfg["target"]["libvirt"]["uri"] = uri
-    assert expect in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert expect in messages(problems)
+    # A set: one bad URI can break two clauses -- `qemu:///system` has neither
+    # the scheme nor a host -- and both are filed against the key that carries it.
+    assert set(wheres(problems)) == {"target.libvirt.uri"}
 
 
 def test_a_uri_that_will_not_parse_loses_no_other_problem(cfg):
@@ -195,9 +213,14 @@ def test_a_missing_credential_path_warns_and_does_not_refuse(cfg):
     whichever machine runs the deploy, normally the container, where they are
     bind-mounted at run time -- so their absence here is not an answer."""
     cfg["target"]["libvirt"]["ssh_keyfile"] = "/nowhere/id_ed25519"
+    cfg["target"]["libvirt"]["known_hosts"] = "/nowhere/known_hosts"
     problems = schema.validate(cfg)
     assert errors(problems) == [], messages(problems)
     assert "/nowhere/id_ed25519 does not exist here" in messages(problems)
+    assert [p.where for p in problems if "does not exist here" in p.message] == [
+        "target.libvirt.ssh_keyfile",
+        "target.libvirt.known_hosts",
+    ], "one warning per field, each naming its own"
 
 
 def test_a_credential_path_that_exists_warns_about_nothing(cfg, tmp_path):
@@ -215,18 +238,24 @@ def test_a_credential_path_that_exists_warns_about_nothing(cfg, tmp_path):
 
 def test_loader_without_nvram_template_is_rejected(cfg):
     del cfg["vms"][1]["nvram_template"]
-    assert "nvram_template" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "nvram_template" in messages(problems)
+    assert wheres(problems) == ["vms[1].loader"], "the key that was set, not the gap"
 
 
 def test_nvram_template_without_loader_is_rejected(cfg):
     del cfg["vms"][1]["loader"]
     del cfg["vms"][1]["loader_format"]
-    assert "'loader'" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "'loader'" in messages(problems)
+    assert wheres(problems) == ["vms[1].nvram_template"]
 
 
 def test_loader_format_without_loader_is_rejected(cfg):
     cfg["vms"][0]["loader_format"] = "raw"
-    assert "loader_format" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "loader_format" in messages(problems)
+    assert wheres(problems) == ["vms[0].loader_format"]
 
 
 def test_loader_without_loader_format_is_rejected(cfg):
@@ -234,7 +263,9 @@ def test_loader_without_loader_format_is_rejected(cfg):
     an absent value as `raw`, so a qcow2 loader would get an `.fd` varstore --
     the mismatch the first acceptance run already paid for."""
     del cfg["vms"][1]["loader_format"]
-    assert "without 'loader_format'" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "without 'loader_format'" in messages(problems)
+    assert wheres(problems) == ["vms[1].loader"]
 
 
 def test_loader_with_its_format_passes(cfg):
@@ -243,8 +274,13 @@ def test_loader_with_its_format_passes(cfg):
 
 def test_uefi_settings_with_bios_firmware_are_rejected(cfg):
     cfg["vms"][1]["firmware"] = "bios"
-    problems = messages(schema.validate(cfg))
-    assert "loader" in problems and "bios" in problems
+    problems = errors(schema.validate(cfg))
+    assert "loader" in messages(problems) and "bios" in messages(problems)
+    assert wheres(problems) == [
+        "vms[1].loader",
+        "vms[1].loader_format",
+        "vms[1].nvram_template",
+    ], "one per UEFI key present, so the operator can delete all three at once"
 
 
 def test_bios_alone_passes(cfg):
@@ -282,14 +318,44 @@ def test_a_bridge_nic_passes(cfg):
     assert errors(schema.validate(cfg)) == []
 
 
+@pytest.mark.parametrize(
+    "attach, expect",
+    [({}, "neither"), ({"bridge": "br0", "network": "default"}, "both")],
+    ids=["neither", "both"],
+)
+def test_a_nic_needs_exactly_one_attachment(cfg, attach, expect):
+    """`render` reads whichever is present and the module builds one `<interface>`
+    from it. Neither leaves a NIC attached to nothing; both leave the choice to
+    whichever key the renderer happens to look at first."""
+    nic = cfg["vms"][0]["nics"][0]
+    nic.pop("network", None)
+    nic.pop("bridge", None)
+    nic.update(attach)
+    problems = errors(schema.validate(cfg))
+    assert expect in messages(problems)
+    assert wheres(problems) == ["vms[0].nics[0]"], "the NIC, not either key"
+
+
 def test_ip_without_a_prefix_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.60"
-    assert "prefix length" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "prefix length" in messages(problems)
+    assert wheres(problems) == ["vms[0].nics[0].ip_cidr"]
 
 
 def test_unparseable_address_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.999/24"
-    assert errors(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert problems
+    assert wheres(problems) == ["vms[0].nics[0].ip_cidr"]
+
+
+def test_an_unparseable_nameserver_is_blamed_on_its_own_index(cfg):
+    """`nameservers` is a list, so the index is the only thing that says which
+    entry to fix -- and `_parse_address` is the one place that carries it."""
+    cfg["vms"][0]["nics"][0]["nameservers"] = ["192.168.122.1", "not-an-ip"]
+    problems = errors(schema.validate(cfg))
+    assert wheres(problems) == ["vms[0].nics[0].nameservers[1]"]
 
 
 @pytest.mark.parametrize(
@@ -302,7 +368,17 @@ def test_unparseable_address_is_rejected(cfg):
 )
 def test_an_address_that_is_not_a_host_address_is_rejected(cfg, ip_cidr, expect):
     cfg["vms"][0]["nics"][0]["ip_cidr"] = ip_cidr
-    assert expect in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert [p.where for p in problems if expect in p.message] == [
+        "vms[0].nics[0].ip_cidr"
+    ]
+    # A /26 moves the subnet as well as the address, so the canonical gateway
+    # falls outside it and is reported too. That is a second real problem, not
+    # this one reported twice.
+    assert set(wheres(problems)) <= {
+        "vms[0].nics[0].ip_cidr",
+        "vms[0].nics[0].gateway",
+    }
 
 
 @pytest.mark.parametrize("ip_cidr", ["192.168.122.60/31", "192.168.122.60/32"])
@@ -315,7 +391,9 @@ def test_a_point_to_point_block_has_no_reserved_addresses(cfg, ip_cidr):
 
 def test_gateway_outside_the_subnet_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["gateway"] = "10.0.0.1"
-    assert "outside" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "outside" in messages(problems)
+    assert wheres(problems) == ["vms[0].nics[0].gateway"]
 
 
 def test_bad_nameserver_is_rejected(cfg):
@@ -325,7 +403,9 @@ def test_bad_nameserver_is_rejected(cfg):
 
 def test_duplicate_ip_across_vms_is_rejected(cfg):
     cfg["vms"][1]["nics"][0]["ip_cidr"] = cfg["vms"][0]["nics"][0]["ip_cidr"]
-    assert "already used by" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "already used by" in messages(problems)
+    assert wheres(problems) == ["vms[1].nics[0].ip_cidr"], "the second one seen"
 
 
 def test_a_duplicate_ip_is_reported_even_when_the_gateway_is_unparseable(cfg):
@@ -447,7 +527,9 @@ def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing
 
 def test_duplicate_mac_across_vms_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["mac"] = cfg["vms"][1]["nics"][0]["mac"]
-    assert "already used by" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "already used by" in messages(problems)
+    assert wheres(problems) == ["vms[1].nics[0]"]
 
 
 def test_two_primaries_are_rejected(cfg):
@@ -456,7 +538,9 @@ def test_two_primaries_are_rejected(cfg):
     nic["primary"] = True
     cfg["vms"][0]["nics"][0]["primary"] = True
     cfg["vms"][0]["nics"].append(nic)
-    assert "claim primary" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "claim primary" in messages(problems)
+    assert wheres(problems) == ["vms[0].nics"], "the list, not either nic in it"
 
 
 def test_first_nic_is_primary_by_default(cfg):
@@ -481,7 +565,11 @@ def test_disk_gb_below_the_image_virtual_size_is_rejected(cfg, tmp_path):
     img = tmp_path / "golden.qcow2"
     img.write_bytes(qcow2_header(50 * 1024**3))
     cfg["image"]["source_qcow2"] = str(img)
-    assert "virtual size" in messages(schema.validate(cfg))  # app01 asks for 40
+    problems = errors(schema.validate(cfg))
+    assert "virtual size" in messages(problems)  # app01 asks for 40
+    assert wheres(problems) == ["vms[0].disk_gb"], (
+        "the VM that asked for too little, not the image it backs onto"
+    )
 
 
 def test_disk_gb_at_or_above_it_passes(cfg, tmp_path):
@@ -496,14 +584,18 @@ def test_an_unreadable_image_warns_rather_than_failing(cfg):
     so its absence must not block a config check."""
     problems = schema.validate(cfg)
     assert errors(problems) == []
-    assert any("cannot read" in p.message for p in problems)
+    assert [p.where for p in problems if "cannot read" in p.message] == [
+        "image.source_qcow2"
+    ]
 
 
 def test_a_non_qcow2_image_is_an_error(cfg, tmp_path):
     img = tmp_path / "golden.qcow2"
     img.write_bytes(b"not a qcow2 at all, not even close" + b"\0" * 32)
     cfg["image"]["source_qcow2"] = str(img)
-    assert "bad magic" in messages(schema.validate(cfg))
+    problems = errors(schema.validate(cfg))
+    assert "bad magic" in messages(problems)
+    assert wheres(problems) == ["image.source_qcow2"]
 
 
 # -- #12: the declared digest, actually computed ----------------------------
@@ -529,6 +621,7 @@ def test_a_mismatched_sha256_is_an_error(cfg, tmp_path):
     _, digest = golden(tmp_path, cfg)
     cfg["image"]["sha256"] = "0" * 64
     problems = errors(schema.validate(cfg))
+    assert wheres(problems) == ["image.sha256"]
     assert "not the image the config describes" in messages(problems)
     # The message names both digests, so an operator can tell a corruption from
     # a stale config without computing anything themselves.
@@ -563,18 +656,20 @@ def test_an_unreadable_image_warns_rather_than_failing_the_digest(cfg):
     cfg["image"]["sha256"] = "0" * 64
     problems = schema.validate(cfg)
     assert errors(problems) == []
-    assert any("was not verified" in p.message for p in problems)
+    assert [p.where for p in problems if "was not verified" in p.message] == [
+        "image.sha256"
+    ], "the digest that could not be checked, not the image that could not be read"
 
 
 def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):
     """One flat pool and undecorated names (D16), so a golden image called
     `app01.qcow2` collides with app01's own overlay. libvirt would refuse it
     mid-apply; this refuses it offline, naming the clash."""
-    cfg["image"]["base_volume_name"] = "app01.qcow2"
-    assert "app01.qcow2" in messages(errors(schema.validate(cfg)))
-
-    cfg["image"]["base_volume_name"] = "app02-seed.iso"
-    assert "app02-seed.iso" in messages(errors(schema.validate(cfg)))
+    for name in ("app01.qcow2", "app02-seed.iso"):
+        cfg["image"]["base_volume_name"] = name
+        problems = errors(schema.validate(cfg))
+        assert name in messages(problems)
+        assert wheres(problems) == ["image.base_volume_name"]
 
 
 # -- D25: the MAC derivation is permanent -----------------------------------

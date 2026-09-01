@@ -84,21 +84,21 @@ source = ["orchestrator", "container"]
 
 [tool.coverage.report]
 exclude_also = ["if TYPE_CHECKING:"]
-# Build-time only. `packages()` shells out to `rpm -qa` and `tofu_version()` to
-# `tofu version -json`, and `main()` is the assembly of the two -- none of them
-# can run outside the image, and what actually asserts this file's output is
-# `test_image.test_the_build_manifest_records_what_shipped`, behind the image
-# gate. `container/entrypoint.py` stays measured: it writes ~/.ssh/config from
-# operator-supplied strings and is the half worth a floor.
+# Nothing is omitted, and `container/manifest.py` is why this comment survives
+# the line it used to justify. It was omitted because `packages()` shells out to
+# `rpm -qa`, `tofu_version()` to `tofu version -json`, and `main()` is the
+# assembly of the two -- none of which can run outside the image. That was the
+# right reason to leave it unmeasured and the wrong place to leave it: mutation
+# testing found 127 mutants in the file that no test reached at all, more than the
+# rest of both packages put together.
 #
-# The cost, recorded so this does not read as an oversight: `git_sha()` and
-# `provider()` are unit-tested today and lose their floor along with the rest of
-# the file, and two measured behaviours stay asserted nowhere -- the `(none)`
-# sentinel filter (rpm renders an absent tag as that truthy literal, and the
-# conditional query format was measured not to help on rpm 4.19.1.1) and the
-# `source_rpms` deduplication. The way back in is tests for those two, not a
-# lower `fail_under`.
-omit = ["container/manifest.py"]
+# `tests/test_manifest.py` now fakes `subprocess.run` and drives all three, which
+# closes the two behaviours the old comment recorded as measured and asserted
+# nowhere -- the `(none)` sentinel filter (rpm renders an absent tag as that
+# truthy literal, and the conditional query format was measured not to help on rpm
+# 4.19.1.1) and the `source_rpms` deduplication. What the fake cannot say is what
+# real rpm prints, so `test_image.test_the_build_manifest_records_what_shipped`
+# is still what asserts the shipped file, behind the image gate.
 # `just test` passes `--cov`, and `just test` is inside `just check`, so this is a
 # real gate on every developer run and on CI -- see docs/ci.md.
 #

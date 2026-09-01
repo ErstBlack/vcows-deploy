@@ -66,11 +66,13 @@ def test_a_bad_filename_stem_blames_the_file_not_the_key(tmp_path, registry):
     """The stem *became* the deployment name, so complaining about `deployment`
     names a key the operator never wrote."""
     text = CONFIG.replace("deployment: lab-a\n", "")
+    config = write(tmp_path, text, name="9 bad name.yaml")
     with pytest.raises(ConfigError) as exc:
-        load(write(tmp_path, text, name="9 bad name.yaml"), registry)
+        load(config, registry)
     message = str(exc.value)
     assert "9 bad name" in message and "filename" in message
     assert "[deployment]" not in message
+    assert [p.where for p in exc.value.problems] == [str(config)]
 
 
 def test_an_explicit_deployment_is_still_blamed_on_the_key(tmp_path, registry):
@@ -80,6 +82,7 @@ def test_an_explicit_deployment_is_still_blamed_on_the_key(tmp_path, registry):
     with pytest.raises(ConfigError) as exc:
         load(write(tmp_path, text), registry)
     assert "[deployment]" in str(exc.value)
+    assert [p.where for p in exc.value.problems] == ["deployment"]
 
 
 @pytest.mark.parametrize(
@@ -151,8 +154,9 @@ def test_reports_every_problem_not_just_the_first(tmp_path, registry):
 
 def test_duplicate_vm_names_are_rejected(tmp_path, registry):
     text = CONFIG.replace("  - name: app02", "  - name: app01")
-    with pytest.raises(ConfigError, match="duplicate VM name"):
+    with pytest.raises(ConfigError, match="duplicate VM name") as exc:
         load(write(tmp_path, text), registry)
+    assert [p.where for p in exc.value.problems] == ["vms"]
 
 
 def test_target_must_match_selected_backend(tmp_path, registry):
@@ -204,11 +208,28 @@ def test_unknown_top_level_key_is_rejected(tmp_path, registry):
 
 
 def test_missing_file_is_a_clean_error(tmp_path, registry):
+    missing = tmp_path / "nope.yaml"
     with pytest.raises(ConfigError) as exc:
-        load(tmp_path / "nope.yaml", registry)
+        load(missing, registry)
     assert not isinstance(exc.value.__cause__, KeyError)
+    assert [p.where for p in exc.value.problems] == [str(missing)]
 
 
-def test_non_mapping_config_is_a_clean_error(tmp_path, registry):
-    with pytest.raises(ConfigError, match="must be a mapping"):
-        load(write(tmp_path, "- just\n- a\n- list\n"), registry)
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        ("- just\n- a\n- list\n", "must be a mapping"),
+        ("vms: [\n", "invalid YAML"),
+    ],
+)
+def test_a_file_that_cannot_become_a_config_is_blamed_on_the_file(
+    tmp_path, registry, text, match
+):
+    """`where` is the only part of a problem anything downstream reads -- the CLI
+    prints it and `run.json` records it. A file that will not parse has no key to
+    point at, so it has to point at itself; `None` there would be reported as a
+    problem with nothing at all."""
+    config = write(tmp_path, text)
+    with pytest.raises(ConfigError, match=match) as exc:
+        load(config, registry)
+    assert [p.where for p in exc.value.problems] == [str(config)]

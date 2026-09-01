@@ -211,3 +211,44 @@ def test_registry_is_importable_without_libvirt(no_libvirt, monkeypatch):
 
     assert isinstance(REGISTRY, dict)
     assert "libvirt" not in sys.modules
+
+
+# -- the class the registry holds -------------------------------------------
+
+
+def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch):
+    """`REGISTRY` holds this class, not the modules behind it, so the wiring is
+    the only path core ever takes -- and five of its six delegating methods were
+    reached by no test at all. Every one is a single forwarding line, which is
+    exactly the kind of line a rename breaks silently: the free function keeps its
+    own tests and passes them while the method calls the wrong one, or drops an
+    argument on the way.
+    """
+    from orchestrator.backends.libvirt import LibvirtBackend
+    from orchestrator.backends.libvirt import destroy as destroy_mod
+    from orchestrator.backends.libvirt import preflight as preflight_mod
+    from orchestrator.backends.libvirt import render as render_mod
+    from orchestrator.backends.libvirt import schema as schema_mod
+
+    backend = LibvirtBackend()
+    calls = []
+
+    delegations = [
+        ("validate", schema_mod, "validate", ("cfg",)),
+        ("connect", preflight_mod, "connect", ("cfg",)),
+        ("preflight", preflight_mod, "preflight", ("cfg", "session")),
+        ("destroy", destroy_mod, "destroy", ("cfg", "session", "targets")),
+        ("render", render_mod, "render", ("cfg", "prepared")),
+    ]
+    for _, module, function, _ in delegations:
+        monkeypatch.setattr(
+            module,
+            function,
+            lambda *args, _f=function: calls.append((_f, args)) or f"{_f}() said so",
+        )
+
+    for method, _, function, args in delegations:
+        assert getattr(backend, method)(*args) == f"{function}() said so"
+
+    assert calls == [(function, args) for _, _, function, args in delegations]
+    assert backend.config_schema() is schema_mod.TARGET_SCHEMA

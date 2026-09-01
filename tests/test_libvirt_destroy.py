@@ -117,6 +117,18 @@ def target(dom, disks=None):
     )
 
 
+def wheres(problems) -> list[str]:
+    """What each problem is filed against, in order.
+
+    `where` is the only machine-read field a problem carries: `run.json` records
+    it and `cmd_destroy` prints it beside the message. A host-wide failure files
+    against ``storage``; anything a single target caused files against that
+    target's name, which is what lets an operator tell "this VM was left behind"
+    from "nothing on this host could be accounted for".
+    """
+    return [p.where for p in problems]
+
+
 def test_destroy_precedes_undefine():
     """Reversed, `virDomainDeleteConfig` unlinks the persistent XML -- and the
     marker with it -- before flipping the domain transient, leaving a running VM
@@ -155,6 +167,7 @@ def test_a_real_stop_failure_aborts_that_domain_and_is_fatal():
         d.destroy({}, conn, [target(dom)])
     assert "could not stop" in str(caught.value)
     assert "undefine" not in " ".join(dom.log)
+    assert wheres(caught.value.outcome.problems) == ["app01"]
 
 
 def test_a_domain_already_gone_still_has_its_disks_collected():
@@ -208,6 +221,7 @@ def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
     assert len(said) == 2
     for path in ("/pool/app01.qcow2", "/pool/app01-seed.iso"):
         assert any(path in m and "name alone" in m for m in said)
+    assert wheres(out.problems) == ["app01", "app01"]
 
 
 def test_a_live_target_deletes_its_disks_without_the_name_alone_warning():
@@ -300,8 +314,9 @@ def test_rejected_flags_are_shed_down_to_the_floor_in_one_retry():
     dom = domain(active=False)
     dom.rejects = d.UNDEFINE_TPM
     conn = FakeConnection(domains=[dom])
-    d.destroy({}, conn, [target(dom)])
+    outcome = d.destroy({}, conn, [target(dom)])
     assert dom.log == [f"undefine:{FULL}", f"undefine:{d.FLOOR}"]
+    assert wheres(outcome.problems) == ["app01"]
 
 
 def test_the_retry_never_shed_nvram():
@@ -334,9 +349,10 @@ def test_a_non_flag_undefine_failure_is_not_retried():
 
     dom.undefineFlags = refuse
     conn = FakeConnection(domains=[dom])
-    with pytest.raises(d.DestroyError):
+    with pytest.raises(d.DestroyError) as caught:
         d.destroy({}, conn, [target(dom)])
     assert dom.log == ["undefine"]
+    assert wheres(caught.value.outcome.problems) == ["app01"]
 
 
 # -- storage ---------------------------------------------------------------
@@ -381,6 +397,7 @@ def test_an_inactive_pool_holding_a_targets_disk_is_fatal():
         for p in outcome.problems
         if p.fatal
     ), "the pool and the disk it holds are both named"
+    assert wheres(outcome.problems) == ["storage"]
     assert "undefine" in " ".join(dom.log), "the domain is still torn down"
     assert "/pool/app01.qcow2" in outcome.skipped
     assert pool.deleted == []
@@ -443,6 +460,7 @@ def test_a_domain_whose_marker_changed_since_preflight_is_left_alone():
     assert "marker changed" in str(caught.value)
     assert dom.log == [], "neither stopped nor undefined"
     assert pool.deleted == []
+    assert wheres(caught.value.outcome.problems) == ["app01"]
 
 
 def test_a_vanished_targets_disk_claimed_by_another_domain_is_left_alone():
@@ -464,6 +482,7 @@ def test_a_vanished_targets_disk_claimed_by_another_domain_is_left_alone():
 
     assert "claimed by another domain" in str(caught.value)
     assert pool.deleted == []
+    assert wheres(caught.value.outcome.problems) == ["app01"]
 
 
 def test_a_recorded_path_outside_this_vms_two_names_is_not_deleted():
@@ -478,6 +497,60 @@ def test_a_recorded_path_outside_this_vms_two_names_is_not_deleted():
         d.destroy({}, conn, [target(dom)])
 
     assert "not one of the names this VM owns" in str(caught.value)
+    assert pool.deleted == []
+    assert wheres(caught.value.outcome.problems) == ["app01"]
+
+
+def test_a_pool_that_will_not_refresh_is_said_rather_than_trusted():
+    """A warning and not a refusal: the pool may hold nothing of ours, and the
+    paths that do resolve still have to be deleted. But an unrefreshed pool is
+    exactly where a file that is still there resolves as already gone, so the one
+    thing this must not do is stay quiet."""
+    pool = FakePool("images", {"app01.qcow2": ""})
+    pool.refresh_error = lv_error(1, "internal error")
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    conn = FakeConnection(domains=[dom], pools=[pool])
+
+    outcome = d.destroy({}, conn, [target(dom)])
+
+    assert [p.severity for p in outcome.problems] == [Severity.WARNING]
+    assert wheres(outcome.problems) == ["storage"]
+    assert "undefine" in " ".join(dom.log), "the teardown still ran"
+
+
+def test_a_host_that_will_not_list_its_domains_tears_nothing_down():
+    """`claimed` is what stops a recorded path being unlinked out from under
+    another domain. Not knowing the answer is not the same as an empty set, and
+    the difference is somebody else's running VM."""
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+    conn.domains_error = lv_error(1, "internal error")
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+
+    assert wheres(caught.value.outcome.problems) == ["storage"]
+    assert dom.log == [], "nothing was torn down"
+    assert pool.deleted == []
+
+
+def test_a_target_that_cannot_be_re_read_is_left_alone():
+    """The live document is what the delete is taken against. A domain that will
+    not describe itself leaves the preflight snapshot as the only evidence, and
+    that is the weaker case the vanished branch exists to handle -- not a licence
+    to fall back to it while the domain is right there."""
+    dom = domain(active=False, disks=["/pool/app01.qcow2"])
+    snapshot = target(dom)
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[dom], pools=[pool])
+    dom.xml_error = lv_error(1, "internal error")
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [snapshot])
+
+    assert wheres(caught.value.outcome.problems) == ["app01"]
+    assert dom.log == [], "neither stopped nor undefined"
     assert pool.deleted == []
 
 
@@ -599,6 +672,7 @@ def test_a_host_that_will_not_state_its_version_stops_the_teardown():
 
     assert dom.log == [], "nothing was torn down"
     assert any(p.fatal for p in caught.value.outcome.problems)
+    assert wheres(caught.value.outcome.problems) == ["storage"]
 
 
 def test_a_host_that_will_not_list_its_pools_is_fatal_rather_than_a_traceback():
@@ -618,6 +692,7 @@ def test_a_host_that_will_not_list_its_pools_is_fatal_rather_than_a_traceback():
     outcome = caught.value.outcome
     assert any(p.fatal for p in outcome.problems)
     assert "/pool/app01.qcow2" in outcome.skipped
+    assert wheres(outcome.problems) == ["storage"]
 
 
 def test_one_pool_that_cannot_be_interrogated_does_not_stop_the_others():
@@ -636,6 +711,7 @@ def test_one_pool_that_cannot_be_interrogated_does_not_stop_the_others():
     assert good.refreshed == 1
     assert good.deleted == ["app01.qcow2"], "the disk it could account for is gone"
     assert any(p.fatal for p in caught.value.outcome.problems)
+    assert wheres(caught.value.outcome.problems) == ["storage"]
 
 
 def test_an_inactive_pool_that_will_not_describe_itself_is_not_read_as_empty():
@@ -652,6 +728,7 @@ def test_an_inactive_pool_that_will_not_describe_itself_is_not_read_as_empty():
         d.destroy({}, conn, [target(dom)])
 
     assert any("images" in p.message for p in caught.value.outcome.problems if p.fatal)
+    assert wheres(caught.value.outcome.problems) == ["storage"]
 
 
 def test_a_domain_whose_disks_could_not_be_read_narrows_the_guard_out_loud():
@@ -669,3 +746,4 @@ def test_a_domain_whose_disks_could_not_be_read_narrows_the_guard_out_loud():
     assert [p.severity for p in outcome.problems] == [Severity.WARNING]
     assert "other" in outcome.problems[0].message
     assert pool.deleted == ["app01.qcow2"], "reported, not refused"
+    assert wheres(outcome.problems) == ["storage"]
