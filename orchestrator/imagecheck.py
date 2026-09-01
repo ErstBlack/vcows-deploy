@@ -14,9 +14,12 @@ would reorder every existing message for no gain.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from . import qcow2
 from .problems import Problem
+
+log = logging.getLogger(__name__)
 
 
 def check_image_digest(cfg: dict) -> list[Problem]:
@@ -99,6 +102,10 @@ def check_disk_capacity(cfg: dict) -> list[Problem]:
         ]
     except qcow2.NotAQcow2 as exc:
         return [Problem.error(str(exc), where="image.source_qcow2")]
+
+    # The success path returns no Problem, so this line is the only evidence in
+    # the log that `validate` opened the image at all (#163).
+    log.debug("%s: virtual size %.1f GiB", source, virtual / 1024**3)
 
     problems = []
     for i, vm in enumerate(cfg["vms"]):
