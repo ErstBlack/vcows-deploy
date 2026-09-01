@@ -188,8 +188,12 @@ class Prepared:
 class Inventory:
     """The handoff contract. Minimal, and **documented as unstable**.
 
-    Nothing consumes it at v0.1 -- the seam is free. Formalise the contract when
-    something actually reads it, and add ``inventory_version`` at that point.
+    Core does consume it: ``cli._deploy`` compares ``vms`` against the set it
+    asked for, refuses the deploy when the two disagree, and writes
+    ``inventory.json`` from it. What has no consumer is the *file* -- nothing
+    downstream of vcows reads it, and no schema is published for it. That is what
+    keeps the contract free to change, and why ``inventory_version`` is deferred
+    until something outside this repo depends on the shape.
     """
 
     vms: dict[str, dict[str, Any]]
@@ -246,7 +250,17 @@ class Decision:
     vm_name: str
     action: Action
     reason: str
+
     existing: Existing | None = None
+    """The VM this decision is *about*, when there is one. ``None`` for a create.
+
+    The machine-readable half of ``reason``. Every branch that sets this also
+    names the VM in prose, but only two of them name its id there -- so for a
+    SKIP, and for the refusal of a name held by another deployment, the
+    hypervisor UUID was in this field and in no artifact the site ships back.
+    ``cli._record`` reads it into ``run.json``; a consumer that had to regex it
+    out of ``reason`` was the alternative.
+    """
 
 
 def decide(

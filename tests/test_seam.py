@@ -174,11 +174,23 @@ def test_prepare_and_render_work_from_data_alone(no_libvirt, cfg, tmp_path):
     assert backend.sessions == [], "prepare must not have opened a connection"
 
 
-def test_core_modules_do_not_import_libvirt(no_libvirt):
-    """Importing core from a cold start must not reach for libvirt."""
+def test_core_modules_do_not_import_libvirt(no_libvirt, monkeypatch):
+    """Importing core from a cold start must not reach for libvirt.
+
+    `delitem`, not `del`: the re-import below builds a *second* set of
+    `orchestrator` classes, and a plain `del` leaves them in `sys.modules` for
+    good. Every test module already imported holds the first set, so anything
+    that imports `orchestrator` afterwards compares members of two classes that
+    print identically -- `Severity.WARNING != Severity.WARNING`. Invisible under
+    one `pytest` run, which imports each test module once and runs this file
+    late; fatal under anything that runs the suite twice in one interpreter.
+    `mutmut` does exactly that, three times, before it forks a single mutant.
+    monkeypatch's teardown puts the originals back. The `no_libvirt` fixture
+    above uses `delitem` for the same reason.
+    """
     for mod in list(sys.modules):
         if mod.startswith("orchestrator"):
-            del sys.modules[mod]
+            monkeypatch.delitem(sys.modules, mod)
 
     for mod in ("backends.base", "config", "marker", "qcow2"):
         importlib.import_module(f"orchestrator.{mod}")
@@ -186,11 +198,14 @@ def test_core_modules_do_not_import_libvirt(no_libvirt):
     assert "libvirt" not in sys.modules
 
 
-def test_registry_is_importable_without_libvirt(no_libvirt):
+def test_registry_is_importable_without_libvirt(no_libvirt, monkeypatch):
     """The registry is what a real run touches first. If importing it drags in a
-    hypervisor library, nothing above matters."""
+    hypervisor library, nothing above matters.
+
+    `delitem` for the reason the test above gives.
+    """
     for mod in [m for m in sys.modules if m.startswith("orchestrator")]:
-        del sys.modules[mod]
+        monkeypatch.delitem(sys.modules, mod)
 
     from orchestrator.backends import REGISTRY
 

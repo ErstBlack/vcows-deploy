@@ -138,7 +138,7 @@ surface than the defect warrants is itself a problem.
 | | |
 |---|---|
 | `just dev-env` | The only correct venv |
-| `just lint` | Six gates: ruff check, ruff format, hadolint, tofu fmt, shellcheck, workflows |
+| `just lint` | Seven gates: ruff check, ruff format, hadolint, tofu fmt, shellcheck, workflows, gitleaks |
 | `just typecheck` | `ty check` |
 | `just check` | lint, typecheck, test |
 | `just verify-provider` | Catches a half-finished provider bump |

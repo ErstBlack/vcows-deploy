@@ -1,0 +1,8 @@
+{
+  "generated": "2026-09-01T07:09:39Z",
+  "note": "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body.",
+  "total": 3835,
+  "killed": 2726,
+  "survived": 964,
+  "no_tests": 145
+}

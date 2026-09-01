@@ -256,6 +256,26 @@ class _Run:
     extra: dict = field(default_factory=dict)
 
 
+def _decision(d: Decision) -> dict[str, Any]:
+    """One decision, as `run.json` records it.
+
+    ``existing`` is present only when there is one -- a create decided against
+    nothing, and an empty key would read as "there was a VM and it had no name".
+    It carries the identity `reason` states in English, so a reader does not have
+    to parse a sentence to find out which domain was skipped: for a SKIP and for
+    the "belongs to another deployment" refusal, the id appears nowhere else in
+    the run directory at all.
+    """
+    record: dict[str, Any] = {
+        "vm": d.vm_name,
+        "action": d.action.value,
+        "reason": d.reason,
+    }
+    if d.existing is not None:
+        record["existing"] = {"name": d.existing.name, "id": d.existing.id}
+    return record
+
+
 def _record(run: _Run, outcome: str, **extra: Any) -> None:
     """``run.json``: what was asked, what was decided, what happened.
 
@@ -283,10 +303,7 @@ def _record(run: _Run, outcome: str, **extra: Any) -> None:
             "started": run.started,
             "finished": _timestamp(),
             "outcome": outcome,
-            "decisions": [
-                {"vm": d.vm_name, "action": d.action.value, "reason": d.reason}
-                for d in run.decisions
-            ],
+            "decisions": [_decision(d) for d in run.decisions],
             **run.extra,
             **extra,
         },
@@ -672,7 +689,10 @@ def _destroy(
     # `tofu destroy` for, and it is indistinguishable from success unless this
     # loop runs.
     for name in out.skipped:
-        log.info("%s skipped, not removed by this run", f"{name:<20}")
+        # Through `_row`, like every other report line. This site hand-cut the
+        # name column to `{:<20}` -- the literal `_NAME_W` exists to stop, and the
+        # one the comment on `_row` was written about missed.
+        log.info("%s", _row(name, "skipped", "not removed by this run"))
     for problem in out.problems:
         _problem(problem)
 

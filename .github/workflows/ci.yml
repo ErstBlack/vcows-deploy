@@ -85,6 +85,55 @@ jobs:
       - run: just verify-provider
       - run: just test-tofu
 
+  # Mutation testing, which asks the question coverage cannot: the suite executes
+  # this line, but would it notice if the line were wrong? `just check` already
+  # enforces a 90% coverage floor, and 964 of these mutants sit in code that floor
+  # calls covered.
+  #
+  # It is a real gate, not a report. `mutmut run` exits 0 whatever it finds --
+  # measured: 3835 mutants, 964 surviving, exit 0 -- so `scripts/mutants.sh`
+  # compares against docs/mutation-baseline.json and fails only when a number
+  # rose. Red means this change made the suite blinder, which is a question about
+  # the change and belongs on the pull request rather than in a monthly job
+  # nobody opens.
+  mutation:
+    runs-on: ubuntu-latest
+    # Measured on 16 cores: 3835 mutants in 156s. A hosted runner has 4, so a cold
+    # cache is roughly four times that plus the bootstrap. The ceiling is sized
+    # against a wedge rather than a slow run, like `check`'s.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
+      # mutmut keeps its verdicts in `mutants/` and re-tests only the mutants
+      # whose function hash changed, so a restored cache is the difference
+      # between re-running all 3835 and re-running the handful this PR touched.
+      #
+      # Keyed on the commit and restored by prefix, unlike the mirror cache
+      # above: there the danger is restoring a *stale* artifact and trusting it,
+      # while here a stale entry is only a verdict mutmut will recompute -- it
+      # hashes each function and resets anything that moved. `pyproject.toml`
+      # and `uv.lock` are in the key because mutmut's own change detection
+      # already watches them, so a dependency bump should start from a clean
+      # slate rather than inherit verdicts reached under the old one.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: mutants
+          key: mutants-${{ hashFiles('pyproject.toml', 'uv.lock') }}-${{ github.sha }}
+          restore-keys: mutants-${{ hashFiles('pyproject.toml', 'uv.lock') }}-
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just dev-env
+      - run: just mutants
+
   # The end-to-end gate. `tofu` above reads the module through
   # `mock_provider "libvirt" {}`; this one applies it to a libvirtd installed on
   # the runner, and asserts against `virsh dumpxml` and `qemu-img info` rather

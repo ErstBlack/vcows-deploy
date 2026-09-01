@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 
+from .render import seed_name
 from .schema import mac_of, primary_index
 
 #: Both cloud-init and libvirt find a NoCloud datasource by this volume label.
@@ -158,10 +159,17 @@ def build_all(cfg: dict, workdir: Path) -> dict[str, str]:
 
     The caller passes a config whose ``vms`` is already narrowed to what will be
     created, so this never builds a seed for a VM that already exists.
+
+    The filename comes from ``render.seed_name`` rather than being spelled again
+    here. It is the same string the module uploads as a volume and the same one
+    ``destroy._deletable`` checks a path against before unlinking it, so a third
+    copy of the rule is a third place for it to drift -- and the drift would be
+    silent on this side, since a seed built under one name and looked for under
+    another is just a volume nothing claims.
     """
     return {
         vm["name"]: str(
-            build_seed_iso(seed_files(vm, cfg), workdir / f"{vm['name']}-seed.iso")
+            build_seed_iso(seed_files(vm, cfg), workdir / seed_name(vm["name"]))
         )
         for vm in cfg["vms"]
     }

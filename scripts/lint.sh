@@ -4,7 +4,7 @@
 #   scripts/lint.sh          check
 #   scripts/lint.sh --fix    apply what ruff can fix, then check the rest
 #
-# **Runs all six and reports all six.** `just`'s recipe dependencies are
+# **Runs all seven and reports all seven.** `just`'s recipe dependencies are
 # fail-fast, which is right for a pipeline and wrong for a developer: someone who
 # has just touched Python, a shell script and the Containerfile wants three
 # verdicts, not the first one. So this accumulates rather than &&-chaining, and
@@ -197,6 +197,29 @@ main() {
                                  -o avoid-nullary-conditions \
                                  "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
     gate "workflows carry no logic" workflows_carry_no_logic
+    # The secret scan, and the only gate here that is about the repository's
+    # contents rather than its code. `.pre-commit-config.yaml` has carried a
+    # gitleaks hook since early on, but `pre-commit` is in no recipe, no script
+    # and neither pipeline -- README calls installing it "Optionally" -- so it
+    # only ever fired for a developer who had run `pre-commit install`, and it
+    # scans the staged diff rather than the tree. This is the whole tree, on
+    # every run, in CI.
+    #
+    # `dir`, not `detect`: 8.30 removed `detect` and split it into `dir` (a
+    # filesystem tree) and `git` (history). The tree is the right recurring
+    # subject -- history is a one-time question, already answered by
+    # `git log --all --diff-filter=A`, and re-walking it every lint would cost
+    # more each run than it could ever find twice.
+    #
+    # Measured at 6.7s over 39.89 MB: it honours .gitignore, so `.venv/`,
+    # `.tools/` (441 MB of provider mirror) and `mutants/` are not walked. That
+    # makes it the slowest gate here and still cheap enough to keep in `check`.
+    #
+    # `--redact` because a finding is printed by CI. The point is to say a secret
+    # is present and where, never to copy it into a build log that is more widely
+    # readable than the file was.
+    gate "gitleaks"          gitleaks dir "$REPO" -c "$REPO/.gitleaks.toml" \
+                                 --no-banner --redact
 
     if [ ${#failed[@]} -gt 0 ]; then
         die "${#failed[@]} gate(s) failed: ${failed[*]}"

@@ -50,6 +50,18 @@ dev = [
     "pre-commit>=4",
     "pytest>=8",
     "pytest-cov>=6",
+    # Shuffles the suite every run, so an ordering dependency fails somebody's
+    # build rather than waiting to fail a release. It found one immediately:
+    # `tests/test_seam.py` deleted `orchestrator*` from `sys.modules` without
+    # restoring it, which left two copies of every core class loaded and made
+    # `Severity.WARNING != Severity.WARNING` for anything that ran afterwards.
+    # That is also why `mutmut` could never finish its clean baseline.
+    #
+    # mutmut passes `-p no:randomly` on every pytest invocation it makes, so
+    # mutant runs stay in declaration order and are still comparable to each
+    # other. Pass the same flag by hand when bisecting a failure that only
+    # appears under one seed.
+    "pytest-randomly>=4.1.0",
     "ruff>=0.16",
     # Exact, not a bound. ty is 0.0.x and its own documentation says breaking
     # changes may occur between any two versions, so `~=0.0.75` would still admit
@@ -68,14 +80,35 @@ include = ["orchestrator*"]
 
 [tool.coverage.run]
 branch = true
-source = ["orchestrator"]
+source = ["orchestrator", "container"]
 
 [tool.coverage.report]
 exclude_also = ["if TYPE_CHECKING:"]
-# Measured at 96% with every ungated test running (2026-08-30). The floor is set
-# below that on purpose: the figure depends on which gates ran, and a run without
-# `tofu` on PATH legitimately covers less of tofu.py. A floor that assumed the
+# Build-time only. `packages()` shells out to `rpm -qa` and `tofu_version()` to
+# `tofu version -json`, and `main()` is the assembly of the two -- none of them
+# can run outside the image, and what actually asserts this file's output is
+# `test_image.test_the_build_manifest_records_what_shipped`, behind the image
+# gate. `container/entrypoint.py` stays measured: it writes ~/.ssh/config from
+# operator-supplied strings and is the half worth a floor.
+#
+# The cost, recorded so this does not read as an oversight: `git_sha()` and
+# `provider()` are unit-tested today and lose their floor along with the rest of
+# the file, and two measured behaviours stay asserted nowhere -- the `(none)`
+# sentinel filter (rpm renders an absent tag as that truthy literal, and the
+# conditional query format was measured not to help on rpm 4.19.1.1) and the
+# `source_rpms` deduplication. The way back in is tests for those two, not a
+# lower `fail_under`.
+omit = ["container/manifest.py"]
+# `just test` passes `--cov`, and `just test` is inside `just check`, so this is a
+# real gate on every developer run and on CI -- see docs/ci.md.
+#
+# The floor sits below the measured figure on purpose, because the figure depends
+# on which gates ran: CI's `check` job has no provider mirror, so the tests behind
+# `needs_tofu` skip there and legitimately cover less. A floor that assumed the
 # best case would fail honest runs, which is how a coverage gate gets turned off.
+# What makes 90 safe rather than vacuous is that the mirror-gated tests are the
+# HCL, rig and image ones: `tests/test_tofu_driver.py`, which is what actually
+# covers `tofu.py`, is ungated and runs everywhere.
 fail_under = 90
 
 [tool.mutmut]
@@ -86,33 +119,49 @@ fail_under = 90
 # tree, and tests/test_entrypoint.py imports `container`, so leaving it out makes
 # collection fail rather than merely skipping it.
 source_paths = ["orchestrator", "container"]
-# mutmut runs the suite from a copied tree containing only source_paths and
-# tests/. `docs/` comes along because the manifest and module tests read the
-# committed provider lock and the pinned provider schema from there -- without it
-# they fail inside every mutant run, and mutmut reports that as "failed to
-# collect stats" rather than as a missing file.
+# mutmut runs the suite from a copy of the tree at `mutants/`, and only what it
+# copies exists there. It appends `tests/`, `pyproject.toml` and the lock files to
+# this list itself, so none of those need naming. These two do: the manifest and
+# module tests read the committed provider lock and the pinned provider schema out
+# of `docs/`, and without them they fail inside every run, which mutmut reports as
+# "failed to collect stats" rather than as a missing file.
+#
+# Still not copied, and so still a trap: `scripts/`, `licenses/`, `justfile` and
+# `.tools/`. Nothing reads them unless a run sets `VCOWS_GATES`, which is why this
+# has never bitten -- `conftest.MIRROR` simply resolves under `mutants/`, is
+# absent, and `needs_tofu` degrades to a skip.
 also_copy = ["docs", "Containerfile"]
+# `tests/test_scripts.py` runs `scripts/*.sh` under bash and symlinks the repo's
+# `.venv` into a scratch tree, and neither `scripts/` nor `.venv` exists under
+# `mutants/`. Copying them is the wrong fix: mutmut mutates Python inside
+# `source_paths`, that file imports none of it, and so it can kill no mutant --
+# running it once per mutant would buy nothing and cost a `ruff` invocation each
+# time. Deselected rather than left to fail.
+pytest_add_cli_args = ["--deselect", "tests/test_scripts.py"]
 
-# **`mutmut run` does not currently complete on this repo.** It gets past mutant
-# collection with the settings above and then fails its own clean-baseline run:
+# **Why this used to fail, and what fixed it.** `mutmut run` got past mutant
+# collection and then died in its own clean-baseline run with
 #
 #   assert [<Severity.WARNING: 'warning'>] == [<Severity.WARNING: 'warning'>]
-#   At index 0 diff: <Severity.WARNING: 'warning'> != <Severity.WARNING: 'warning'>
 #
-# Two enum members that print identically and compare unequal means two copies of
-# `orchestrator.backends.base` are loaded at once. The traceback names the
-# *original* tests/test_config.py rather than the copy under mutants/, which is
-# the tell: mutmut is running the repo's tests against a mutated tree while the
-# unmutated package is still importable beside it.
+# -- two enum members that print identically and compare unequal, which means two
+# copies of `orchestrator.backends.base` were loaded at once.
 #
-# The obvious suspect -- `uv pip install -e .` keeping the repo copy importable
-# through its .pth finder -- was tested and **is not the cause**: uninstalling the
-# editable package and rerunning fails identically. So this needs someone to work
-# out what mutmut 3.7 actually puts on sys.path, not another guess.
+# It was not sys.path and it was not the editable install; both were investigated
+# and neither is the cause. mutmut calls `pytest.main()` **in-process, three times
+# in the parent process** before it forks anything (stats, clean baseline, forced
+# fail). `tests/test_seam.py` deleted every `orchestrator*` entry from
+# `sys.modules` with a plain `del` and re-imported, so the first of those runs left
+# a second set of core classes behind. The second run did not re-execute test
+# modules already imported, so `tests/fake_backend.py` still held the first
+# `Severity` while `tests/test_config.py`'s in-body import got the second.
 #
-# Because of this, no CI pipeline calls `just mutants`. A scheduled job that
-# always fails is the same defect as one that always passes, and this repo has a
-# name for that one already.
+# The fix is in that test file, not here: `monkeypatch.delitem`, so teardown puts
+# the originals back. It was a real ordering defect rather than a mutmut quirk --
+# `pytest-randomly` trips it too, which is how it stopped being theoretical.
+#
+# No CI pipeline calls `just mutants`, and that is unchanged: it is a long run
+# whose value is a report to read, not a pass/fail a pipeline should block on.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
