@@ -34,7 +34,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from ..base import Existing, Outcome, Problem
+from ...problems import Problem
+from ..base import Existing, Outcome
 from .errors import (
     ERR_INVALID_ARG,
     ERR_NO_DOMAIN,

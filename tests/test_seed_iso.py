@@ -16,8 +16,8 @@ import subprocess
 import pytest
 import yaml
 
-from orchestrator.backends.libvirt import prepare
-from orchestrator.backends.libvirt.schema import derive_mac
+from orchestrator import cloudinit
+from orchestrator.cloudinit import derive_mac
 from tests.conftest import require
 
 try:
@@ -28,8 +28,8 @@ except ImportError:  # pragma: no cover -- the gate reports it
 
 @pytest.fixture
 def iso(cfg, tmp_path):
-    files = prepare.seed_files(cfg["vms"][0], cfg)
-    return prepare.build_seed_iso(files, tmp_path / "app01-seed.iso")
+    files = cloudinit.seed_files(cfg["vms"][0], cfg)
+    return cloudinit.build_seed_iso(files, tmp_path / "app01-seed.iso")
 
 
 def read_via_pycdlib(path, name: str) -> bytes:
@@ -68,7 +68,7 @@ def test_all_three_files_are_present_to_xorriso(iso):
 
 
 def test_iso9660_identifiers_conform(iso):
-    assert prepare.iso_path("network-config") == "/NETWORK_CONFIG.;1"
+    assert cloudinit.iso_path("network-config") == "/NETWORK_CONFIG.;1"
     r = pycdlib.PyCdlib()
     r.open(str(iso))
     try:
@@ -88,9 +88,9 @@ def test_two_builds_of_one_input_carry_the_same_files(cfg, tmp_path):
     passed only because both builds usually landed in one clock tick. What the
     stated purpose actually needs is the three files, and those are stable.
     """
-    files = prepare.seed_files(cfg["vms"][0], cfg)
-    a = prepare.build_seed_iso(files, tmp_path / "a.iso")
-    b = prepare.build_seed_iso(files, tmp_path / "b.iso")
+    files = cloudinit.seed_files(cfg["vms"][0], cfg)
+    a = cloudinit.build_seed_iso(files, tmp_path / "a.iso")
+    b = cloudinit.build_seed_iso(files, tmp_path / "b.iso")
     for name in ("user-data", "meta-data", "network-config"):
         assert read_via_pycdlib(a, name) == read_via_pycdlib(b, name) == files[name]
 
@@ -112,14 +112,14 @@ def test_two_deployments_do_not_share_one_seed(cfg, tmp_path):
     """Two configs differing only in `deployment` must not produce identical
     media. Both the instance-id and the MAC carry the deployment, so a guest
     cannot be handed another deployment's identity."""
-    a = prepare.seed_files(cfg["vms"][0], cfg)
+    a = cloudinit.seed_files(cfg["vms"][0], cfg)
     cfg["deployment"] = "lab-b"
-    b = prepare.seed_files(cfg["vms"][0], cfg)
+    b = cloudinit.seed_files(cfg["vms"][0], cfg)
     assert a["meta-data"] != b["meta-data"]
     assert a["network-config"] != b["network-config"]
     assert (
-        prepare.build_seed_iso(a, tmp_path / "a.iso").read_bytes()
-        != prepare.build_seed_iso(b, tmp_path / "b.iso").read_bytes()
+        cloudinit.build_seed_iso(a, tmp_path / "a.iso").read_bytes()
+        != cloudinit.build_seed_iso(b, tmp_path / "b.iso").read_bytes()
     )
 
 
@@ -149,20 +149,20 @@ def test_a_mac_is_quoted_not_read_as_a_number(iso):
 
 def test_user_data_is_passed_through_verbatim(cfg, tmp_path):
     """vcows owns meta-data and network-config; this half is not interpreted."""
-    files = prepare.seed_files(cfg["vms"][1], cfg)
+    files = cloudinit.seed_files(cfg["vms"][1], cfg)
     assert files["user-data"] == cfg["vms"][1]["user_data"].encode()
-    iso = prepare.build_seed_iso(files, tmp_path / "app02-seed.iso")
+    iso = cloudinit.build_seed_iso(files, tmp_path / "app02-seed.iso")
     assert read_via_pycdlib(iso, "user-data") == cfg["vms"][1]["user_data"].encode()
 
 
 def test_user_data_defaults_to_just_the_hostname(cfg):
-    files = prepare.seed_files(cfg["vms"][0], cfg)
+    files = cloudinit.seed_files(cfg["vms"][0], cfg)
     assert files["user-data"] == b"#cloud-config\nhostname: app01\n"
 
 
 def test_nameservers_are_omitted_when_unset(cfg):
     del cfg["vms"][0]["nics"][0]["nameservers"]
-    net = yaml.safe_load(prepare.seed_files(cfg["vms"][0], cfg)["network-config"])
+    net = yaml.safe_load(cloudinit.seed_files(cfg["vms"][0], cfg)["network-config"])
     assert "nameservers" not in net["ethernets"]["nic0"]
 
 
@@ -170,7 +170,7 @@ def test_multiple_nics_each_get_their_own_match(cfg):
     second = dict(cfg["vms"][0]["nics"][0])
     second["ip_cidr"] = "192.168.122.70/24"
     cfg["vms"][0]["nics"].append(second)
-    net = yaml.safe_load(prepare.seed_files(cfg["vms"][0], cfg)["network-config"])
+    net = yaml.safe_load(cloudinit.seed_files(cfg["vms"][0], cfg)["network-config"])
     assert set(net["ethernets"]) == {"nic0", "nic1"}
     macs = {k: v["match"]["macaddress"] for k, v in net["ethernets"].items()}
     assert macs["nic0"] != macs["nic1"]
@@ -184,7 +184,7 @@ def two_nics(cfg, primary=None):
     cfg["vms"][0]["nics"].append(second)
     if primary is not None:
         cfg["vms"][0]["nics"][primary]["primary"] = True
-    return yaml.safe_load(prepare.seed_files(cfg["vms"][0], cfg)["network-config"])
+    return yaml.safe_load(cloudinit.seed_files(cfg["vms"][0], cfg)["network-config"])
 
 
 def test_only_the_primary_nic_gets_the_default_route(cfg):
@@ -209,7 +209,7 @@ def test_the_default_route_follows_an_explicit_primary(cfg):
 
 
 def test_build_all_names_one_iso_per_vm(cfg, tmp_path):
-    built = prepare.build_all(cfg, tmp_path)
+    built = cloudinit.build_all(cfg, tmp_path)
     assert set(built) == {"app01", "app02"}
     for name, path in built.items():
         assert path.endswith(f"{name}-seed.iso")

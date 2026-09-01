@@ -23,10 +23,9 @@ from orchestrator.backends.base import (
     Inventory,
     Outcome,
     Prepared,
-    Problem,
-    Severity,
 )
 from orchestrator.marker import Marker
+from orchestrator.problems import Problem, Severity
 
 
 class FakeSession:

@@ -20,15 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
 from ..base import Prepared
-from .schema import (
-    FIRMWARE_DEFAULT,
-    MACHINE_DEFAULT,
-    connection_uri,
-    mac_of,
-    primary_index,
-)
+from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT, connection_uri
 
 # Names are the logical name, undecorated (D16). Maximally predictable for
 # hand-debugging at a site, where an operator has the config and `virsh list` and
@@ -41,10 +36,6 @@ def domain_name(vm_name: str) -> str:
 
 def overlay_name(vm_name: str) -> str:
     return f"{vm_name}.qcow2"
-
-
-def seed_name(vm_name: str) -> str:
-    return f"{vm_name}-seed.iso"
 
 
 def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:

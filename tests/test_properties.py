@@ -24,10 +24,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from orchestrator import qcow2
-from orchestrator.backends.base import Problem
-from orchestrator.backends.libvirt.schema import NAME_PATTERN, _parse_interface
+from orchestrator.backends.libvirt.schema import NAME_PATTERN
+from orchestrator.cloudinit import _parse_interface
 from orchestrator.config import DEPLOYMENT_PATTERN
 from orchestrator.marker import Marker
+from orchestrator.problems import Problem
 
 U64 = st.integers(min_value=0, max_value=2**64 - 1)
 

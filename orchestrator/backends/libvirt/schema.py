@@ -23,20 +23,16 @@ close to unreadable, where a Python check names both fields the operator set.
 
 from __future__ import annotations
 
-import hashlib
-import ipaddress
-import logging
-import os
-import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import jsonschema
 
-from ... import qcow2
-from ...marker import VCOWS_NS
-from ..base import Problem, problems_from
+from ...cloudinit import check_addressing, seed_name
+from ...imagecheck import check_disk_capacity, check_image_digest
+from ...limits import MAX_DISK_GB, MAX_MEMORY_MIB, MAX_VCPUS
+from ...problems import Problem, problems_from
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
 #: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
@@ -55,56 +51,11 @@ MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 #: this is here to refuse.
 SSH_PATH_PATTERN = r"^/[^\s]*\Z"
 
-#: QEMU's OUI. Locally administered, and what every libvirt-generated MAC uses.
-MAC_OUI = (0x52, 0x54, 0x00)
-
 #: Field-level defaults, not a ``defaults`` block. Each is one value used when a
 #: VM omits the key -- there is no resolution step and no merge semantics.
 FIRMWARE_DEFAULT = "efi"
 MACHINE_DEFAULT = "q35"
 
-#: `_ceiling` below is the only thing here that writes. Every other path in this
-#: module returns a `Problem`, which the caller reports.
-log = logging.getLogger(__name__)
-
-
-def _ceiling(name: str, default: int) -> int:
-    """One size ceiling, overrideable from the environment.
-
-    Same shape as ``cli.MANIFEST``: a constant with an environment override, so a
-    site on hardware we have not seen raises the bound from the outside rather
-    than editing a file inside the image. A value that will not parse, or is not
-    positive, is reported and ignored -- taking it silently is the failure mode
-    the reporting work existed to remove.
-
-    This runs at **import**, because the three constants it produces are consumed
-    as literals inside ``VM_SCHEMA`` below. That is why ``orchestrator``
-    configures logging in its own ``__init__`` rather than in ``cli.main`` -- a
-    logger configured in ``main`` would not exist yet here, and this warning
-    would fall through to ``logging.lastResort`` unprefixed.
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value < 1:
-        log.warning(
-            "ignoring %s=%r: not a positive integer. Using %s.", name, raw, default
-        )
-        return default
-    return value
-
-
-#: Sanity ceilings, **not** a supported-configuration claim. They exist to catch
-#: a fat-fingered zero before a run creates volumes for a VM no host can start;
-#: the hypervisor stays the authority on what it will actually serve. Each is
-#: overrideable, and raising one is always safe.
-MAX_VCPUS = _ceiling("VCOWS_MAX_VCPUS", 512)
-MAX_MEMORY_MIB = _ceiling("VCOWS_MAX_MEMORY_MIB", 4 * 1024 * 1024)
-MAX_DISK_GB = _ceiling("VCOWS_MAX_DISK_GB", 64 * 1024)
 
 NIC_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -167,43 +118,6 @@ TARGET_SCHEMA: dict[str, Any] = {
 }
 
 
-def derive_mac(name: str, index: int, deployment: str) -> str:
-    """A deterministic MAC for one VM's Nth NIC.
-
-    cloud-init's ``network-config`` matches an interface by MAC to apply the
-    static address, so the MAC has to be known at render time. Deriving it keeps
-    a single-NIC config to three lines, stays correct for multiple NICs, and
-    regenerates identically with no state file -- the same property, for the same
-    reason, as ``derive_id``.
-
-    The deployment is in the input because two deployments each containing
-    ``app01`` would otherwise derive one MAC. On two hosts bridged to one L2
-    both guests boot, both apply their static address, and both report
-    ``cloud-init status: done``; ``address_conflicts`` only ever looks at one
-    host, so nothing else catches it. **This narrows the collision rather than
-    closing it:** two hosts running the same deployment name still derive the
-    same MAC, and a per-NIC ``mac:`` is the escape.
-
-    **This derivation is permanent.** Changing it renames the interface every
-    running VM's guest configuration is keyed to. ``tests/test_libvirt_schema.py``
-    pins it.
-    """
-    raw = uuid.uuid5(VCOWS_NS, f"{deployment}/{name}#nic{index}").bytes
-    return ":".join(f"{b:02x}" for b in (*MAC_OUI, raw[0], raw[1], raw[2]))
-
-
-def mac_of(vm: dict, index: int, deployment: str) -> str:
-    return vm["nics"][index].get("mac") or derive_mac(vm["name"], index, deployment)
-
-
-def primary_index(vm: dict) -> int:
-    """Which NIC's address represents this VM. First wins unless one says so."""
-    for i, nic in enumerate(vm["nics"]):
-        if nic.get("primary"):
-            return i
-    return 0
-
-
 def connection_uri(target: dict, transport: str = "ssh") -> str:
     """The URI for the client that is about to use it. **The two differ.**
 
@@ -258,8 +172,8 @@ def validate(cfg: dict) -> list[Problem]:
         problems += _check_firmware(vm, where)
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
-    problems += _check_disk_capacity(cfg)
-    problems += _check_image_digest(cfg)
+    problems += check_disk_capacity(cfg)
+    problems += check_image_digest(cfg)
     problems += _check_volume_names(cfg)
     return problems
 
@@ -304,64 +218,6 @@ def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
     )
 
 
-def _check_image_digest(cfg: dict) -> list[Problem]:
-    """The declared ``image.sha256``, actually computed.
-
-    The field is schema-validated (``config.py``'s ``sha256`` pattern, under
-    ``additionalProperties: False``) and was never checked, so a corrupted or
-    substituted golden image deployed with no signal. A pattern that only ever
-    proved the string was 64 hex characters reads as enforcement and is not.
-
-    Optional, and the cost is why it stays optional: this reads the whole image.
-    Measured through this function -- 424 MiB in 2.46 s, ~172 MiB/s -- so roughly
-    12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
-    page cache does not help; with no ``sha256`` declared the call returns in
-    8 microseconds. ``config.load`` runs the offline checks for every verb
-    (``cmd_validate``, ``cmd_preflight``, ``cmd_deploy``, ``cmd_destroy``), so
-    ``destroy`` pays it even though it reads only ``cfg["backend"]`` and
-    ``cfg["deployment"]`` and never touches ``cfg["image"]``.
-
-    That waste is accepted rather than engineered around. An operator who sets
-    the field has asked for the check, and the alternative -- verifying in
-    ``preflight`` -- puts an offline check in the connected phase, so
-    ``vcows validate`` would keep reporting a corrupt image as valid. That is the
-    defect this closes, not a shape to preserve.
-
-    Unreadable is a warning, for the same reason ``_check_disk_capacity`` says:
-    ``validate`` is the offline phase and the golden image is bind-mounted at run
-    time.
-    """
-    declared = cfg["image"].get("sha256")
-    if declared is None:
-        return []
-
-    source = cfg["image"]["source_qcow2"]
-    try:
-        with open(source, "rb") as fh:
-            # `file_digest` rather than a read loop: it chunks internally, so a
-            # multi-GB image never lands in memory.
-            actual = hashlib.file_digest(fh, "sha256").hexdigest()
-    except OSError as exc:
-        return [
-            Problem.warning(
-                f"cannot read {source} to check its sha256 ({exc.strerror}); "
-                f"the declared digest was not verified",
-                where="image.sha256",
-            )
-        ]
-
-    # The schema pattern admits either case, so both sides are compared in one.
-    if actual != declared.lower():
-        return [
-            Problem.error(
-                f"{source} has sha256 {actual}, but the config declares "
-                f"{declared.lower()}; this is not the image the config describes",
-                where="image.sha256",
-            )
-        ]
-    return []
-
-
 def _check_volume_names(cfg: dict) -> list[Problem]:
     """The golden image and a per-VM volume must not want the same name.
 
@@ -369,11 +225,11 @@ def _check_volume_names(cfg: dict) -> list[Problem]:
     ``app01.qcow2`` collides with app01's own overlay. libvirt refuses the
     duplicate itself, but mid-apply, after the run has created other objects.
 
-    ``render`` imports this module, so this import is function-local -- the
-    same reason ``prepare.seed_files`` and ``preflight.walk`` import inside
-    their functions.
+    ``render`` imports this module, so the ``overlay_name`` import is
+    function-local -- the same reason ``preflight.walk`` imports inside its
+    function. ``seed_name`` is core and needs no such dance.
     """
-    from .render import overlay_name, seed_name
+    from .render import overlay_name
 
     base = cfg["image"]["base_volume_name"]
     return [
@@ -550,19 +406,16 @@ def _check_nics(
     seen_macs: dict[str, str],
     deployment: str,
 ) -> list[Problem]:
-    problems: list[Problem] = []
-    primaries = [i for i, n in enumerate(vm["nics"]) if n.get("primary")]
-    if len(primaries) > 1:
-        problems.append(
-            Problem.error(
-                f"{len(primaries)} NICs claim primary: true (indices {primaries}); "
-                f"at most one may. Omit it entirely and the first NIC is primary.",
-                where=f"{where}.nics",
-            )
-        )
+    """The attachment rule, then the addressing every backend shares.
 
+    Only the first half is libvirt's. A NIC attaches to a libvirt network *or* a
+    host bridge, exactly one; Proxmox has no network concept and always attaches
+    to a bridge, so that check cannot be shared. Everything below it -- the
+    address parses, the gateway is inside it, nothing is reused -- is identical
+    for both and lives in ``cloudinit.check_addressing``.
+    """
+    problems: list[Problem] = []
     for i, nic in enumerate(vm["nics"]):
-        at = f"{where}.nics[{i}]"
         attachments = [k for k in ("bridge", "network") if k in nic]
         if len(attachments) != 1:
             problems.append(
@@ -571,121 +424,7 @@ def _check_nics(
                     + (
                         f"both ({', '.join(attachments)})" if attachments else "neither"
                     ),
-                    where=at,
+                    where=f"{where}.nics[{i}]",
                 )
             )
-
-        iface = _parse_interface(nic.get("ip_cidr", ""), f"{at}.ip_cidr", problems)
-        if iface is not None and iface.network.num_addresses > 2:
-            # Skipped for /31 and /32 -- and /127 and /128 -- where every address
-            # in the block is a host address. `num_addresses` says that in one
-            # condition for both families.
-            reserved = {
-                iface.network.network_address: "the network address",
-                iface.network.broadcast_address: "the broadcast address",
-            }
-            if iface.ip in reserved:
-                problems.append(
-                    Problem.error(
-                        f"{iface.ip} is {reserved[iface.ip]} of "
-                        f"{iface.network}, not a host address in it",
-                        where=f"{at}.ip_cidr",
-                    )
-                )
-        gateway = _parse_address(nic.get("gateway", ""), f"{at}.gateway", problems)
-        # Only the gateway-outside-network check needs both values. Registering
-        # the address needs `iface` alone: guarding it on the gateway too means a
-        # NIC whose gateway did not parse never claims its address, so the next
-        # VM to reuse that address is not reported until the operator has fixed
-        # the gateway and re-run -- the round trip `validate` exists to avoid.
-        if iface is not None:
-            if gateway is not None and gateway not in iface.network:
-                problems.append(
-                    Problem.error(
-                        f"gateway {gateway} is outside {iface.network}",
-                        where=f"{at}.gateway",
-                    )
-                )
-            owner = seen_ips.setdefault(str(iface.ip), at)
-            if owner != at:
-                problems.append(
-                    Problem.error(
-                        f"address {iface.ip} is already used by {owner}",
-                        where=f"{at}.ip_cidr",
-                    )
-                )
-        for j, ns in enumerate(nic.get("nameservers", [])):
-            _parse_address(ns, f"{at}.nameservers[{j}]", problems)
-
-        mac = mac_of(vm, i, deployment).lower()
-        owner = seen_macs.setdefault(mac, at)
-        if owner != at:
-            problems.append(
-                Problem.error(f"MAC {mac} is already used by {owner}", where=at)
-            )
-    return problems
-
-
-def _parse_interface(
-    raw: str, where: str, problems: list[Problem]
-) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface | None:
-    if "/" not in raw:
-        problems.append(
-            Problem.error(
-                f"{raw!r} needs a prefix length, e.g. '192.168.122.60/24'", where=where
-            )
-        )
-        return None
-    try:
-        return ipaddress.ip_interface(raw)
-    except ValueError as exc:
-        problems.append(Problem.error(str(exc), where=where))
-        return None
-
-
-def _parse_address(
-    raw: str, where: str, problems: list[Problem]
-) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    try:
-        return ipaddress.ip_address(raw)
-    except ValueError as exc:
-        problems.append(Problem.error(str(exc), where=where))
-        return None
-
-
-def _check_disk_capacity(cfg: dict) -> list[Problem]:
-    """R-F: an overlay smaller than its backing image cannot be created.
-
-    Uses the qcow2 header read rather than ``qemu-img info`` -- see D18 and
-    orchestrator/qcow2.py. Degrades to a warning rather than an error when the
-    image cannot be read, because ``validate`` is the offline phase and the golden
-    image is bind-mounted at run time.
-    """
-    source = cfg["image"]["source_qcow2"]
-    try:
-        virtual = qcow2.virtual_size(source)
-    except OSError as exc:
-        return [
-            Problem.warning(
-                f"cannot read {source} to check disk_gb against it ({exc.strerror}); "
-                f"a VM whose disk_gb is below the image's virtual size will fail "
-                f"at create time",
-                where="image.source_qcow2",
-            )
-        ]
-    except qcow2.NotAQcow2 as exc:
-        return [Problem.error(str(exc), where="image.source_qcow2")]
-
-    problems = []
-    for i, vm in enumerate(cfg["vms"]):
-        want = vm.get("disk_gb")
-        if isinstance(want, int) and want * 1024**3 < virtual:
-            problems.append(
-                Problem.error(
-                    f"disk_gb is {want} but {source} has a virtual size "
-                    f"of {virtual / 1024**3:.1f} GiB; an overlay cannot be "
-                    f"smaller than the image it backs onto",
-                    where=f"vms[{i}].disk_gb",
-                )
-            )
-    return problems
+    return problems + check_addressing(vm, where, seen_ips, seen_macs, deployment)

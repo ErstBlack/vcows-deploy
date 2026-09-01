@@ -256,7 +256,8 @@ def test_a_refused_deploys_reason_reaches_the_run_record(
 ):
     """`decisions` records what would have been done; without `problems` the
     *reason* it was not exists only on a terminal somebody has since closed."""
-    from orchestrator.backends.base import Discovered, Problem, Severity
+    from orchestrator.backends.base import Discovered
+    from orchestrator.problems import Problem, Severity
 
     monkeypatch.setattr(
         backend,
@@ -548,7 +549,8 @@ def test_staging_an_empty_module_directory_is_not_an_empty_module(tmp_path):
 def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
     """`Discovered.problems` is how a backend reports what is wrong with the
     *target* -- a missing pool, an orphaned volume. Deploy treats them as fatal."""
-    from orchestrator.backends.base import Discovered, Problem, Severity
+    from orchestrator.backends.base import Discovered
+    from orchestrator.problems import Problem, Severity
 
     monkeypatch.setattr(
         backend,
@@ -666,7 +668,8 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
     """2.3, end to end. An inactive pool makes every disk in it resolve as
     "already gone": the domain is destroyed and undefined, its marker with it,
     both volumes stay on disk, and the operator was told it worked."""
-    from orchestrator.backends.base import Outcome, Problem, Severity
+    from orchestrator.backends.base import Outcome
+    from orchestrator.problems import Problem, Severity
 
     backend.world = [ours("app01")]
     backend.outcome = Outcome(
@@ -709,7 +712,8 @@ def test_a_returned_fatal_problem_is_not_recorded_as_ok(
     `skipped` got `outcome: "ok"` and exit 0 -- the silent partial success
     findings.md §1 rejects `tofu destroy` for, arriving through the seam meant to
     prevent it. Unreachable through the libvirt backend, which raises."""
-    from orchestrator.backends.base import Outcome, Problem, Severity
+    from orchestrator.backends.base import Outcome
+    from orchestrator.problems import Problem, Severity
 
     backend.world = [ours("app01")]
     backend.outcome = Outcome(
@@ -768,7 +772,8 @@ def test_a_destroy_that_raises_still_records_what_it_removed(
     failed` and a message, with no `destroyed` and no `skipped`. That is the run
     an air-gapped site ships back after a teardown it now has to finish by hand.
     """
-    from orchestrator.backends.base import Outcome, Problem, Severity
+    from orchestrator.backends.base import Outcome
+    from orchestrator.problems import Problem, Severity
 
     class Failed(Exception):
         """A backend's own error carrying the whole outcome, the way the libvirt

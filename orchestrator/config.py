@@ -29,7 +29,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-from .backends.base import Problem, problems_from
+from .problems import Problem, problems_from
 
 SCHEMA_VERSION = 1
 

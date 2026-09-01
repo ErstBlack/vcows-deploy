@@ -181,12 +181,15 @@ orchestrator/
       __init__.py        # the Backend implementation
       schema.py          # the target.libvirt sub-schema
       preflight.py       # marker read + collision detection
-      prepare.py         # seed ISO
       render.py          # pure: -> tfvars dict
       destroy.py         # python3-libvirt teardown
       tofu/              # main.tf variables.tf outputs.tf
+  cloudinit.py           # seed ISO, MAC derivation, the NIC addressing checks
   config.py              # core schema; composes `target` from the registry
+  imagecheck.py          # digest and capacity checks on the golden image
+  limits.py              # the VM size ceilings and their environment overrides
   marker.py              # payload serialize/parse; shared by every backend
+  problems.py            # Severity/Problem; core and every backend produce them
   tofu.py                # subprocess driver, backend-agnostic
   cli.py
 tests/
@@ -244,7 +247,7 @@ live domain XML at discovery time rather than stored, so it cannot go stale. Nev
 
 Core parses the marker, applies the rules from §2, and decides skip/create/refuse. **The dangerous logic is written once** — a backend author cannot implement the refusal incorrectly because they never implement it. Core also owns the marker's content and serialization (`marker.py`); the backend owns only where it is stored and how it is read back.
 
-**`prepare` — a context manager, and this is the non-obvious choice.** For libvirt it yields immediately after building the seed ISO. It is a context manager because Proxmox may need the orchestrator to **serve the qcow2 over HTTP on the local network** so PVE can pull it via the download-url API — a listening socket held open for the duration of the apply and torn down after. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring. `with backend.prepare(...) as prepared:` costs nothing today and absorbs vSphere's qcow2→VMDK→OVA conversion too, which needs the `workdir` plus a cache path.
+**`prepare` — a context manager, and this is the non-obvious choice.** For libvirt it yields immediately after building the seed ISO, which `orchestrator/cloudinit.py` builds because nothing in it is hypervisor-specific. It is a context manager because Proxmox may need the orchestrator to **serve the qcow2 over HTTP on the local network** so PVE can pull it via the download-url API — a listening socket held open for the duration of the apply and torn down after. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring. `with backend.prepare(...) as prepared:` costs nothing today and absorbs vSphere's qcow2→VMDK→OVA conversion too, which needs the `workdir` plus a cache path.
 
 **`prepare` takes what `preflight` found, and `preflight` is the only method that reads the target.** Each apply runs against a fresh, empty state — state is disposable, so the module only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be declared as a resource, and the overlay needs its path on the host. That question cannot be answered from HCL: the pinned provider registers four data sources — `libvirt_domain_interface_addresses`, `libvirt_node_device_info`, `libvirt_node_devices`, `libvirt_node_info` — and no provider functions and no ephemeral resources, so nothing can read a pool. It cannot be answered from the config either, because the pool is someone else's and its target path is a property of the pool. And it cannot be answered by `tofu import` as an existence probe: 0.9.8's importer is a passthrough on the volume **key**, which for a file pool is the path we are trying to discover.
 

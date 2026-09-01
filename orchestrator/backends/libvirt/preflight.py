@@ -41,8 +41,10 @@ from contextlib import contextmanager
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from ...cloudinit import mac_of
 from ...marker import MARKER_ELEMENT, MARKER_XMLNS, Marker, MarkerError
-from ..base import Discovered, Existing, Problem
+from ...problems import Problem
+from ..base import Discovered, Existing
 from .errors import (
     ERR_NO_NETWORK,
     ERR_NO_STORAGE_POOL,
@@ -50,7 +52,7 @@ from .errors import (
     ERR_OPERATION_INVALID,
 )
 from .render import overlay_name, seed_name
-from .schema import connection_uri, mac_of
+from .schema import connection_uri
 
 #: The marker element as ``XMLDesc`` reports it. ``dom.metadata()`` strips the
 #: xmlns and would need a different tag; spike A2 caught the disagreement.
