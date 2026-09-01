@@ -10,11 +10,13 @@ by imagining failure modes, and both would have crashed a naive parser.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import libvirt
 import pytest
 
+from orchestrator import cloudinit
 from orchestrator.backends.libvirt import preflight
 from orchestrator.marker import MARKER_XMLNS
 from orchestrator.problems import Severity
@@ -128,6 +130,21 @@ def test_cdrom_sources_are_collected_when_present():
     )
 
 
+def test_a_device_that_yields_nothing_does_not_end_the_disk_scan():
+    """Both skips pass over one device; neither ends the walk. A domain whose
+    first device is a floppy, or whose empty cdrom tray comes before its disk,
+    would otherwise report no disks at all -- and destroy tears down what
+    preflight found, so an unreported disk is a leaked one."""
+    from xml.etree import ElementTree as ET
+
+    xml = """<domain><devices>
+      <disk type='file' device='floppy'><source file='/pool/ignored.img'/></disk>
+      <disk type='file' device='cdrom'/>
+      <disk type='file' device='disk'><source file='/pool/app01.qcow2'/></disk>
+    </devices></domain>"""
+    assert preflight.disks_of(ET.fromstring(xml)) == ("/pool/app01.qcow2",)
+
+
 def test_macs_come_out_of_the_same_document():
     assert preflight.macs_of(parsed("domain-marked.xml")) == ("52:54:00:c0:ff:ee",)
 
@@ -148,6 +165,12 @@ def test_an_overlay_reports_what_it_backs_onto():
     facts = preflight.volume_facts(fixture("volume-overlay.xml"))
     assert facts["backing"].endswith("Rocky-9-GenericCloud-Base.latest.x86_64.qcow2")
     assert preflight.volume_facts(fixture("volume-base-image.xml"))["backing"] is None
+
+
+def test_a_volume_with_no_name_reads_as_the_empty_name():
+    """`walk` keys its result on this, so the fallback is a dictionary key and
+    not a display string."""
+    assert preflight.volume_facts("<volume/>")["name"] == ""
 
 
 def test_directory_entry_in_a_pool_parses_with_no_physical():
@@ -489,6 +512,17 @@ def test_an_address_with_an_active_lease_refuses(cfg):
     assert wheres(problems) == ["app01.nics[0].ip_cidr"]
 
 
+def test_the_deployment_reaches_the_mac_derivation(cfg):
+    """`mac_of` derives from the deployment name, and this is the only route it
+    takes on the preflight path. Dropped or replaced by a constant, the derived
+    MAC is consistent and wrong: it collides with nothing on the host, so the
+    collision this check exists to find is never reported."""
+    derived = cloudinit.derive_mac("app01", 0, cfg["deployment"])
+    by_mac = {derived: "somebody-elses-vm"}
+    problems = preflight.address_conflicts(conn_with_network(), cfg, by_mac)
+    assert wheres(problems) == ["app01.nics[0]"]
+
+
 def test_a_mac_already_on_another_domain_refuses(cfg):
     """Free: it comes out of the same XMLDesc already parsed for the marker and the
     disks, which is why this check survived D32's cut of the ICMP probe."""
@@ -500,6 +534,34 @@ def test_a_mac_already_on_another_domain_refuses(cfg):
     assert wheres(problems) == ["app02.nics[0]"], (
         "the NIC, which has no ip_cidr to blame"
     )
+
+
+# -- libvirt's own error handler -------------------------------------------
+
+
+def test_the_error_handler_takes_the_message_out_of_the_error_tuple(caplog):
+    """It runs inside libvirt's callback, where an `IndexError` surfaces as
+    something far stranger than a missing log line. Element 2 of the 9-tuple is
+    the message; anything shorter, or not a tuple at all, is logged whole rather
+    than indexed into.
+
+    Asserted on the argument rather than the rendered line: what the handler
+    chose is the behaviour, and the wording around it is not.
+    """
+    with caplog.at_level(logging.DEBUG, logger=preflight.log.name):
+        preflight._chatter(None, (9, 0, "the message", 2, "", "", "", -1, -1))
+        # Three is the shortest tuple that carries one, and the boundary the
+        # index is guarded by: element 2 exists here and does not above.
+        preflight._chatter(None, (9, 0, "the short one"))
+        preflight._chatter(None, (9, 0))
+        preflight._chatter(None, "not a tuple at all")
+
+    assert [record.args[0] for record in caplog.records] == [
+        "the message",
+        "the short one",
+        (9, 0),
+        "not a tuple at all",
+    ]
 
 
 # -- the domain walk -------------------------------------------------------
@@ -527,13 +589,19 @@ def test_one_unreadable_domain_does_not_abort_the_walk(break_it):
     found, by_mac, problems = preflight._domains(FakeConnection(domains=doms))
 
     assert [e.name for e in found] == ["first", "last"]
+    # `Existing.id` is what destroy looks a domain up by, and the two readable
+    # domains keep theirs -- the skip drops a whole record, never a field of one.
+    assert [e.id for e in found] == ["u1", "u3"]
     assert [p.severity for p in problems] == [Severity.WARNING]
     assert "broken" in problems[0].message
     assert wheres(problems) == ["target.libvirt"], (
         "the host, not a VM: the domain is somebody else's and this config may "
         "not name it at all"
     )
-    assert by_mac
+    # MAC -> the domain that configures it. `address_conflicts` reads both
+    # halves: the key is what a config's MAC is looked up by, and the value is
+    # the domain named in the refusal.
+    assert by_mac["52:54:00:c0:ff:ee"] == "first"
 
 
 def test_an_all_readable_host_warns_about_nothing():

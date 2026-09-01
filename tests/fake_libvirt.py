@@ -16,6 +16,12 @@ Every call a caller might have to survive carries a settable ``*_error``
 attribute, ``None`` by default and raised at the top of the method. One
 convention rather than several, because the question these tests ask is always
 the same one: what does the code do when *this* call is the one that fails.
+
+The flag argument is asserted rather than ignored, wherever the code under test
+has a right answer for it. A fake that takes any flags at all cannot tell a
+correct call from ``XMLDesc(None)`` -- which is a ``TypeError`` against the real
+binding -- or from the live document being read where the persistent one was
+meant. ``FakeVolume.delete`` asserted its own from the start; the rest followed.
 """
 
 from __future__ import annotations
@@ -40,7 +46,8 @@ class FakeVolume:
     def name(self) -> str:
         return self._name
 
-    def XMLDesc(self, _flags: int = 0) -> str:
+    def XMLDesc(self, flags: int = 0) -> str:
+        assert flags == 0, "a volume's document takes no flags"
         #: A volume deleted between the listing and the describe. The walk sees
         #: this far more often than a malformed document.
         if self.pool.volume_xml_error is not None:
@@ -94,7 +101,8 @@ class FakePool:
             raise self.active_error
         return self._active
 
-    def XMLDesc(self, _flags: int = 0) -> str:
+    def XMLDesc(self, flags: int = 0) -> str:
+        assert flags == 0, "a pool's document takes no flags"
         if self.xml_error is not None:
             raise self.xml_error
         return (
@@ -102,13 +110,15 @@ class FakePool:
             f"<target><path>{self._path}</path></target></pool>"
         )
 
-    def refresh(self, _flags: int = 0) -> None:
+    def refresh(self, flags: int = 0) -> None:
+        assert flags == 0, "virStoragePoolRefresh declares virCheckFlags(0, -1)"
         if self.refresh_error is not None:
             raise self.refresh_error
         self.refreshed += 1
         self.visible = set(self.volumes)
 
-    def listAllVolumes(self, _flags: int = 0) -> list[FakeVolume]:
+    def listAllVolumes(self, flags: int = 0) -> list[FakeVolume]:
+        assert flags == 0, "every volume, not a filtered subset"
         return [FakeVolume(self, n, self.volumes[n]) for n in sorted(self.visible)]
 
     def storageVolLookupByName(self, name: str) -> FakeVolume:
@@ -136,7 +146,13 @@ class FakeDomain:
     def UUIDString(self) -> str:
         return self._uuid
 
-    def XMLDesc(self, _flags: int = 0) -> str:
+    def XMLDesc(self, flags: int = libvirt.VIR_DOMAIN_XML_INACTIVE) -> str:
+        #: The *persistent* config, which is where the marker lives. The live
+        #: document is a different one, and reading it would make a running
+        #: domain's marker and disk list whatever the running domain has now.
+        assert flags == libvirt.VIR_DOMAIN_XML_INACTIVE, (
+            "the persistent config is what carries the marker"
+        )
         if self.xml_error is not None:
             raise self.xml_error
         return self._xml
@@ -154,7 +170,8 @@ class FakeDomain:
             raise self.active_error
         return self.active
 
-    def destroyFlags(self, _flags: int = 0) -> None:
+    def destroyFlags(self, flags: int = 0) -> None:
+        assert flags == 0, "no VIR_DOMAIN_DESTROY_GRACEFUL: this is the forced stop"
         self.log.append("destroy")
         if self.stop_error is not None:
             raise self.stop_error
@@ -199,7 +216,8 @@ class FakeConnection:
 
     # -- domains ---------------------------------------------------------
 
-    def listAllDomains(self, _flags: int = 0) -> list[FakeDomain]:
+    def listAllDomains(self, flags: int = 0) -> list[FakeDomain]:
+        assert flags == 0, "every domain on the host, not a filtered subset"
         if self.domains_error is not None:
             raise self.domains_error
         return list(self.domains)
@@ -214,7 +232,8 @@ class FakeConnection:
 
     # -- storage ---------------------------------------------------------
 
-    def listAllStoragePools(self, _flags: int = 0) -> list[FakePool]:
+    def listAllStoragePools(self, flags: int = 0) -> list[FakePool]:
+        assert flags == 0, "every pool on the host, not a filtered subset"
         if self.pools_error is not None:
             raise self.pools_error
         return list(self.pools)
@@ -273,7 +292,8 @@ class FakeNetwork:
         self._leases = leases
         self.lease_error: libvirt.libvirtError | None = None
 
-    def XMLDesc(self, _flags: int = 0) -> str:
+    def XMLDesc(self, flags: int = 0) -> str:
+        assert flags == 0, "a network's document takes no flags"
         return self._xml
 
     def DHCPLeases(self) -> list[dict]:
