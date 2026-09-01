@@ -19,6 +19,8 @@ import re
 import stat
 import subprocess
 import textwrap
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -85,6 +87,19 @@ def ours(name: str, deployment: str = "lab-a") -> Existing:
     return Existing(name=name, id=marker.id, marker=marker)
 
 
+#: A complete build manifest, in the shape `_print_manifest` reads it. Every
+#: field is looked up by name, and a name read wrong is a `KeyError` the
+#: function reports as a manifest that will not parse.
+BUILD: dict[str, Any] = {
+    "git_sha": "da3f45c",
+    "built": "2026-01-02T03:04:05Z",
+    "base_image": {"name": "registry.example/base", "digest": "sha256:9f1cbeef"},
+    "provider": {"source": "registry.example/dmacvicar/libvirt", "version": "0.9.8"},
+    "packages": ["one", "two", "three"],
+    "source_rpms": ["one.src.rpm"],
+}
+
+
 # -- version and validate ---------------------------------------------------
 
 
@@ -115,6 +130,54 @@ def test_version_survives_every_way_tofu_version_can_fail(monkeypatch, capsys, r
     out = capsys.readouterr().err
     assert VERSION in out, "the build is still reported first"
     assert "tofu: unavailable" in out
+
+
+def test_version_reports_the_tofu_it_found(monkeypatch, capsys):
+    """The other half of the test above: what `version` says when `tofu version`
+    answers. Both fields are read out of the same object by name."""
+    monkeypatch.setattr(
+        cli.tofu,
+        "version",
+        lambda: {"terraform_version": "1.9.0", "platform": "linux_amd64"},
+    )
+    assert cli.main(["version"]) == 0
+    err = capsys.readouterr().err
+    assert "1.9.0" in err and "linux_amd64" in err
+
+
+def test_a_field_tofu_did_not_report_reads_as_a_question_mark(monkeypatch, capsys):
+    """A tofu that answered without the field is a tofu that answered. `None`
+    there reads as something vcows never asked for, which sends whoever is
+    diagnosing the build at us rather than at it."""
+    monkeypatch.setattr(cli.tofu, "version", lambda: {})
+
+    assert cli.main(["version"]) == 0
+    err = capsys.readouterr().err
+    assert err.count("?") == 2, err
+    assert "None" not in err
+
+
+def test_version_says_which_build_the_image_is(tmp_path, monkeypatch, capsys):
+    """R5's whole purpose, and the reason `_print_manifest` runs before anything
+    that can return early: "which build is this" answered from the image itself,
+    for an air-gapped site that cannot rebuild it to find out."""
+    baked = tmp_path / "manifest.json"
+    baked.write_text(json.dumps(BUILD))
+    monkeypatch.setattr(cli, "MANIFEST", baked)
+
+    assert cli.main(["version"]) == 0
+    err = capsys.readouterr().err
+    # A field read by the wrong name lands in the same `except` as a broken file.
+    assert "will not parse" not in err
+    for value in (
+        BUILD["git_sha"],
+        BUILD["built"],
+        BUILD["base_image"]["name"],
+        BUILD["base_image"]["digest"],
+        BUILD["provider"]["source"],
+        BUILD["provider"]["version"],
+    ):
+        assert value in err, value
 
 
 def test_validate_is_offline(no_libvirt, backend, config, capsys):  # noqa: F811
@@ -165,6 +228,9 @@ def test_a_destroy_scopes_the_advisory_problems(backend, tmp_path, monkeypatch, 
     err = capsys.readouterr().err
     assert "endpoint scheme is unusual" in err
     assert "none of them changes this teardown" in err
+    # And into the record, which is the copy that outlives the terminal.
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert any("endpoint scheme is unusual" in p for p in record["problems"])
 
 
 # -- preflight --------------------------------------------------------------
@@ -181,6 +247,39 @@ def test_preflight_refuses_an_unmarked_collision(backend, config, capsys):
     backend.world = [Existing(name="app01", id="0", marker=None)]
     assert cli.main(["preflight", config]) == 1
     assert "will not adopt or overwrite" in capsys.readouterr().err
+
+
+def test_the_backend_is_handed_the_config_on_every_call(backend, config, monkeypatch):
+    """The config is the first argument of `connect`, `preflight` and `destroy`
+    -- it carries the endpoint, the credentials and the deployment name, and a
+    backend that is handed nothing has nothing to connect to. The fake ignores
+    it, so only a caller watching the seam can tell that it arrived."""
+    seen: list[tuple[str, Any]] = []
+
+    def watch(name):
+        real = getattr(backend, name)
+
+        def wrapper(cfg, *rest):
+            seen.append((name, cfg))
+            return real(cfg, *rest)
+
+        monkeypatch.setattr(backend, name, wrapper)
+
+    for name in ("connect", "preflight", "destroy"):
+        watch(name)
+
+    backend.world = [ours("app01")]
+    assert cli.main(["preflight", config]) == 0
+    assert cli.main(["destroy", config, "--yes"]) == 0
+
+    assert [name for name, _ in seen] == [
+        "connect",
+        "preflight",
+        "connect",
+        "preflight",
+        "destroy",
+    ]
+    assert all(cfg and cfg["deployment"] == "lab-a" for _, cfg in seen)
 
 
 # -- deploy -----------------------------------------------------------------
@@ -567,6 +666,44 @@ def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
     assert cli.main(["deploy", config]) == 1
 
 
+def test_only_the_vms_that_do_not_exist_yet_reach_the_module(
+    backend, config, tmp_path, monkeypatch
+):
+    """D23: the module only ever creates, so a VM that already exists is dropped
+    from the tfvars here rather than skipped later. Against a reused state,
+    leaving it in `for_each` and then dropping it would plan a destroy of a live
+    VM; against a fresh one it would be created a second time."""
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 1})
+    )
+    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
+    monkeypatch.setattr(
+        cli.tofu, "outputs", lambda w: {"vms": {"value": {"app02": {"name": "app02"}}}}
+    )
+    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
+    # `prepare` builds the seed media, and it is handed the same narrowed config
+    # -- a seed ISO for a VM that is not being created is a secret written for
+    # nothing.
+    prepared_with: list[Any] = []
+    real_prepare = backend.prepare
+    monkeypatch.setattr(
+        backend,
+        "prepare",
+        lambda cfg, *rest: prepared_with.append(cfg) or real_prepare(cfg, *rest),
+    )
+
+    assert cli.main(["deploy", config]) == 0
+    run = latest_run(tmp_path)
+    assert [vm["name"] for vm in prepared_with[0]["vms"]] == ["app02"]
+    tfvars = json.loads((run / "tofu" / "main.auto.tfvars.json").read_text())
+    assert list(tfvars["vms"]) == ["app02"]
+    assert json.loads((run / "inventory.json").read_text())["vms"] == {
+        "app02": {"name": "app02"}
+    }
+
+
 # -- the run directory ------------------------------------------------------
 
 
@@ -638,6 +775,39 @@ def test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence(
     assert str(wanted) in err, "the absolute path the operator can act on"
 
 
+def test_a_run_dir_that_is_already_private_is_not_chmodded(
+    backend, config, tmp_path, monkeypatch
+):
+    """The chmod is the half that can fail: a bind mount owned by another UID
+    refuses it with EACCES, and a run that is otherwise fine must not stop for
+    a mode it already has."""
+    backend.world = [ours("app01"), ours("app02")]
+    given = tmp_path / "already-private"
+    given.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        cli.os, "chmod", lambda *a, **k: pytest.fail("nothing needed tightening")
+    )
+
+    assert cli.main(["deploy", config, "--run-dir", str(given)]) == 0
+
+
+def test_the_run_timestamp_is_utc(monkeypatch):
+    """It names the run directory and both ends of `run.json`, and every log line
+    beside it is UTC by `LOG_DATEFMT`. A site in another timezone would read a
+    record whose stamps disagree with the directory holding it."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        before = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamped = cli._timestamp()
+        after = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert stamped in (before, after)
+
+
 # -- destroy ----------------------------------------------------------------
 
 
@@ -646,7 +816,7 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     filter on data that is already there -- and destroying somebody else's VMs
     because they share a hypervisor is the data-loss event findings.md §2 names.
     """
-    backend.world = [ours("app01"), ours("elsewhere", "lab-b")]
+    backend.world = [ours("app01"), ours("elsewhere", "lab-b"), ours("stray", "")]
 
     assert cli.main(["destroy", config, "--yes"]) == 0
 
@@ -654,12 +824,20 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     assert session.destroyed == ["app01"]
     out = capsys.readouterr().err
     assert "belongs to deployment 'lab-b'" in out
+    # The detail column is empty when the marker's name is the domain's name,
+    # which is every ordinary case: repeating it read `app01  destroy  app01`.
+    (row,) = [ln for ln in out.splitlines() if ln.endswith("destroy")]
+    assert row.count("app01") == 1, row
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["destroyed"] == ["app01"]
+    assert record["outcome"] == "ok"
+    assert record["command"] == "destroy"
+    assert record["started"] and record["started"] <= record["finished"]
     # The stdout row above outlives the terminal only if something records it.
     # The name alone would not: whose deployment it belongs to is the half of
-    # the row that explains why this teardown left it alone.
-    assert record["left_alone"] == {"elsewhere": "lab-b"}
+    # the row that explains why this teardown left it alone. A marker carrying
+    # no deployment at all is what `<unset>` is there to say.
+    assert record["left_alone"] == {"elsewhere": "lab-b", "stray": "<unset>"}
 
 
 def test_a_destroy_that_could_not_finish_says_what_it_left(
@@ -758,8 +936,10 @@ def test_a_module_that_created_the_right_count_under_wrong_names_fails(
     assert cli.main(["deploy", config]) == 1
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "failed"
-    # The count matched, so the fallback branch is the one that has to speak.
-    assert "names differ" in record["error"] or "app02" in record["error"]
+    # The name asked for and not reported back. `or 'names differ'` covers the
+    # difference running the other way, and an assertion accepting either was
+    # satisfied by that fallback rather than by the name.
+    assert "app02" in record["error"]
     assert not (latest_run(tmp_path) / "inventory.json").exists()
 
 
@@ -859,12 +1039,72 @@ def test_destroy_needs_an_answer_when_there_is_nobody_to_ask(
     assert cli.main(["destroy", config]) == 1
     assert backend.sessions[-1].destroyed == []
     assert "pass --yes" in capsys.readouterr().err
+    # The record is written either way: an empty run directory reads as a run
+    # that crashed, and this one stopped because nobody answered.
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "cancelled"
 
 
-def test_destroy_with_nothing_of_ours_is_not_an_error(backend, config, capsys):
+def test_destroy_with_nothing_of_ours_is_not_an_error(
+    backend, config, tmp_path, capsys
+):
     backend.world = [Existing(name="somebody-elses", id="0", marker=None)]
     assert cli.main(["destroy", config, "--yes"]) == 0
     assert "no VMs marked for deployment 'lab-a'" in capsys.readouterr().err
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["outcome"] == "nothing-to-destroy"
+
+
+@pytest.mark.parametrize(
+    "typed, code, destroyed",
+    [(" yes\n", 0, ["app01"]), ("y", 1, []), ("YES", 1, [])],
+)
+def test_only_a_typed_yes_destroys(
+    backend, config, monkeypatch, typed, code, destroyed
+):
+    """The answer is compared whole and after stripping: `y` is not consent, and
+    an operator who typed it meant to be asked again rather than to lose a VM."""
+    asked: list[str] = []
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or typed)
+
+    assert cli.main(["destroy", config]) == code
+    assert backend.sessions[-1].destroyed == destroyed
+    # What the operator is answering: how many, and whose. A prompt missing
+    # either is one they cannot check before typing yes.
+    assert "1" in asked[0] and "lab-a" in asked[0], asked
+
+
+def test_a_teardown_that_raises_keeps_the_problems_it_already_had(
+    backend, tmp_path, monkeypatch
+):
+    """`run.extra["problems"]` already holds the advisory ones by the time the
+    backend raises. Assigning over it rather than appending drops them, and the
+    record then says the only thing wrong with the run was the failure."""
+    from orchestrator.backends.base import Outcome
+    from orchestrator.problems import Problem, Severity
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "lab-a.yaml"
+    path.write_text(CONFIG.replace("good://example", "odd://example"))
+
+    def raises(*a, **k):
+        exc: Any = RuntimeError("could not delete volume")
+        exc.outcome = Outcome(
+            destroyed=["app01"],
+            skipped=["/pool/app01.qcow2"],
+            problems=[Problem(Severity.ERROR, "the pool went away", "storage")],
+        )
+        raise exc
+
+    backend.world = [ours("app01")]
+    monkeypatch.setattr(backend, "destroy", raises)
+
+    assert cli.main(["destroy", str(path), "--yes"]) == 1
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert any("endpoint scheme is unusual" in p for p in record["problems"])
+    assert any("the pool went away" in p for p in record["problems"])
 
 
 # -- the build manifest, and the modes ---------------------------------------
@@ -883,6 +1123,28 @@ def test_the_build_manifest_travels_with_the_run(
     assert cli.main(["deploy", config]) == 0
     copied = json.loads((latest_run(tmp_path) / "manifest.json").read_text())
     assert copied["git_sha"] == "da3f45c"
+
+
+def test_a_manifest_that_cannot_be_copied_does_not_cost_the_record(
+    backend, config, tmp_path, monkeypatch
+):
+    """Provenance is the half that can be lost; what happened is the half that
+    cannot. A read-only mount or a full disk under the copy must not take
+    `run.json` with it."""
+    backend.world = [ours("app01"), ours("app02")]
+    baked = tmp_path / "baked-manifest.json"
+    baked.write_text('{"git_sha": "da3f45c"}')
+    monkeypatch.setattr(cli, "MANIFEST", baked)
+
+    def denied(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(cli.shutil, "copyfile", denied)
+
+    assert cli.main(["deploy", config]) == 0
+    run = latest_run(tmp_path)
+    assert not (run / "manifest.json").exists()
+    assert json.loads((run / "run.json").read_text())["outcome"] == "nothing-to-create"
 
 
 def test_a_checkout_has_no_manifest_and_that_is_not_an_error(
@@ -1008,3 +1270,80 @@ def test_the_traceback_is_there_when_it_is_asked_for(
     err = capsys.readouterr().err
     assert "Traceback (most recent call last)" in err
     assert "RuntimeError: boom" in err
+
+
+# -- what the record itself says ---------------------------------------------
+
+
+def test_the_record_says_which_run_wrote_it(backend, config, tmp_path):
+    """`run.json` reaches whoever reads it detached from the terminal that
+    produced it, and often from the directory too: which verb ran, against which
+    deployment and backend, and between which two instants."""
+    backend.world = [ours("app01"), ours("app02")]
+
+    assert cli.main(["deploy", config]) == 0
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["command"] == "deploy"
+    assert record["deployment"] == "lab-a"
+    assert record["backend"] == "fake"
+    assert record["outcome"] == "nothing-to-create"
+    assert record["started"] and record["started"] <= record["finished"]
+
+
+def test_a_recorded_decision_names_the_domain_it_was_made_about(
+    backend, config, tmp_path
+):
+    """`reason` is English. `existing` is the identity that sentence is about,
+    and for a skip the id of the domain that was left alone appears nowhere else
+    in the run directory at all."""
+    backend.world = [ours("app01"), ours("app02")]
+
+    assert cli.main(["deploy", config]) == 0
+    decisions = json.loads((latest_run(tmp_path) / "run.json").read_text())["decisions"]
+    assert [d["vm"] for d in decisions] == ["app01", "app02"]
+    assert {d["action"] for d in decisions} == {"skip"}
+    assert all(d["reason"] for d in decisions)
+    assert decisions[0]["existing"] == {"name": "app01", "id": ours("app01").id}
+
+
+def test_the_record_is_indented_and_key_sorted(backend, config, tmp_path):
+    """It is read by hand at a site and diffed between two runs, and both want
+    one field per line in an order that does not move."""
+    backend.world = [ours("app01"), ours("app02")]
+
+    assert cli.main(["deploy", config]) == 0
+    text = (latest_run(tmp_path) / "run.json").read_text()
+    keys = re.findall(r'^  "(\w+)"', text, re.MULTILINE)
+    assert len(keys) > 1 and keys == sorted(keys), text
+
+
+# -- the parser -------------------------------------------------------------
+
+
+def test_the_parser_is_named_after_the_command_not_the_module():
+    """The image's `/usr/local/bin/vcows` is `python3 -m orchestrator.cli`, so
+    argparse's own default would put `__main__.py` in every usage line and every
+    error message -- naming, to the operator, something they cannot type."""
+    assert cli._parser().prog == "vcows"
+
+
+def test_the_version_flag_answers_like_the_verb(capsys):
+    """Two spellings, one answer. `--version` is the only top-level flag there
+    is, and it is what somebody types at a container to ask what it is."""
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["--version"])
+
+    assert exited.value.code == 0
+    assert VERSION in capsys.readouterr().out
+
+
+def test_a_bare_vcows_is_a_usage_error_rather_than_a_traceback(capsys):
+    """`required=True` is what makes argparse own the missing verb. Without it
+    the namespace has no `func`, and `vcows` alone reaches `main`'s catch-all as
+    an AttributeError and exits 1 -- the code a wrapper script reads as a failed
+    deployment rather than as a mistyped command."""
+    with pytest.raises(SystemExit) as exited:
+        cli.main([])
+
+    assert exited.value.code == 2
+    assert "AttributeError" not in capsys.readouterr().err
