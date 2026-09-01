@@ -503,6 +503,17 @@ def test_a_nic_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     assert "already used by" not in messages(problems)
 
 
+def test_the_vm_that_skips_its_nic_checks_does_not_skip_the_vms_after_it(cfg):
+    """The skip is one VM's, and `validate` returns every problem in the
+    document. Ending the loop instead of passing over the VM would hide every
+    fault in every VM below it behind one unreadable nic."""
+    cfg["vms"][0]["nics"] = ["default"]
+    cfg["vms"][1]["nics"][0]["gateway"] = "10.0.0.1"
+    problems = errors(schema.validate(cfg))
+    assert "vms[0].nics[0]]: 'default' is not of type 'object'" in messages(problems)
+    assert "vms[1].nics[0].gateway" in wheres(problems), "the VM after the skip"
+
+
 def test_the_guard_refuses_when_the_schema_failure_is_inside_a_nic(cfg):
     """The clause the container's shape cannot express (#112).
 

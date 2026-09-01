@@ -109,7 +109,7 @@ def target(dom, disks=None):
     `disks` overrides the parse, for the tests whose whole point is that the
     snapshot and the live document disagree.
     """
-    root = ET.fromstring(dom.XMLDesc(0))
+    root = ET.fromstring(dom.XMLDesc())
     return Existing(
         name=dom.name(),
         id=dom.UUIDString(),
@@ -151,13 +151,47 @@ def test_a_domain_already_off_is_not_destroyed_again():
 
 def test_a_domain_stopped_by_someone_else_mid_run_is_not_a_failure():
     """The race between isActive and destroyFlags. Treated as success only because
-    the domain really is inactive afterwards."""
+    the domain really is inactive afterwards.
+
+    The domain has to be running when `_stop` asks and stopped by the time the
+    refusal is read, which is the only ordering that reaches the second
+    `isActive` at all. Left off from the start, `_stop` returns on the first
+    check and the branch this test is named for never runs.
+    """
     dom = domain(active=True)
-    dom.stop_error = lv_error(d.ERR_OPERATION_INVALID, "domain is not running")
-    dom.active = False
+
+    def stopped_by_someone_else(_flags):
+        dom.log.append("destroy")
+        dom.active = False
+        raise lv_error(d.ERR_OPERATION_INVALID, "domain is not running")
+
+    dom.destroyFlags = stopped_by_someone_else
     conn = FakeConnection(domains=[dom])
-    d.destroy({}, conn, [target(dom)])
-    assert dom.log[-1] == f"undefine:{FULL}"
+    outcome = d.destroy({}, conn, [target(dom)])
+    assert dom.log == ["destroy", f"undefine:{FULL}"]
+    assert outcome.problems == []
+
+
+def test_a_stop_that_refused_for_another_reason_is_fatal_even_once_the_domain_is_off():
+    """The other half of the same branch. Being off afterwards is what makes an
+    OPERATION_INVALID refusal benign, and only that code -- an INTERNAL_ERROR
+    against a domain that happens to be down says the host could not carry out
+    the request, and undefining on the strength of it is exactly what the check
+    is there to refuse."""
+    dom = domain(active=True)
+
+    def refuse(_flags):
+        dom.log.append("destroy")
+        dom.active = False
+        raise lv_error(1, "internal error")
+
+    dom.destroyFlags = refuse
+    conn = FakeConnection(domains=[dom])
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [target(dom)])
+    assert "could not stop" in str(caught.value)
+    assert dom.log == ["destroy"], "not undefined"
+    assert wheres(caught.value.outcome.problems) == ["app01"]
 
 
 def test_a_real_stop_failure_aborts_that_domain_and_is_fatal():
@@ -284,6 +318,57 @@ def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
     said = str(caught.value)
     assert "could not delete /pool/app01.qcow2" in said
     assert "name alone" not in said
+    # Against the target, not the host: this path was left behind by one VM's
+    # teardown, and `where` is what tells the operator which one.
+    assert wheres(caught.value.outcome.problems) == ["app01"]
+
+
+def one_lookup_fails(conn, dom):
+    """A per-domain lookup failure. `conn.lookup_error` is host-wide, and a
+    target after the failing one is the whole question here."""
+    real = conn.lookupByUUIDString
+
+    def lookup(uuid):
+        if uuid == dom.UUIDString():
+            raise lv_error(38, "Cannot recv data: Connection reset by peer")
+        return real(uuid)
+
+    conn.lookupByUUIDString = lookup
+
+
+def one_marker_changed(conn, dom):
+    dom.redefine(domain_xml(Marker.for_vm(dom.name(), "lab-b")))
+
+
+def one_undefine_refused(conn, dom):
+    dom.rejects = d.UNDEFINE_NVRAM
+
+
+@pytest.mark.parametrize(
+    "break_the_first",
+    [one_lookup_fails, one_marker_changed, one_undefine_refused],
+    ids=["lookup", "re-read", "undefine"],
+)
+def test_a_target_that_fails_does_not_stop_the_ones_after_it(break_the_first):
+    """Every one of these is a `continue`, and each would read as a `break`
+    without costing a line of output at the point it happens. Five domains with
+    three objects each is twenty things that can fail independently, and the one
+    that failed first must not decide how many of the rest were even attempted.
+    """
+    first = domain("app01", active=False)
+    second = domain("app02", active=False, disks=["/pool/app02.qcow2"])
+    pool = FakePool("images", {"app02.qcow2": ""})
+    conn = FakeConnection(domains=[first, second], pools=[pool])
+    targets = [target(first), target(second)]
+    break_the_first(conn, first)
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, targets)
+
+    outcome = caught.value.outcome
+    assert "app01" not in outcome.destroyed
+    assert "app02" in outcome.destroyed, "the target after the failure"
+    assert pool.deleted == ["app02.qcow2"], "and its disk"
 
 
 def test_a_lookup_that_failed_for_any_other_reason_is_fatal_and_touches_no_disk():
@@ -318,6 +403,10 @@ def test_rejected_flags_are_shed_down_to_the_floor_in_one_retry():
     outcome = d.destroy({}, conn, [target(dom)])
     assert dom.log == [f"undefine:{FULL}", f"undefine:{d.FLOOR}"]
     assert wheres(outcome.problems) == ["app01"]
+    # The bits that were actually dropped, so the warning is diagnosable: the
+    # mask minus the floor, and not the mask or the floor itself.
+    assert f"0x{FULL & ~d.FLOOR:x}" in outcome.problems[0].message
+    assert outcome.destroyed == ["app01"], "the retry succeeded, so it was torn down"
 
 
 def test_the_retry_never_shed_nvram():
@@ -335,8 +424,10 @@ def test_a_floor_rejection_is_fatal_rather_than_retried_forever():
     dom = domain(active=False)
     dom.rejects = d.UNDEFINE_NVRAM
     conn = FakeConnection(domains=[dom])
-    with pytest.raises(d.DestroyError):
+    with pytest.raises(d.DestroyError) as caught:
         d.destroy({}, conn, [target(dom)])
+    assert dom.log == [f"undefine:{FULL}", f"undefine:{d.FLOOR}"]
+    assert [p.where for p in caught.value.outcome.problems if p.fatal] == ["app01"]
 
 
 def test_a_non_flag_undefine_failure_is_not_retried():
@@ -406,15 +497,18 @@ def test_an_inactive_pool_holding_a_targets_disk_is_fatal():
 
 def test_an_inactive_pool_holding_nothing_of_ours_is_left_alone():
     """Every pool is refreshed because a domain's disks are wherever they are.
-    That does not make every idle pool on the host this teardown's problem."""
+    That does not make every idle pool on the host this teardown's problem --
+    and passing over it must not end the walk, or the pool that does hold our
+    disks is never refreshed and every path in it resolves as already gone."""
     pool = FakePool("elsewhere", {}, active=False, path="/other")
+    images = FakePool("images", {"app01.qcow2": ""})
     dom = domain(active=False, disks=["/pool/app01.qcow2"])
-    conn = FakeConnection(
-        domains=[dom], pools=[pool, FakePool("images", {"app01.qcow2": ""})]
-    )
+    conn = FakeConnection(domains=[dom], pools=[pool, images])
 
     outcome = d.destroy({}, conn, [target(dom)])
     assert outcome.problems == []
+    assert images.refreshed == 1, "the pool after the one that was skipped"
+    assert images.deleted == ["app01.qcow2"]
 
 
 def test_a_path_that_will_not_resolve_is_skipped_not_unlinked():
@@ -462,6 +556,7 @@ def test_a_domain_whose_marker_changed_since_preflight_is_left_alone():
     assert dom.log == [], "neither stopped nor undefined"
     assert pool.deleted == []
     assert wheres(caught.value.outcome.problems) == ["app01"]
+    assert caught.value.outcome.skipped == ["app01"], "named as left standing"
 
 
 def test_a_vanished_targets_disk_claimed_by_another_domain_is_left_alone():
@@ -484,6 +579,9 @@ def test_a_vanished_targets_disk_claimed_by_another_domain_is_left_alone():
     assert "claimed by another domain" in str(caught.value)
     assert pool.deleted == []
     assert wheres(caught.value.outcome.problems) == ["app01"]
+    # The domain was already gone and the disk was left: both are objects this
+    # run did not remove, and `skipped` is the only place that says so.
+    assert caught.value.outcome.skipped == ["app01", "/pool/app01.qcow2"]
 
 
 def test_a_recorded_path_outside_this_vms_two_names_is_not_deleted():
@@ -500,6 +598,7 @@ def test_a_recorded_path_outside_this_vms_two_names_is_not_deleted():
     assert "not one of the names this VM owns" in str(caught.value)
     assert pool.deleted == []
     assert wheres(caught.value.outcome.problems) == ["app01"]
+    assert caught.value.outcome.skipped == ["/pool/golden.qcow2"]
 
 
 def test_a_pool_that_will_not_refresh_is_said_rather_than_trusted():
@@ -628,6 +727,10 @@ def test_the_error_names_everything_left_behind_not_only_what_failed():
     message = str(caught.value)
     assert "internal error" in message
     assert "/pool/app01.qcow2" in message, "the volume that would not resolve"
+    # One line per thing that happened. The fatal problems lead and the
+    # non-fatal ones follow, so a problem that qualifies for both lists is
+    # printed twice and the warnings it displaced are printed not at all.
+    assert message.count("internal error") == 1
 
 
 # -- calls that were not guarded -------------------------------------------
@@ -649,6 +752,14 @@ def test_a_domain_that_cannot_be_asked_whether_it_is_running_is_reported():
     assert "app02" in outcome.destroyed, "the second target is still torn down"
     assert [p.where for p in outcome.problems if p.fatal] == ["app01"]
     assert bad.log == [], "and the first was not destroyed on an unknown state"
+
+
+def test_only_a_domain_that_answers_inactive_reads_as_off():
+    """The answer, as opposed to the failure below. `_is_off` decides whether a
+    refusal to stop is reported at all, so a running domain reading as off is
+    how a teardown reports success for a VM that is still up."""
+    assert d._is_off(domain(active=False)) is True
+    assert d._is_off(domain(active=True)) is False
 
 
 def test_a_domain_that_cannot_be_asked_is_not_assumed_to_be_off():
@@ -748,3 +859,26 @@ def test_a_domain_whose_disks_could_not_be_read_narrows_the_guard_out_loud():
     assert "other" in outcome.problems[0].message
     assert pool.deleted == ["app01.qcow2"], "reported, not refused"
     assert wheres(outcome.problems) == ["storage"]
+
+
+def test_a_domain_that_could_not_be_read_does_not_end_the_claim_scan():
+    """The same walk, one step further. `claimed` is built from every domain on
+    the host, so abandoning it at the first unreadable one drops every claim
+    after it -- and the disks this teardown then unlinks are somebody else's."""
+    unreadable = FakeDomain("other", "u9", "<domain/>")
+    unreadable.xml_error = lv_error(1, "internal error")
+    squatter = domain("app99", active=True, disks=["/pool/app01.qcow2"])
+    pool = FakePool("images", {"app01.qcow2": ""})
+    conn = FakeConnection(domains=[unreadable, squatter], pools=[pool])
+    ghost = Existing(
+        name="app01",
+        id="00000000-0000-0000-0000-000000000000",
+        marker=Marker.for_vm("app01", "lab-a"),
+        disks=("/pool/app01.qcow2",),
+    )
+
+    with pytest.raises(d.DestroyError) as caught:
+        d.destroy({}, conn, [ghost])
+
+    assert "claimed by another domain" in str(caught.value)
+    assert pool.deleted == [], "the domain after the unreadable one still counted"
