@@ -60,6 +60,7 @@ def test_marked_vm_absent_from_config_is_reported_never_touched():
     assert len(problems) == 1
     assert problems[0].severity is Severity.WARNING
     assert "app03" in problems[0].message
+    assert problems[0].where == "app03", "the hypervisor name, which is what to destroy"
     assert not problems[0].fatal
 
 

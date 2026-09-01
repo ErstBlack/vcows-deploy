@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,6 +93,58 @@ def config_file(tmp_path, keyfile=GOOD_KEY, known_hosts=GOOD_HOSTS):
         f"    known_hosts: {known_hosts!r}\n"
     )
     return path
+
+
+@pytest.fixture(autouse=True)
+def _entrypoint_logging():
+    """Configure logging the way `main()` does, because `install()` does not.
+
+    Four tests below assert on stderr, and `install()` is called directly by all
+    four -- but the only caller that configures logging is `main()`, one line
+    before it. So what those tests actually read was whatever handler some
+    *earlier* test module had left on the root logger, normally the one
+    `orchestrator` installs at package import. Running this file on its own left
+    the root logger unconfigured, and all four then read an empty stderr: three
+    failed, and `test_install_writes_nothing_for_a_poisoned_config` passed
+    vacuously, which is the worse half.
+
+    `conftest._root_logger` puts the handlers back afterwards, so this leaks into
+    nothing. Same defect as the `sys.modules` one #147 fixed and the same remedy:
+    a test that depends on global state has to establish it rather than inherit
+    it.
+    """
+    entrypoint._configure_logging()
+
+
+# -- whose home ---------------------------------------------------------------
+
+
+def test_the_home_written_into_is_the_one_ssh_will_read(monkeypatch):
+    """The passwd entry, not `$HOME`. OpenSSH and Go's `os/user` both resolve `~`
+    from the passwd database, so an exported `HOME` would move the file somewhere
+    neither client looks."""
+    monkeypatch.setenv("HOME", "/somewhere/else")
+    monkeypatch.setattr(entrypoint.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(
+        entrypoint.pwd,
+        "getpwuid",
+        lambda uid: SimpleNamespace(pw_dir=f"/home/uid-{uid}"),
+    )
+
+    assert entrypoint.home() == Path("/home/uid-4242")
+
+
+def test_a_uid_with_no_passwd_entry_has_no_home_to_write_to(monkeypatch):
+    """`podman run --user` with a UID absent from /etc/passwd -- R6's rootless
+    trap. `None` is what makes `install` write nothing rather than guess a path,
+    and the operator's own mounts have to be correct."""
+
+    def absent(uid):
+        raise KeyError(uid)
+
+    monkeypatch.setattr(entrypoint.pwd, "getpwuid", absent)
+
+    assert entrypoint.home() is None
 
 
 @pytest.fixture

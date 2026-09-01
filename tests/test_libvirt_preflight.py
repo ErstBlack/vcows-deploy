@@ -33,6 +33,17 @@ def parsed(name: str):
     return ET.fromstring(fixture(name))
 
 
+def wheres(problems) -> list[str]:
+    """What each problem is filed against, in order.
+
+    `where` is the only field of a problem anything downstream reads: the CLI
+    prints it beside the message and `run.json` records it. It is also the half a
+    message cannot carry -- "not present" against `image.base_volume_name` and
+    against `target.libvirt.pool` are different instructions to the operator.
+    """
+    return [p.where for p in problems]
+
+
 # -- the marker ------------------------------------------------------------
 
 
@@ -184,6 +195,7 @@ def test_size_mismatch_refuses(cfg, tmp_path):
     _, problems = preflight.base_volume(cfg, volumes)
     assert [p.severity for p in problems] == [Severity.ERROR]
     assert "32 bytes on the host but 64 bytes locally" in problems[0].message
+    assert wheres(problems) == ["image.base_volume_name"]
 
 
 def test_missing_physical_warns_rather_than_refusing(cfg, tmp_path):
@@ -193,6 +205,7 @@ def test_missing_physical_warns_rather_than_refusing(cfg, tmp_path):
     base, problems = preflight.base_volume(cfg, volumes)
     assert base["create"] is False
     assert [p.severity for p in problems] == [Severity.WARNING]
+    assert wheres(problems) == ["image.base_volume_name"]
 
 
 def test_unreadable_local_image_warns(cfg):
@@ -202,6 +215,19 @@ def test_unreadable_local_image_warns(cfg):
     volumes = {"golden.qcow2": {"path": "/pool/golden.qcow2", "physical": 64}}
     _, problems = preflight.base_volume(cfg, volumes)
     assert [p.severity for p in problems] == [Severity.WARNING]
+    assert wheres(problems) == ["image.source_qcow2"], "the local file, not the host's"
+
+
+def test_a_base_volume_that_reports_no_path_refuses(cfg, tmp_path):
+    """Every overlay is created backing onto this path. A volume libvirt will not
+    give one for cannot be backed onto, and `create: False` with an empty path
+    would reach the module as a golden image nothing can find."""
+    cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
+    volumes = {"golden.qcow2": {"path": None, "physical": 64}}
+    base, problems = preflight.base_volume(cfg, volumes)
+    assert base["create"] is False
+    assert [p.severity for p in problems] == [Severity.ERROR]
+    assert wheres(problems) == ["image.base_volume_name"]
 
 
 def test_size_mismatch_names_the_non_destructive_procedure(cfg, tmp_path):
@@ -243,6 +269,7 @@ def test_volume_with_no_owning_domain_refuses(cfg):
     assert len(problems) == 2
     assert all(p.severity is Severity.ERROR for p in problems)
     assert "app01.qcow2" in problems[0].message
+    assert wheres(problems) == ["app01", "app02"]
 
 
 def test_orphan_message_admits_it_may_be_another_deployments(cfg):
@@ -271,6 +298,7 @@ def test_a_volume_that_reports_no_path_cannot_be_vouched_for(cfg):
     problems = preflight.orphan_volumes(cfg, volumes, claimed=claimed)
     assert [p.severity for p in problems] == [Severity.ERROR]
     assert "reports no path" in problems[0].message
+    assert wheres(problems) == ["app01"]
 
 
 # -- the pool --------------------------------------------------------------
@@ -284,6 +312,7 @@ def test_missing_pool_refuses_and_says_vcows_will_not_create_one():
     assert pool is None
     assert [p.severity for p in problems] == [Severity.ERROR]
     assert "never creates a pool" in problems[0].message
+    assert wheres(problems) == ["target.libvirt.pool"]
 
 
 def test_inactive_pool_refuses_by_name_rather_than_as_a_missing_volume():
@@ -293,6 +322,7 @@ def test_inactive_pool_refuses_by_name_rather_than_as_a_missing_volume():
     pool, problems = preflight.open_pool(conn, "images")
     assert pool is None
     assert "not active" in problems[0].message
+    assert wheres(problems) == ["target.libvirt.pool"]
 
 
 def test_a_pool_lookup_that_is_not_absence_is_not_read_as_absence():
@@ -323,6 +353,7 @@ def test_a_pool_that_cannot_be_refreshed_refuses_the_deploy():
     assert opened is pool
     assert [p.severity for p in problems] == [Severity.ERROR]
     assert "golden image" in problems[0].message
+    assert wheres(problems) == ["target.libvirt.pool"]
 
 
 def test_opening_a_pool_refreshes_it():
@@ -368,6 +399,7 @@ def test_a_volume_that_will_not_parse_is_reported_rather_than_dropped():
     assert "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2" in volumes
     assert [p.severity for p in problems] == [Severity.WARNING]
     assert "broken.qcow2" in problems[0].message
+    assert wheres(problems) == ["target.libvirt.pool"]
 
 
 def test_a_volume_that_vanished_between_listing_and_reading_is_reported():
@@ -378,6 +410,7 @@ def test_a_volume_that_vanished_between_listing_and_reading_is_reported():
     volumes, problems = preflight.walk(pool)
     assert volumes == {}
     assert [p.severity for p in problems] == [Severity.WARNING]
+    assert wheres(problems) == ["target.libvirt.pool"]
 
 
 # -- addressing ------------------------------------------------------------
@@ -396,6 +429,9 @@ def test_a_network_that_does_not_exist_refuses(cfg):
     problems = preflight.address_conflicts(FakeConnection(), cfg, {})
     assert all(p.severity is Severity.ERROR for p in problems)
     assert any("does not exist on this host" in p.message for p in problems)
+    assert wheres(problems) == ["nics[].network=default"], (
+        "one refusal per missing network, not one per NIC that names it"
+    )
 
 
 def test_a_network_lookup_that_is_not_absence_is_not_read_as_absence(cfg):
@@ -419,6 +455,7 @@ def test_leases_that_could_not_be_read_are_not_read_as_no_leases(cfg):
     assert [p.severity for p in problems] == [Severity.WARNING, Severity.ERROR]
     assert "leases" in problems[0].message
     assert "a DHCP reservation" in problems[1].message
+    assert wheres(problems) == ["nics[].network=default", "app01.nics[0].ip_cidr"]
 
 
 @pytest.mark.parametrize("code", [3, 55])  # NO_SUPPORT, OPERATION_INVALID
@@ -440,6 +477,7 @@ def test_an_address_with_a_dhcp_reservation_refuses(cfg):
     problems = preflight.address_conflicts(conn_with_network(), cfg, {})
     assert len(problems) == 1
     assert "a DHCP reservation" in problems[0].message
+    assert wheres(problems) == ["app01.nics[0].ip_cidr"]
 
 
 def test_an_address_with_an_active_lease_refuses(cfg):
@@ -448,6 +486,7 @@ def test_an_address_with_an_active_lease_refuses(cfg):
     problems = preflight.address_conflicts(conn_with_network(leases), cfg, {})
     assert len(problems) == 1
     assert "an active DHCP lease" in problems[0].message
+    assert wheres(problems) == ["app01.nics[0].ip_cidr"]
 
 
 def test_a_mac_already_on_another_domain_refuses(cfg):
@@ -458,6 +497,9 @@ def test_a_mac_already_on_another_domain_refuses(cfg):
     problems = preflight.address_conflicts(conn_with_network(), cfg, by_mac)
     assert len(problems) == 1
     assert "already configured on domain 'rocky-runner'" in problems[0].message
+    assert wheres(problems) == ["app02.nics[0]"], (
+        "the NIC, which has no ip_cidr to blame"
+    )
 
 
 # -- the domain walk -------------------------------------------------------
@@ -487,6 +529,10 @@ def test_one_unreadable_domain_does_not_abort_the_walk(break_it):
     assert [e.name for e in found] == ["first", "last"]
     assert [p.severity for p in problems] == [Severity.WARNING]
     assert "broken" in problems[0].message
+    assert wheres(problems) == ["target.libvirt"], (
+        "the host, not a VM: the domain is somebody else's and this config may "
+        "not name it at all"
+    )
     assert by_mac
 
 
@@ -547,6 +593,7 @@ def test_preflight_refuses_an_orphaned_overlay(cfg, tmp_path):
     discovered = preflight.preflight(cfg, conn)
     assert [p.severity for p in discovered.problems] == [Severity.ERROR]
     assert "no domain on this host references it" in discovered.problems[0].message
+    assert wheres(discovered.problems) == ["app01"]
 
 
 def test_our_own_macs_are_not_reported_as_somebody_elses(cfg, tmp_path):
@@ -568,6 +615,7 @@ def test_a_domain_the_walk_could_not_read_reaches_the_operator(cfg, tmp_path):
     discovered = preflight.preflight(cfg, conn)
     assert [p.severity for p in discovered.problems] == [Severity.WARNING]
     assert "vcows-probe02" in discovered.problems[0].message
+    assert wheres(discovered.problems) == ["target.libvirt"]
 
 
 def test_a_disk_of_the_same_name_elsewhere_does_not_clear_the_refusal(cfg, tmp_path):

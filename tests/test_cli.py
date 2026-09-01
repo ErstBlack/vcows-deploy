@@ -353,6 +353,9 @@ def test_a_deploy_that_worked_is_not_failed_by_the_version_it_records(
     # Both halves. `tofu: null` alone reads as "vcows did not ask", and the
     # reason went to a terminal the shipped run directory does not include.
     assert any("cannot record the tofu version" in p for p in record["problems"])
+    assert any("[tofu]" in p for p in record["problems"]), (
+        "the problem names what could not be recorded, not the VM being deployed"
+    )
 
 
 def test_a_failed_apply_records_the_warnings_that_came_before_it(

@@ -188,6 +188,7 @@ class FakeConnection:
         #: Raised by `lookupByUUIDString` instead of the NO_DOMAIN default, for
         #: the failures that are not "already gone". Mirrors `FakeDomain.stop_error`.
         self.lookup_error: libvirt.libvirtError | None = None
+        self.domains_error: libvirt.libvirtError | None = None
         self.pools_error: libvirt.libvirtError | None = None
         self.version_error: libvirt.libvirtError | None = None
         #: Replaces the NO_STORAGE_POOL / NO_NETWORK default for the lookups whose
@@ -199,6 +200,8 @@ class FakeConnection:
     # -- domains ---------------------------------------------------------
 
     def listAllDomains(self, _flags: int = 0) -> list[FakeDomain]:
+        if self.domains_error is not None:
+            raise self.domains_error
         return list(self.domains)
 
     def lookupByUUIDString(self, uuid: str) -> FakeDomain:
