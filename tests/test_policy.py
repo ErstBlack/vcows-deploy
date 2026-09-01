@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from orchestrator.backends.base import Action, Existing, Severity, decide
+from orchestrator.backends.base import Action, Existing, decide
 from orchestrator.marker import Marker
+from orchestrator.problems import Severity
 
 
 def ours(name, deployment="lab-a", hv_name=None):

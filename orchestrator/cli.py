@@ -45,10 +45,10 @@ from .backends.base import (
     Backend,
     Decision,
     Discovered,
-    Problem,
     decide,
 )
 from .config import ConfigError, load, vm_names
+from .problems import Problem
 
 #: The R5 build manifest, baked into the image at build time: what OpenTofu, what
 #: provider, which RPMs and which git revision produced this container. Absent

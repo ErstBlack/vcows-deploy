@@ -21,9 +21,10 @@ import os
 
 import pytest
 
-from orchestrator.backends.base import Action, Severity, decide
+from orchestrator.backends.base import Action, decide
 from orchestrator.backends.libvirt import preflight
 from orchestrator.config import vm_names
+from orchestrator.problems import Severity
 from tests.conftest import gate
 
 RIG = os.environ.get("VCOWS_RIG_URI")

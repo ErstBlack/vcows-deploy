@@ -15,9 +15,9 @@ from pathlib import Path
 import libvirt
 import pytest
 
-from orchestrator.backends.base import Severity
 from orchestrator.backends.libvirt import preflight
 from orchestrator.marker import MARKER_XMLNS
+from orchestrator.problems import Severity
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FIXTURES = Path(__file__).parent / "fixtures" / "libvirt"

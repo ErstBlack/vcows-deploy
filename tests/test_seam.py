@@ -192,7 +192,16 @@ def test_core_modules_do_not_import_libvirt(no_libvirt, monkeypatch):
         if mod.startswith("orchestrator"):
             monkeypatch.delitem(sys.modules, mod)
 
-    for mod in ("backends.base", "config", "marker", "qcow2"):
+    for mod in (
+        "backends.base",
+        "cloudinit",
+        "config",
+        "imagecheck",
+        "limits",
+        "marker",
+        "problems",
+        "qcow2",
+    ):
         importlib.import_module(f"orchestrator.{mod}")
 
     assert "libvirt" not in sys.modules

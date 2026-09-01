@@ -11,11 +11,12 @@ import struct
 
 import pytest
 
-from orchestrator.backends.base import Problem
+from orchestrator import cloudinit, imagecheck, limits
 from orchestrator.backends.libvirt import schema
 from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
+from orchestrator.problems import Problem
 from tests.fake_backend import FakeBackend
 
 
@@ -120,16 +121,28 @@ def test_a_size_above_the_ceiling_is_rejected(cfg, key):
 
 def test_the_ceilings_are_raisable_from_the_environment(cfg, monkeypatch):
     """A site on hardware we have not seen raises the bound from the outside.
-    The constants are read at import, so this reloads the module."""
+
+    Both modules are reloaded, and the order is the point. `_ceiling` reads the
+    environment in `limits`, and `schema` copies what it returns into `VM_SCHEMA`
+    as a literal at import. Reloading `schema` alone re-runs
+    `from ...limits import MAX_VCPUS` against an `orchestrator.limits` that is
+    already imported, so the ceiling does not move and the assertion below holds
+    for the default -- which is what it looked like before the constants became
+    core, and is not a test of anything.
+    """
     import importlib
 
-    monkeypatch.setenv("VCOWS_MAX_VCPUS", str(schema.MAX_VCPUS + 8))
+    raised = limits.MAX_VCPUS + 8
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", str(raised))
+    importlib.reload(limits)
     reloaded = importlib.reload(schema)
     try:
-        cfg["vms"][0]["vcpus"] = reloaded.MAX_VCPUS
+        assert reloaded.MAX_VCPUS == raised
+        cfg["vms"][0]["vcpus"] = raised
         assert errors(reloaded.validate(cfg)) == []
     finally:
         monkeypatch.delenv("VCOWS_MAX_VCPUS")
+        importlib.reload(limits)
         importlib.reload(schema)
 
 
@@ -139,14 +152,14 @@ def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
     import importlib
 
     try:
-        reloaded = importlib.reload(schema)
+        reloaded = importlib.reload(limits)
         assert reloaded.MAX_VCPUS == 512 and reloaded.MAX_DISK_GB == 64 * 1024
         err = capsys.readouterr().err
         assert "VCOWS_MAX_VCPUS='lots'" in err and "VCOWS_MAX_DISK_GB='-1'" in err
     finally:
         monkeypatch.delenv("VCOWS_MAX_VCPUS")
         monkeypatch.delenv("VCOWS_MAX_DISK_GB")
-        importlib.reload(schema)
+        importlib.reload(limits)
 
 
 # -- R-D: the URI is ours to assemble ---------------------------------------
@@ -334,6 +347,24 @@ def test_a_nic_needs_exactly_one_attachment(cfg, attach, expect):
     problems = errors(schema.validate(cfg))
     assert expect in messages(problems)
     assert wheres(problems) == ["vms[0].nics[0]"], "the NIC, not either key"
+
+
+def test_an_attachment_fault_and_an_addressing_fault_are_both_reported(cfg):
+    """The two halves of `_check_nics` live in different modules now.
+
+    The attachment rule is libvirt's and `cloudinit.check_addressing` is core, so
+    the one function that used to emit both in a single pass emits its own and
+    appends the other's. Drop the delegation, or put a `return` in front of it,
+    and one whole class of problem disappears -- the operator fixes what they were
+    told about, re-runs, and is told the rest. Order is not pinned here: the split
+    does change it, and nothing depends on it.
+    """
+    nic = cfg["vms"][0]["nics"][0]
+    nic.pop("network", None)
+    nic["gateway"] = "10.0.0.1"
+    out = messages(errors(schema.validate(cfg)))
+    assert "neither" in out, "the attachment half"
+    assert "gateway" in out, "the addressing half"
 
 
 def test_ip_without_a_prefix_is_rejected(cfg):
@@ -525,6 +556,26 @@ def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing
         assert [(p.where, p.message) for p in errors(problems)] == expected
 
 
+def test_the_deployment_reaches_the_derivation_through_the_schema(cfg):
+    """The config's deployment name has to survive the trip to `derive_mac`.
+
+    `_check_nics` forwards it to `cloudinit.check_addressing`, which forwards it
+    to `mac_of`, and that is the only route it takes on the validate path. Pinning
+    `derive_mac` directly does not cover either hop: drop the argument or replace
+    it with a constant and every other test here still passes, because a
+    consistent-but-wrong MAC collides with nothing and appears in no assertion.
+
+    Setting app02's MAC to the value app01 *derives under this deployment* makes
+    the duplicate report depend on the name actually arriving.
+    """
+    cfg["vms"][1]["nics"][0]["mac"] = cloudinit.derive_mac(
+        cfg["vms"][0]["name"], 0, cfg["deployment"]
+    )
+    problems = errors(schema.validate(cfg))
+    assert "already used by" in messages(problems)
+    assert wheres(problems) == ["vms[1].nics[0]"]
+
+
 def test_duplicate_mac_across_vms_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["mac"] = cfg["vms"][1]["nics"][0]["mac"]
     problems = errors(schema.validate(cfg))
@@ -547,9 +598,9 @@ def test_first_nic_is_primary_by_default(cfg):
     nic = dict(cfg["vms"][0]["nics"][0])
     nic["ip_cidr"] = "192.168.122.70/24"
     cfg["vms"][0]["nics"].append(nic)
-    assert schema.primary_index(cfg["vms"][0]) == 0
+    assert cloudinit.primary_index(cfg["vms"][0]) == 0
     cfg["vms"][0]["nics"][1]["primary"] = True
-    assert schema.primary_index(cfg["vms"][0]) == 1
+    assert cloudinit.primary_index(cfg["vms"][0]) == 1
 
 
 # -- R-F: an overlay cannot be smaller than what it backs onto --------------
@@ -645,7 +696,7 @@ def test_no_sha256_reads_nothing(cfg, tmp_path, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("hashed the image for a config that declares no sha256")
 
-    monkeypatch.setattr(schema.hashlib, "file_digest", refuse)
+    monkeypatch.setattr(imagecheck.hashlib, "file_digest", refuse)
     assert errors(schema.validate(cfg)) == []
 
 
@@ -678,9 +729,9 @@ def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):
 def test_derived_mac_is_pinned():
     """Changing this renames the interface every running VM's guest config is
     keyed to. Pinned for the same reason VCOWS_NS is."""
-    assert schema.derive_mac("app01", 0, "lab-a") == "52:54:00:be:a8:60"
-    assert schema.derive_mac("app01", 1, "lab-a") == "52:54:00:d3:8b:f5"
-    assert schema.derive_mac("app02", 0, "lab-a") == "52:54:00:22:01:10"
+    assert cloudinit.derive_mac("app01", 0, "lab-a") == "52:54:00:be:a8:60"
+    assert cloudinit.derive_mac("app01", 1, "lab-a") == "52:54:00:d3:8b:f5"
+    assert cloudinit.derive_mac("app02", 0, "lab-a") == "52:54:00:22:01:10"
 
 
 def test_derived_mac_carries_the_deployment():
@@ -688,7 +739,7 @@ def test_derived_mac_carries_the_deployment():
     guests boot, both apply their static address, and both report success on
     one MAC. `address_conflicts` only ever looks at one host, so nothing else
     catches it."""
-    assert schema.derive_mac("app01", 0, "lab-a") != schema.derive_mac(
+    assert cloudinit.derive_mac("app01", 0, "lab-a") != cloudinit.derive_mac(
         "app01", 0, "lab-b"
     )
 
@@ -699,7 +750,7 @@ def test_derived_mac_matches_its_documented_formula():
     import uuid
 
     raw = uuid.uuid5(VCOWS_NS, "lab-a/app01#nic0").bytes
-    assert schema.derive_mac("app01", 0, "lab-a") == (
+    assert cloudinit.derive_mac("app01", 0, "lab-a") == (
         f"52:54:00:{raw[0]:02x}:{raw[1]:02x}:{raw[2]:02x}"
     )
 
@@ -709,9 +760,9 @@ def test_an_explicit_mac_wins(cfg):
     regardless of deployment -- a site whose switch policy or DHCP
     reservations already own an address has nothing else to reach for."""
     deployment = cfg["deployment"]
-    assert schema.mac_of(cfg["vms"][1], 0, deployment) == "52:54:00:aa:bb:cc"
-    assert schema.mac_of(cfg["vms"][1], 0, "lab-b") == "52:54:00:aa:bb:cc"
-    assert schema.mac_of(cfg["vms"][0], 0, deployment) == schema.derive_mac(
+    assert cloudinit.mac_of(cfg["vms"][1], 0, deployment) == "52:54:00:aa:bb:cc"
+    assert cloudinit.mac_of(cfg["vms"][1], 0, "lab-b") == "52:54:00:aa:bb:cc"
+    assert cloudinit.mac_of(cfg["vms"][0], 0, deployment) == cloudinit.derive_mac(
         "app01", 0, deployment
     )
 

@@ -27,8 +27,8 @@ from xml.etree import ElementTree as ET
 import pytest
 
 import orchestrator
-from orchestrator import cli, tofu
-from orchestrator.backends.libvirt import destroy, preflight, schema
+from orchestrator import cli, limits, tofu
+from orchestrator.backends.libvirt import destroy, preflight
 
 from .test_tofu_driver import DIAGNOSTIC, FAKE
 
@@ -345,7 +345,7 @@ def test_the_non_tty_refusal_is_a_log_line(monkeypatch, capsys):
 
 
 def test_the_import_time_ceiling_warning_is_a_proper_log_line(monkeypatch, capsys):
-    """`schema._ceiling` runs while `VM_SCHEMA` is being built, before `main()`.
+    """`limits._ceiling` runs while `VM_SCHEMA` is being built, before `main()`.
     This is the assertion that fails if logging configuration moves back out of
     `orchestrator/__init__.py`: the record would reach `logging.lastResort`,
     which writes to stderr unprefixed and ignores VCOWS_LOG_LEVEL."""
@@ -353,14 +353,14 @@ def test_the_import_time_ceiling_warning_is_a_proper_log_line(monkeypatch, capsy
 
     monkeypatch.setenv("VCOWS_MAX_VCPUS", "lots")
     try:
-        importlib.reload(schema)
+        importlib.reload(limits)
         err = capsys.readouterr().err
         assert "VCOWS_MAX_VCPUS='lots'" in err
         assert "WARNING" in err, "reached lastResort instead of our handler"
-        assert "schema" in err
+        assert "limits" in err
     finally:
         monkeypatch.delenv("VCOWS_MAX_VCPUS")
-        importlib.reload(schema)
+        importlib.reload(limits)
 
 
 # -- the gate that keeps it that way ---------------------------------------
@@ -418,7 +418,7 @@ def test_a_problem_without_a_where_renders_as_just_its_message(caplog):
     line: the first version of this test checked for `":  "` and passed against
     the very defect it was written for, which renders `" : "`.
     """
-    from orchestrator.backends.base import Problem, Severity
+    from orchestrator.problems import Problem, Severity
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
         cli._problem(Problem(Severity.WARNING, "the pool went away"))
@@ -427,7 +427,7 @@ def test_a_problem_without_a_where_renders_as_just_its_message(caplog):
 
 
 def test_a_problem_with_a_where_names_it_first(caplog):
-    from orchestrator.backends.base import Problem, Severity
+    from orchestrator.problems import Problem, Severity
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.cli"):
         cli._problem(Problem(Severity.ERROR, "duplicate IP", "vms[0].nics[0]"))

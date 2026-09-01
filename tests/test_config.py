@@ -46,7 +46,7 @@ def test_load_hands_back_the_warnings_it_computed(tmp_path, registry):
     """Every verb validates on the way in and every verb but `validate` threw the
     non-fatal half away -- so `validate` recovered it by running the whole of
     validation a second time, and the other three never mentioned it at all."""
-    from orchestrator.backends.base import Severity
+    from orchestrator.problems import Severity
 
     text = CONFIG.replace("good://example", "odd://example")
     cfg, problems = load(write(tmp_path, text), registry)

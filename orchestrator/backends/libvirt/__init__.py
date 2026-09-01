@@ -1,10 +1,11 @@
 """The libvirt backend: eight methods, bound together.
 
-Four of them delegate to the free functions in ``schema.py``, ``render.py`` and
-``prepare.py``, which import nothing hypervisor-specific. The three that hold a
-connection live in ``preflight.py`` and ``destroy.py``. ``parse_outputs`` is in
-neither group: it is the one method with a body of its own, for the reason its
-own docstring gives.
+Four of them delegate to the free functions in ``schema.py`` and ``render.py``,
+which import nothing hypervisor-specific, and to ``orchestrator/cloudinit.py``,
+which is core because nothing in the seed ISO is hypervisor-specific. The
+three that hold a connection live in ``preflight.py`` and ``destroy.py``.
+``parse_outputs`` is in neither group: it is the one method with a body of its
+own, for the reason its own docstring gives.
 
 **No libvirt import at module level, here or in any module this one imports at
 import time.** ``orchestrator/backends/__init__.py`` names this class, so importing
@@ -24,6 +25,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ... import cloudinit as _cloudinit
+from ...problems import Problem
 from ..base import (
     Backend,
     Discovered,
@@ -31,11 +34,9 @@ from ..base import (
     Inventory,
     Outcome,
     Prepared,
-    Problem,
 )
 from . import destroy as _destroy
 from . import preflight as _preflight
-from . import prepare as _prepare
 from . import render as _render
 from . import schema as _schema
 
@@ -79,7 +80,7 @@ class LibvirtBackend(Backend):
         yield Prepared(
             workdir=workdir,
             artifacts={
-                "seed_isos": _prepare.build_all(cfg, workdir),
+                "seed_isos": _cloudinit.build_all(cfg, workdir),
                 # Discovered while connected, because nothing downstream can find
                 # it out: no HCL data source reads a pool, `tofu import` probes by
                 # the path we are looking for, and the pool's directory belongs to

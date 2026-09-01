@@ -16,10 +16,11 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from orchestrator.backends.base import Existing, Severity
+from orchestrator.backends.base import Existing
 from orchestrator.backends.libvirt import destroy as d
 from orchestrator.backends.libvirt.preflight import disks_of, marker_of
 from orchestrator.marker import Marker
+from orchestrator.problems import Severity
 from tests.conftest import require
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 

@@ -17,7 +17,7 @@
 # fails only on what is *new*. Red means the change under review made it worse.
 #
 # What the remaining survivors are, measured at #146 by decoding `mutants/*.meta`:
-# roughly 330 of the 676 mutate the *text* of a log line or a `Problem` message --
+# roughly 330 of the 674 mutate the *text* of a log line or a `Problem` message --
 # `"XX...XX"`, a case flip, a format argument swapped for None. Killing one means
 # asserting on prose, which pins the wording of a message this repo revises
 # deliberately, so they are a floor rather than a backlog. The rest are branches
