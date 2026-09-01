@@ -1,8 +1,10 @@
 # vcows-deploy
 
 Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`,
-shipped as a container that runs air-gapped apart from the SSH tunnel. OpenTofu
-creates; Python and the `libvirt` binding destroy.
+or to Proxmox VE over its HTTPS API with a token, shipped as a container that
+runs air-gapped apart from that one connection. OpenTofu creates; Python
+destroys -- through the `libvirt` binding on one backend and `proxmoxer` on the
+other.
 
 Most of this project's operating rules are counterintuitive, and the obvious
 helpful action breaks several of them. Each section below is one rule, an anchor,
@@ -54,13 +56,16 @@ has grown twice since this line was written, and it also catches
 trailing attribute path rather than a literal. Introducing one is a test
 failure, not a style note.
 
-`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Six
-names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, `smoke`, plus
-`all`. It is case-sensitive and does not strip whitespace, so
+`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure.
+Seven names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, `smoke`,
+`proxmox`, plus `all`. It is case-sensitive and does not strip whitespace, so
 `VCOWS_GATES="tofu, image"` silently demands only `tofu`. The list is `KNOWN` in
 `tests/test_gates.py`, not this sentence: a name absent from it is a test
-failure, and `smoke` was the sixth, added deliberately when `#122` moved
-`scripts/smoke-libvirt.sh`'s assertions into `tests/test_libvirt_smoke.py`.
+failure. `smoke` was the sixth, added when `#122` moved
+`scripts/smoke-libvirt.sh`'s assertions into `tests/test_libvirt_smoke.py`;
+`proxmox` was the seventh, and it needs `VCOWS_PVE_ENDPOINT` **and**
+`PROXMOX_VE_API_TOKEN`, because a gate that can name a cluster it cannot
+authenticate to answers nothing.
 
 ## Do not cite line numbers
 
@@ -109,16 +114,32 @@ used from the repo root and nothing else. An absolute path, or a new `just`
 recipe wrapping the flag, routes around it silently. It is a guardrail against
 the obvious helpful action, not a boundary.
 
-## Four pins nothing can automate
+## Seven pins nothing can automate
 
 * `BASE_DIGEST` — `Containerfile`
 * `TOFU_RPM_SHA256` — `Containerfile`
-* `PROVIDER_SHA256` — `Containerfile`
-* the `h1:` hash — `docs/provider-0.9.8.lock.hcl`
+* `PROVIDER_SHA256` — `Containerfile` (libvirt provider)
+* `PVE_PROVIDER_SHA256` — `Containerfile` (Proxmox provider)
+* `PROXMOXER_SHA256` — `Containerfile` (the one pip-installed dependency)
+* the `h1:` hash — `docs/provider-0.9.8.lock.hcl` (libvirt)
+* the `h1:` hash — `docs/provider-0.111.1.lock.hcl` (Proxmox)
 
 No update bot can recompute any of them, which is why `dependabot.yml` is
 deliberately not pointed at the `Containerfile`. `just verify-provider` is the
 gate that catches a bump left half-finished.
+
+**The lock filename carries the version and not the provider**, so two providers
+that ever pin the same version string collide. 0.9.8 and 0.111.1 do not, and
+renaming the scheme is filed rather than done. `verify-provider.sh` asserts every
+backend module has a committed lock, so the collision would surface as a diff
+rather than as a silently shared file.
+
+**A mirror is built one provider at a time and merged, never mirrored into a
+shared directory.** Measured against tofu 1.12.6: pointing `providers mirror` at
+a directory that already holds another provider rewrites that provider's index
+and drops its `zh:` hash, which is the only cross-check that the artifact in the
+mirror is the one `PROVIDER_SHA256` asserts. `scripts/mirror.sh` says so where it
+matters.
 
 ## Already evaluated and rejected
 

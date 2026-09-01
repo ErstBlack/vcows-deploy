@@ -71,10 +71,13 @@ jobs:
       # collapses to a constant -- a stale-mirror hit on exactly the run where
       # the mirror changed. No restore-keys, for the same reason: a prefix
       # fallback is how an old mirror gets restored into a new pipeline.
+      #
+      # Every backend's module, not just libvirt's: one mirror holds every
+      # provider, so a bump in any of them has to invalidate it.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: .tools/tofu-mirror
-          key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
+          key: tofu-mirror-${{ hashFiles('orchestrator/backends/*/tofu/main.tf') }}
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
@@ -162,7 +165,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: .tools/tofu-mirror
-          key: tofu-mirror-${{ hashFiles('orchestrator/backends/libvirt/tofu/main.tf') }}
+          key: tofu-mirror-${{ hashFiles('orchestrator/backends/*/tofu/main.tf') }}
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       # `just dev-env` is not optional here any more: the gate's assertions are
