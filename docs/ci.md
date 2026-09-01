@@ -57,10 +57,23 @@ being written.
 
 It runs on pull requests rather than on a schedule because it is a question about
 a change. Measured at 156s for the full 3835 on 16 cores; a hosted runner has 4,
-so budget roughly four times that cold. `mutants/` is cached and mutmut re-tests
-only the mutants whose function hash changed, so a warm run is far less. A stale
-cache entry is safe in a way the provider mirror's is not — it is a verdict
-mutmut recomputes, not an artifact it trusts.
+and one cold run there measured 8m48s, against a 30-minute ceiling.
+
+**`mutants/` is deliberately not cached**, and it was, until #157. The argument
+for caching it was that a stale entry is safe in a way the provider mirror's is
+not — a verdict mutmut recomputes rather than an artifact it trusts, because it
+hashes each function and resets whatever moved. That holds for a change to
+*source* and not to *tests*: mutmut hashes source functions, so a test-only
+commit leaves every hash identical and inherits every verdict. Measured on the
+branch that became #156, which added twenty-two tests and touched no source:
+`0.00 mutations/second`, and the survivor count reported was master's.
+
+That run failed, because the real number had gone down. The dangerous direction
+is the quiet one — weaken a test, inherit the old verdicts, and the gate is
+green, which is the vacuous pass the paragraph above is about arriving through
+the cache. Keying on `tests/` would fix GitHub Actions and not GitLab, whose
+`cache:key:files` takes at most two files and has both spent on
+`pyproject.toml` and `uv.lock`. So both pipelines run cold.
 
 The `gitleaks` gate is inside `just lint`, so it runs in `check` on every PR and
 master push rather than as a job of its own. It replaces nothing: the

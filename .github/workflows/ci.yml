@@ -113,22 +113,24 @@ jobs:
           path: .cache/uv
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: uv-
-      # mutmut keeps its verdicts in `mutants/` and re-tests only the mutants
-      # whose function hash changed, so a restored cache is the difference
-      # between re-running all 3835 and re-running the handful this PR touched.
+      # **No `mutants/` cache, and that is the whole point of the job.** One used
+      # to be restored here on the argument that a stale entry is only a verdict
+      # mutmut recomputes, "because it hashes each function and resets anything
+      # that moved". That is true of a source change and false of a test one:
+      # mutmut hashes *source* functions, so a test-only commit leaves every hash
+      # identical and every verdict is inherited. Measured on the branch that
+      # became #156, which added twenty-two tests and touched no source:
+      # `0.00 mutations/second`, and the survivor count reported was master's.
       #
-      # Keyed on the commit and restored by prefix, unlike the mirror cache
-      # above: there the danger is restoring a *stale* artifact and trusting it,
-      # while here a stale entry is only a verdict mutmut will recompute -- it
-      # hashes each function and resets anything that moved. `pyproject.toml`
-      # and `uv.lock` are in the key because mutmut's own change detection
-      # already watches them, so a dependency bump should start from a clean
-      # slate rather than inherit verdicts reached under the old one.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
-        with:
-          path: mutants
-          key: mutants-${{ hashFiles('pyproject.toml', 'uv.lock') }}-${{ github.sha }}
-          restore-keys: mutants-${{ hashFiles('pyproject.toml', 'uv.lock') }}-
+      # It failed loudly there only because the number had gone *down*. The same
+      # cache is silent in the direction that matters -- weaken a test, inherit
+      # the old verdicts, and the gate is green. That is the vacuous pass
+      # scripts/mutants.sh exists to catch, arriving through the cache.
+      #
+      # Keying on `tests/**` would fix this pipeline and not the GitLab one:
+      # `cache:key:files` there takes at most two files and both are spent. So
+      # the run is cold, always. Measured cold on a hosted runner: 8m48s, against
+      # the 30-minute ceiling below.
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
