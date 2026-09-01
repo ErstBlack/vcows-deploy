@@ -11,8 +11,11 @@ Ungated and offline: nothing here imports libvirt or touches a hypervisor.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,6 +82,21 @@ def test_a_keyfile_that_is_not_a_plain_path_is_refused(value):
 def test_a_known_hosts_that_is_not_a_plain_path_is_refused(value):
     with pytest.raises(ValueError):
         entrypoint.ssh_config(GOOD_KEY, value)
+
+
+@pytest.mark.parametrize(
+    "field, args",
+    [
+        ("ssh_keyfile", (INJECTIONS[0], GOOD_HOSTS)),
+        ("known_hosts", (GOOD_KEY, INJECTIONS[0])),
+    ],
+)
+def test_the_refusal_names_the_field_that_carried_the_value(field, args):
+    """Two credentials go through one check, and the operator's next move is to
+    edit the key that was refused. Naming the other one sends them to a value
+    that is fine."""
+    with pytest.raises(ValueError, match=field):
+        entrypoint.ssh_config(*args)
 
 
 # -- install() ---------------------------------------------------------------
@@ -158,8 +176,54 @@ def fake_home(tmp_path, monkeypatch):
 def test_install_writes_the_file_for_a_good_config(tmp_path, fake_home):
     entrypoint.install([str(config_file(tmp_path))])
     written = fake_home / ".ssh" / "config"
-    assert f"IdentityFile {GOOD_KEY}" in written.read_text()
+    body = written.read_text()
+    # Both halves. `known_hosts` is the one the URI cannot carry at all, so a
+    # config that installed only the key would fail at the host key check.
+    assert f"IdentityFile {GOOD_KEY}" in body
+    assert f"UserKnownHostsFile {GOOD_HOSTS}" in body
     assert written.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "field, value, directive",
+    [
+        ("ssh_keyfile", GOOD_KEY, f"IdentityFile {GOOD_KEY}"),
+        ("known_hosts", GOOD_HOSTS, f"UserKnownHostsFile {GOOD_HOSTS}"),
+    ],
+)
+def test_install_writes_the_one_credential_it_was_given(
+    tmp_path, fake_home, field, value, directive
+):
+    """Either alone is a usable config: a key for a host already in the default
+    known_hosts, or a known_hosts for a key an agent supplies."""
+    path = tmp_path / "deployment.yaml"
+    path.write_text(f"target:\n  libvirt:\n    {field}: {value!r}\n")
+
+    entrypoint.install([str(path)])
+    assert directive in (fake_home / ".ssh" / "config").read_text()
+
+
+def test_install_writes_nothing_when_the_config_names_no_credential(
+    tmp_path, fake_home
+):
+    """A `target.libvirt` with neither key is an operator whose `~/.ssh` is
+    already right. Writing `Host *` over it would take the defaults away."""
+    path = tmp_path / "deployment.yaml"
+    path.write_text("target:\n  libvirt:\n    uri: qemu+ssh://h/system\n")
+
+    entrypoint.install([str(path)])
+    assert not (fake_home / ".ssh" / "config").exists()
+
+
+def test_install_makes_a_home_that_is_not_there_yet(tmp_path, monkeypatch):
+    """The passwd entry's home need not exist -- a container that mounts nothing
+    at it has the directory in /etc/passwd and nothing on the filesystem. Both
+    levels are created, or the write fails and the credentials are lost."""
+    home = tmp_path / "not" / "created"
+    monkeypatch.setattr(entrypoint, "home", lambda: home)
+
+    entrypoint.install([str(config_file(tmp_path))])
+    assert f"IdentityFile {GOOD_KEY}" in (home / ".ssh" / "config").read_text()
 
 
 @pytest.mark.parametrize(
@@ -216,6 +280,10 @@ def test_the_mode_comes_from_the_create_not_a_later_chmod(
         os.umask(previous)
 
     assert (fake_home / ".ssh" / "config").stat().st_mode & 0o777 == 0o600
+    # The directory too, and for the same reason: `mkdir` without a mode creates
+    # at 0o777 & ~umask, which under this umask is 0755 -- a world-readable
+    # directory holding a file that names the operator's private key.
+    assert (fake_home / ".ssh").stat().st_mode & 0o777 == 0o700
 
 
 def test_a_config_arriving_after_the_check_is_not_truncated(
@@ -330,3 +398,78 @@ def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsy
     entrypoint.install([str(path)])
     assert not (fake_home / ".ssh" / "config").exists()
     assert "ProxyCommand" not in capsys.readouterr().err
+
+
+def test_a_flag_is_neither_the_verb_nor_the_config(tmp_path, monkeypatch):
+    """Both scans skip anything starting with `-`. Without that, a flag that
+    happens to name a file in the working directory becomes the config, and a
+    flag before the verb becomes the verb -- which is `validate` losing its
+    install, or `deploy` silently keeping it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "-x").write_text("")
+
+    assert entrypoint.config_path(["-x"]) is None
+    assert entrypoint.verb(["-x", "validate"]) == "validate"
+
+
+def test_install_is_handed_every_argument_not_just_what_follows_the_verb(
+    tmp_path, fake_home, no_exec, monkeypatch
+):
+    """`config_path` matches on "a non-flag argument that is an existing file",
+    so the list it searches has to be the whole one. A config named after the
+    verb it is passed to is still the config."""
+    config_file(tmp_path).rename(tmp_path / "deploy")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["entrypoint", "deploy"])
+    entrypoint.main()
+
+    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
+
+
+# -- the window before the exec ---------------------------------------------
+
+
+def test_the_timestamp_is_utc():
+    """Duplicated from `orchestrator._configure_logging` and asserted twice for
+    the same reason: `asctime` is localtime unless the converter says otherwise,
+    and these lines are read beside the ones vcows writes a moment later."""
+    assert logging.Formatter.converter is time.gmtime
+
+
+def test_every_line_carries_a_timestamp_a_level_and_the_logger(capsys):
+    """The entrypoint's four warnings are the only account of an SSH config that
+    was not installed, and they are read in the same stream as vcows's own."""
+    entrypoint.log.warning("something to say")
+    line = capsys.readouterr().err.strip()
+
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z WARNING vcows\.entrypoint: ", line
+    ), line
+    assert line.endswith("something to say")
+
+
+@pytest.mark.parametrize("given", ["debug", "DEBUG"])
+def test_the_level_is_taken_from_the_environment_in_either_case(monkeypatch, given):
+    """`VCOWS_LOG_LEVEL` is read once here and again by `orchestrator._log_level`
+    after the exec, and a value one of them accepts and the other drops would
+    make the two halves of one run disagree about what they log."""
+    monkeypatch.setenv("VCOWS_LOG_LEVEL", given)
+    try:
+        entrypoint._configure_logging()
+        assert logging.getLogger().level == logging.DEBUG
+    finally:
+        monkeypatch.delenv("VCOWS_LOG_LEVEL")
+        entrypoint._configure_logging()
+
+
+def test_an_unusable_level_falls_back_rather_than_stopping_the_entrypoint(monkeypatch):
+    """`setLevel` raises on a name it does not know, and that would turn a typo
+    in an environment variable into a container that never execs. The rejection
+    is left to `orchestrator._log_level`, which reports it in one place."""
+    monkeypatch.setenv("VCOWS_LOG_LEVEL", "chatty")
+    try:
+        entrypoint._configure_logging()  # must not raise
+        assert logging.getLogger().level == logging.INFO
+    finally:
+        monkeypatch.delenv("VCOWS_LOG_LEVEL")
+        entrypoint._configure_logging()
