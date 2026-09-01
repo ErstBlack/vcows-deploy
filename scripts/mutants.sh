@@ -23,6 +23,17 @@
 # deliberately, so they are a floor rather than a backlog. The rest are branches
 # and constants a test executes and no test notices, and those are worth writing.
 #
+# **Do not suppress the message-text ones.** mutmut 3.7.0 offers three ways and
+# all three are rejected here: `do_not_mutate` (a file-path glob),
+# `do_not_mutate_patterns` (regexes matched per source line) and
+# `# pragma: no mutate` in its bare, `block` and `start`/`end` forms. Two reasons.
+# Suppressing a mutant removes it from the denominator without a test being
+# written, which is the same defect as hand-editing the baseline below. And the
+# instrument is too blunt for this target: a pattern matching `log.debug(` also
+# hides the real mutants that share those lines -- `preflight.py` has a surviving
+# `len(err) > 2` -> `> 3` inside one. A floor that is honest about its size beats
+# a smaller number that stopped counting.
+#
 # Two counts are tracked rather than one, because they are different defects.
 # `survived` is a mutant some test executed and no test noticed. `no_tests` is a
 # mutant no test reached at all, which coverage should have caught first and is
