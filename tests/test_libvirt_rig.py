@@ -7,7 +7,8 @@ passes because it did not run is worse than no gate.
 Read-only apart from ``pool.refresh()``, which is a directory rescan. Nothing here
 defines, starts, stops or undefines anything: the two probe domains are fixtures on
 the rig, and destroy is not exercised against a real VM until the acceptance run
-has created one to tear down.
+has created one to tear down. ``tests/test_libvirt_boot.py`` is the file that
+does define, start and undefine one, under this same ``rig`` gate.
 
 The pair of probes is deliberate. ``vcows-probe02`` carries a current
 ``urn:vcows:1`` marker and is the positive case; ``vcows-spike-probe01`` still

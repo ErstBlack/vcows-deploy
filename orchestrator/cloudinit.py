@@ -156,9 +156,16 @@ def _network_config(vm: dict, deployment: str) -> dict:
     deciding what a dual-stack primary means for ``configured_address`` and for
     ``address_conflicts``, which is more than a second route literal.
 
-    **The guest's interfaces are renamed.** The keys are ``nic0``, ``nic1``, and
-    cloud-init renames each matched interface to its key, so nothing in the
-    golden image can rely on ``eth0`` or a predictable kernel name.
+    **The keys are identifiers, not device names.** ``nic0``, ``nic1`` name the
+    entries; the interface each one is applied to is found by MAC and keeps
+    whatever name the image gives it -- ``eth0``, ``ens3``, ``ens18``, whatever
+    the kernel and udev produce. cloud-init renames a matched interface only
+    when the entry carries ``set-name`` (``extract_physdevs`` in
+    ``cloudinit/net/__init__.py``: "only rename if configured to do so"), and
+    that is deliberately not written, so a golden image keyed to its own kernel
+    names keeps working. The rename would run from
+    ``stages.py::apply_network_config`` in init-local, ahead of every renderer,
+    so this holds for NetworkManager, sysconfig and netplan alike.
     """
     default_route = primary_index(vm)
     ethernets = {}

@@ -279,12 +279,14 @@ one that becomes a default route — a second NIC keeps its address and its
 gateway is checked against its own subnet, but does not add a second route for
 the guest to choose between.
 
-**Inside the guest the interfaces are called `nic0`, `nic1`, …** — not `eth0` or
-`ens3`. vcows writes a cloud-init `network-config` v2 document keyed on those
-names and matched by MAC, and cloud-init renames each interface to the key it
-matched. It follows the order of `nics:` in the config. Anything in the golden
-image keyed to a predictable kernel name — a firewall zone, an `ifcfg` file, a
-monitoring check — sees the renamed device.
+**`nic0`, `nic1`, … are identifiers, not device names.** vcows writes a
+cloud-init `network-config` v2 document whose keys follow the order of `nics:`
+in the config, and each entry is matched to an interface by MAC. The device
+keeps whatever name the image gives it — `eth0`, `ens3`, `ens18`, whatever the
+kernel and udev produce. cloud-init renames a matched interface only when the
+entry carries `set-name`, which vcows deliberately does not write, so a golden
+image keyed to its own kernel names — a firewall zone, an `ifcfg` file, a
+monitoring check — keeps working.
 
 **IPv4 only, in practice.** The schema accepts an IPv6 `ip_cidr` and validates it
 correctly, but the generated `network-config` sets `dhcp6: false` and writes the
@@ -525,7 +527,7 @@ explicit reason rather than quietly passing:
 
 | | |
 |---|---|
-| `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real libvirt hypervisor. |
+| `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real libvirt hypervisor, and the boot gate: one VM deployed, booted, read over SSH and destroyed again. |
 | `VCOWS_PVE_ENDPOINT=https://…` **and** `PROXMOX_VE_API_TOKEN` | Runs against a real Proxmox cluster. Both, or the gate answers nothing. |
 | `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. Needs podman; buildah cannot substitute. |
 | `.tools/tofu-mirror` present | Runs the OpenTofu module gates. `just mirror` builds it. |
