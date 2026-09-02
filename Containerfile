@@ -179,6 +179,9 @@ RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
       python3-jsonschema \
       python3-pycdlib \
       python3-requests \
+      # proxmoxer streams a multipart upload only if it can import this; without
+      # it the golden image is read whole into memory and >2 GiB raises OverflowError.
+      python3-requests-toolbelt \
       openssh-clients \
  && dnf -y remove epel-release \
  && dnf clean all \

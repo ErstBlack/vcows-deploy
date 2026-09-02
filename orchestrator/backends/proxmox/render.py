@@ -28,14 +28,6 @@ from ...marker import Marker
 from ..base import Prepared
 from .schema import BIOS, FIRMWARE_DEFAULT, MACHINE_DEFAULT, OS_TYPE_DEFAULT
 
-#: Names are the logical name, undecorated -- the same rule the libvirt backend
-#: follows (D16), and for the same reason: maximally predictable for
-#: hand-debugging at a site, where an operator has the config and the PVE UI.
-
-
-def vm_name(name: str) -> str:
-    return name
-
 
 def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
     target = cfg["target"]["proxmox"]
@@ -70,7 +62,11 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
     name = vm["name"]
     primary = vm["nics"][primary_index(vm)]
     return {
-        "vm_name": vm_name(name),
+        # The logical name, undecorated -- the same rule the libvirt backend
+        # follows (D16), and for the same reason: maximally predictable for
+        # hand-debugging at a site, where an operator has the config and the PVE
+        # UI.
+        "vm_name": name,
         "seed_name": seed_name(name),
         # The durable record of what vcows created, in the only per-VM free-text
         # field PVE has. `destroy` discovers by this, not by the state file.

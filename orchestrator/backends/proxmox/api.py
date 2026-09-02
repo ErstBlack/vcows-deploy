@@ -7,12 +7,13 @@ Proxmox cluster. Nothing here is imported at module scope; ``connect`` imports
 ``proxmoxer`` inside its own body, exactly as the libvirt backend imports
 ``libvirt`` inside the methods that hold a connection.
 
-**Two things this module does not do.** It does not upload: the golden image and
-the seed ISOs both go through ``proxmox_virtual_environment_file``, which uses
-PVE's own HTTP API for the ``import`` and ``iso`` content types, so vcows never
-streams a multi-GB image itself. And it does not create: everything the apply
-does belongs to the module in ``tofu/``. What is left is discovery and teardown,
-which is the same split the libvirt backend has.
+**This module is the calls, not the phases.** ``preflight.py``, ``create.py`` and
+``destroy.py`` each drive one phase and each reaches PVE through the ``Session``
+and the helpers here, which is what makes ``wait`` a single implementation: every
+task any phase starts is checked for its ``exitstatus`` the same way. The uploads
+and the VM creation are the exception and stay in ``create.py`` against
+``Session.prox`` -- one endpoint apiece, and a wrapper here would only rename
+them.
 """
 
 from __future__ import annotations

@@ -3,9 +3,8 @@
 Three delegate to free functions in ``schema.py``, which imports nothing
 hypervisor-specific, and to ``orchestrator/cloudinit.py``, which is core because
 this backend and the libvirt one build the identical seed ISO. The three that
-hold a session live in ``api.py``, ``preflight.py`` and ``destroy.py``.
-``create`` is the seventh and is a stub: it lands in the commit that replaces
-the tofu module.
+hold a session live in ``api.py``, ``preflight.py``, ``create.py`` and
+``destroy.py``.
 
 **No ``proxmoxer`` import at module level, here or in any module this one imports
 at import time.** ``orchestrator/backends/__init__.py`` names this class, so
@@ -30,8 +29,10 @@ from typing import Any
 from ... import cloudinit as _cloudinit
 from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome, Prepared
+from . import create as _create
 from . import destroy as _destroy
 from . import preflight as _preflight
+from . import render as _render
 from . import schema as _schema
 
 
@@ -74,4 +75,11 @@ class ProxmoxBackend(Backend):
         )
 
     def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
-        raise NotImplementedError("create lands in the next commit")
+        """Render the values, then make the objects they describe.
+
+        ``render`` stays a step of its own now that nothing consumes its output
+        but this line: it is the pure config-to-values half, golden-file tested
+        byte for byte, and keeping it separate is what lets ``create`` be tested
+        against a dict rather than against a config.
+        """
+        return _create.create(session, _render.render(cfg, prepared))

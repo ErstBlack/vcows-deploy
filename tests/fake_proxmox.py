@@ -23,14 +23,18 @@ from __future__ import annotations
 from typing import Any
 
 
-def upid(node: str = "pve1", kind: str = "qmstop", vmid: str = "100") -> str:
+def upid(node: str = "pve1", kind: str = "qmstop", ident: str = "100") -> str:
     """A UPID proxmoxer's ``Tasks.decode_upid`` accepts.
 
     Nine colon-separated segments, three of them hex. Built here rather than
     hardcoded in each test because ``decode_upid`` raises ``AssertionError`` on a
     malformed one, which reads as a broken test rather than a broken fake.
+
+    ``ident`` is PVE's own id field: a vmid for a task on a VM, and the file name
+    for an upload. It is what makes two UPIDs from one run distinguishable, which
+    is how a test can tell that every task started was also waited on.
     """
-    return f"UPID:{node}:0000ABCD:00000000:6600ABCD:{kind}:{vmid}:vcows@pve!deploy:"
+    return f"UPID:{node}:0000ABCD:00000000:6600ABCD:{kind}:{ident}:vcows@pve!deploy:"
 
 
 #: How long the fake plays along with a task that never finishes. Small, because
@@ -62,6 +66,9 @@ class _Path:
 
     def post(self, **kw: Any) -> Any:
         return self._world.dispatch("post", self._parts, kw)
+
+    def put(self, **kw: Any) -> Any:
+        return self._world.dispatch("put", self._parts, kw)
 
     def delete(self, **kw: Any) -> Any:
         return self._world.dispatch("delete", self._parts, kw)
@@ -97,6 +104,23 @@ class FakeProxmox:
         self.content = content or {}
         #: Every resolved path, in order. The endpoint assertions read this.
         self.calls: list[tuple[str, tuple[str, ...]]] = []
+        #: One entry per upload: the storage, and every parameter the call was
+        #: handed with the file handle rendered as its `name` -- which is the
+        #: name PVE stores the file under, and the one thing a caller can get
+        #: wrong without the request failing.
+        self.uploads: list[dict] = []
+        #: Every UPID this fake handed out, and every one it was asked the status
+        #: of. A task started and not waited on is a create that reports success
+        #: before PVE has finished, so the tests compare the two.
+        self.upids: list[str] = []
+        self.waited: list[str] = []
+        #: What `import-from` gives a disk: the golden image's own size, in GiB,
+        #: which is why `create_vm` has to resize afterwards.
+        self.imported_gb = 10
+        #: PVE 8 answers a resize with a UPID. Older ones answer with nothing,
+        #: having already done the work, and a caller that waits on that answer
+        #: turns a working cluster into a failed deploy.
+        self.resize_returns_upid = True
         #: Raw `/cluster/resources` rows, when a test needs a shape `vms` cannot
         #: express -- a row with no vmid, or an LXC container beside the VMs.
         self.resources: list[dict] | None = None
@@ -116,6 +140,7 @@ class FakeProxmox:
         self.stop_error: Exception | None = None
         self.delete_error: Exception | None = None
         self.volume_delete_error: Exception | None = None
+        self.nextid_error: Exception | None = None
 
     # -- the chaining entry point ----------------------------------------
 
@@ -139,6 +164,12 @@ class FakeProxmox:
                 raise ResourceException(f"unknown resource type {kw.get('type')!r}")
             return self._resources()
 
+        # PVE's own answer is the lowest free id at or above 100.
+        if parts == ("cluster", "nextid"):
+            self._raise(self.nextid_error)
+            taken = {vmid for _node, vmid in self.vms}
+            return next(str(n) for n in range(100, 1000) if str(n) not in taken)
+
         if parts[:1] == ("nodes",):
             return self._node(verb, parts[1], parts[2:], kw)
 
@@ -152,6 +183,21 @@ class FakeProxmox:
         if rest == ("storage",):
             self._raise(self.storage_error)
             return list(self.storages)
+
+        # /nodes/{node}/storage/{name}/upload
+        if len(rest) == 3 and rest[0] == "storage" and rest[2] == "upload":
+            content = kw["content"]
+            name = getattr(kw["filename"], "name", kw["filename"])
+            self.uploads.append(
+                {
+                    "storage": rest[1],
+                    **{k: getattr(v, "name", v) for k, v in kw.items()},
+                }
+            )
+            self.content.setdefault(rest[1], {}).setdefault(content, []).append(
+                f"{rest[1]}:{content}/{name}"
+            )
+            return self._upid(node, "imgcopy", str(name))
 
         # /nodes/{node}/storage/{name}/content
         if len(rest) == 3 and rest[0] == "storage" and rest[2] == "content":
@@ -172,6 +218,7 @@ class FakeProxmox:
 
         # /nodes/{node}/tasks/{upid}/status
         if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "status":
+            self.waited.append(rest[1])
             if self.task_never_finishes:
                 self.polls += 1
                 if self.polls > MAX_POLLS:
@@ -185,6 +232,19 @@ class FakeProxmox:
                 "status": "stopped",
                 "exitstatus": "task failed somehow" if failed else "OK",
             }
+
+        # POST /nodes/{node}/qemu -- the create, which carries the vmid itself.
+        if rest == ("qemu",) and verb == "post":
+            vmid = str(kw["vmid"])
+            if (node, vmid) in self.vms:
+                raise ResourceException(f"VM {vmid} already exists on {node}")
+            # `import-from` gives the disk the image's size and PVE rewrites the
+            # config to record it, which is the number `create_vm` reads back.
+            self.vms[(node, vmid)] = {
+                **kw,
+                "scsi0": f"{kw['scsi0']},size={self.imported_gb}G",
+            }
+            return self._upid(node, "qmcreate", vmid)
 
         if rest[:1] == ("qemu",):
             return self._qemu(verb, node, rest[1], rest[2:], kw)
@@ -209,6 +269,19 @@ class FakeProxmox:
             if key not in self.vms:
                 raise ResourceException(f"VM {vmid} does not exist on {node}")
             return {"status": self.vms[key].get("status", "stopped")}
+
+        if rest == ("resize",) and verb == "put":
+            disk, size = kw["disk"], kw["size"]
+            head, *fields = self.vms[key][disk].split(",")
+            kept = [f for f in fields if not f.startswith("size=")]
+            self.vms[key][disk] = ",".join([head, *kept, f"size={size}"])
+            return (
+                self._upid(node, "qmresize", vmid) if self.resize_returns_upid else None
+            )
+
+        if rest == ("status", "start"):
+            self.vms[key]["status"] = "running"
+            return self._upid(node, "qmstart", vmid)
 
         if rest == ("status", "stop"):
             self._raise(self.stop_error)
@@ -252,6 +325,12 @@ class FakeProxmox:
             }
             for (node, vmid), config in sorted(self.vms.items())
         ]
+
+    def _upid(self, node: str, kind: str, ident: str) -> str:
+        """Hand out a UPID and remember that it was handed out."""
+        made = upid(node, kind, ident)
+        self.upids.append(made)
+        return made
 
     @staticmethod
     def _raise(exc: Exception | None) -> None:
