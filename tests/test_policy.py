@@ -32,15 +32,21 @@ def test_ours_skips_without_comparing():
 
 def test_unmarked_name_collision_refuses():
     """A VM we did not create must never be adopted or overwritten."""
-    decisions, _ = decide(["app01"], [unmarked("app01")], "lab-a")
+    theirs = unmarked("app01")
+    decisions, _ = decide(["app01"], [theirs], "lab-a")
     assert decisions[0].action is Action.REFUSE
     assert "will not adopt or overwrite" in decisions[0].reason
+    assert decisions[0].existing == theirs
 
 
 def test_other_deployment_refuses():
-    decisions, _ = decide(["app01"], [ours("app01", deployment="lab-b")], "lab-a")
+    held = ours("app01", deployment="lab-b")
+    decisions, _ = decide(["app01"], [held], "lab-a")
     assert decisions[0].action is Action.REFUSE
     assert "lab-b" in decisions[0].reason
+    # The VM the refusal is about, machine-readable: `cli._record` writes it into
+    # run.json, and the id is in no other artifact a site ships back.
+    assert decisions[0].existing == held
 
 
 def test_identity_is_the_marker_not_the_name():
@@ -96,8 +102,13 @@ def test_two_markers_for_one_logical_name_refuse_in_either_order():
     mine = ours("app01")
     theirs = ours("app01", deployment="lab-b", hv_name="app01-copy")
     for world in ([mine, theirs], [theirs, mine]):
-        decisions, problems = decide(["app01"], world, "lab-a")
-        assert [d.action for d in decisions] == [Action.REFUSE]
+        # A second wanted name after the ambiguous one still gets a decision:
+        # one unresolvable VM does not end the walk.
+        decisions, problems = decide(["app01", "app09"], world, "lab-a")
+        assert [(d.vm_name, d.action) for d in decisions] == [
+            ("app01", Action.REFUSE),
+            ("app09", Action.CREATE),
+        ]
         fatal = [p for p in problems if p.fatal]
         assert len(fatal) == 1
         for text in (decisions[0].reason, fatal[0].message):
@@ -124,4 +135,5 @@ def test_a_marked_vm_holding_the_hypervisor_name_we_want_refuses():
     decisions, problems = decide(["app01"], [other], "lab-a")
     assert decisions[0].action is Action.REFUSE
     assert "'web01'" in decisions[0].reason and "'lab-b'" in decisions[0].reason
+    assert decisions[0].existing == other
     assert not any(p.fatal for p in problems)
