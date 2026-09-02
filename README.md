@@ -117,7 +117,7 @@ denied: '/runs/run.json'
 
 No `run.json` and no `manifest.json` are written. **`deploy` and `destroy` are
 not symmetric here.** Everything `deploy` puts in the run directory — the seed
-ISOs, the staged module, the tfvars — it writes before `tofu apply`, so it fails
+ISOs — it writes before it creates anything through the backend, so it fails
 with nothing created on the hypervisor. `destroy` writes nothing until the
 teardown is over, so the VMs are gone, no record says they were, and the exit
 code is 1, which reads as a teardown that failed. An air-gapped site ships the
@@ -344,14 +344,10 @@ verbatim.
 
 ```
 seed/*.iso        what each VM was given
-tofu/             the module, the tfvars, the saved plan, the JSON streams, the state
 inventory.json    name -> configured_address, uuid, disks. Minimal, and unstable at v0.1
 manifest.json     which build produced this run
 run.json          what was asked, what was decided, what happened
 ```
-
-The OpenTofu state is written here and **never read back**. Destroy works from the
-marker, so losing the state costs nothing.
 
 **Nothing expires them.** Run directories accumulate, each with the seed ISOs of
 its deploy, and deleting them is the operator's job — vcows never does, because a

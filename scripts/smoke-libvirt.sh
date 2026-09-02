@@ -588,6 +588,11 @@ main() {
         exec sudo "$0" "$@"
     fi
 
+    # The heredocs below `import orchestrator`, which resolves by cwd alone --
+    # the venv installs the RPM bindings but never this project -- so the run
+    # has to happen from the tree rather than from wherever this was invoked.
+    cd "$REPO"
+
     need_venv
     trap cleanup EXIT
 

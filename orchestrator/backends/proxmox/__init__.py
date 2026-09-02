@@ -2,7 +2,7 @@
 
 Three delegate to free functions in ``schema.py``, which imports nothing
 hypervisor-specific, and to ``orchestrator/cloudinit.py``, which is core because
-this backend and the libvirt one build the identical seed ISO. The three that
+this backend and the libvirt one build the identical seed ISO. The four that
 hold a session live in ``api.py``, ``preflight.py``, ``create.py`` and
 ``destroy.py``.
 

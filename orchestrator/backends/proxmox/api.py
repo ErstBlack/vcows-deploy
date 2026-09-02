@@ -29,14 +29,18 @@ from .schema import TOKEN_ENV, token_parts
 
 log = logging.getLogger(__name__)
 
-#: Ceiling on one PVE task. Generous because the tasks this module waits on are
-#: a stop and a delete -- a stop on a wedged guest is the slow one, and a limit
-#: short enough to be tidy would abandon a teardown that was going to succeed.
+#: Ceiling on one PVE task. The tasks waited on are a stop and a delete on the
+#: teardown, and an image upload, a VM create, a resize and a start on the create
+#: path. Generous because a stop on a wedged guest is the slow one and a limit
+#: short enough to be tidy would abandon a teardown that was going to succeed --
+#: 600 was chosen for that stop, and has not been measured against an image
+#: import, which is the other candidate for the slowest task here.
 TASK_TIMEOUT = 600
 
 #: How often ``Tasks.blocking_status`` asks. Its loop sleeps once more after the
-#: task reports stopped, so this is also a fixed tax per wait; one second is
-#: small enough not to matter against a stop or a delete.
+#: task reports stopped, so this is a fixed tax on every wait -- the upload, the
+#: create, the resize and the start of a create, and the stop and delete of a
+#: teardown. One second is small enough not to matter against any of them.
 POLL_INTERVAL = 1
 
 

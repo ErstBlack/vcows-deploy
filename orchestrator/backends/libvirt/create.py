@@ -148,18 +148,22 @@ def upload(conn: Any, pool: Any, name: str, fmt: str, source: str) -> Any:
     stream = conn.newStream(0)
     with open(source, "rb", buffering=0) as handle:
         fd = handle.fileno()
-        vol.upload(stream, 0, size, 0)
         try:
+            vol.upload(stream, 0, size, 0)
             stream.sendAll(lambda _stream, nbytes, _opaque: os.read(fd, nbytes), None)
+            stream.finish()
         except BaseException:
             # `virStreamSendAll` aborts the stream itself only when the *handler*
             # raises inside its loop. Anything else -- the daemon refusing a
             # write, a Ctrl-C -- leaves it neither aborted nor finished, and the
             # daemon holds the half-written volume open until the connection
             # drops. `BaseException` because an interrupt leaks it just as well.
+            #
+            # All three calls are inside: a stream is live from `vol.upload`
+            # onwards, so a refusal there or a `finish` that fails leaves exactly
+            # the same half-written volume a failed send does.
             stream.abort()
             raise
-    stream.finish()
     return vol
 
 
@@ -193,6 +197,12 @@ def _made(what: str) -> Iterator[None]:
     there is one, which after a real failure there always is. There is nothing to
     translate through ``errors``: no code here matches on a code, and no failure
     here is the benign one.
+
+    **Only ``libvirtError`` is caught, where the Proxmox ``_made`` catches every
+    ``Exception``, and the divergence is deliberate**: the ``args`` rewrite is
+    specific to this type, and the other failure that reaches here -- an
+    ``OSError`` from ``upload``'s ``open(source)`` -- already names the file it
+    could not read.
     """
     import libvirt
 

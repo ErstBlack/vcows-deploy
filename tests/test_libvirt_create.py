@@ -339,6 +339,22 @@ def test_a_send_that_fails_partway_aborts_the_stream(cfg, conn, prepared):
     assert str(raised.value).startswith("could not create base volume golden.qcow2: ")
 
 
+def test_an_upload_the_daemon_refuses_aborts_the_stream(cfg, conn, pool, prepared):
+    """The stream is live from `vol.upload` onwards, not from the first byte, so
+    a refusal there leaves the same half-written volume a failed send does."""
+    import libvirt
+
+    pool.volume_upload_error = lv_error(38, "cannot start upload")
+
+    with pytest.raises(libvirt.libvirtError) as raised:
+        deployed(cfg, conn, prepared)
+
+    (stream,) = conn.streams
+    assert stream.aborted
+    assert not stream.finished, "an aborted stream is not also a finished one"
+    assert str(raised.value).startswith("could not create base volume golden.qcow2: ")
+
+
 def test_each_created_resource_is_logged_with_what_it_cost(cfg, conn, prepared, caplog):
     """One line per resource, so a slow deploy says which upload was slow."""
     import logging

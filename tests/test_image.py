@@ -10,12 +10,6 @@ actually runs.
 Everything here runs ``--network=none``. That is the point: the build host is
 connected and the site is not, so any dependency the build left dangling has to
 fail here rather than as a DNS timeout at a delivery.
-
-``tofu plan`` is expected to *fail*, and where it fails is the assertion. R2 asks
-for "init && plan succeeding", which cannot be literal -- a plan configures the
-provider, and the provider dials the hypervisor. Reaching that dial is the proof
-that provider installation, variable evaluation and module validation all
-completed offline.
 """
 
 from __future__ import annotations
@@ -183,21 +177,6 @@ def test_init_did_not_rewrite_the_committed_lock(gate):
     """A lock produced against a registry records different hashes than one
     produced against a mirror, and the mismatch reads like corruption (R6)."""
     assert "init rewrote the committed lock" not in gate.stdout + gate.stderr
-
-
-def test_plan_reaches_the_hypervisor_connection_and_fails_only_there(gate):
-    """Where it fails is the assertion. Getting this far means the provider was
-    installed, the tfvars type-checked against the variable blocks, and the module
-    validated -- all with no network. The dial is the first thing that needs one.
-    """
-    output = gate.stdout + gate.stderr
-    assert gate.returncode != 0
-    assert "Unable to Connect to Libvirt" in output
-    for wrong_failure in (
-        "Failed to install provider",
-        "No value for required variable",
-    ):
-        assert wrong_failure not in output
 
 
 CACHE_GATE = textwrap.dedent("""\

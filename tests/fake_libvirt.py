@@ -62,12 +62,17 @@ class FakeVolume:
     def upload(self, stream: FakeStream, offset: int, length: int, flags: int) -> None:
         """Record the whole call, not just that one happened.
 
+        The daemon refusing the upload outright is `pool.volume_upload_error`,
+        armed on the pool for the same reason the recording below happens there.
+
         Every argument here has one right answer and a wrong one that would go
         unnoticed: an offset places the bytes, and the flag is the sparse stream
         the dense path measured no faster than. `length` and the stream are kept
         on the pool because `createXML` hands out a fresh volume object each
         time, so a test has nothing else to hold on to.
         """
+        if self.pool.volume_upload_error is not None:
+            raise self.pool.volume_upload_error
         assert offset == 0, "a volume is uploaded whole, from its start"
         assert flags == 0, "dense: VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM is not used"
         self.pool.uploads[self._name] = (length, stream)
@@ -117,6 +122,10 @@ class FakePool:
         self.xml_error: libvirt.libvirtError | None = None
         #: Raised by every volume this pool hands out, not by the pool itself.
         self.volume_xml_error: libvirt.libvirtError | None = None
+        #: The daemon refusing to start an upload at all. `FakeStream.send_error`
+        #: is the refusal partway through; this one is before a byte is sent, and
+        #: the stream is live for both.
+        self.volume_upload_error: libvirt.libvirtError | None = None
         #: The refusal that is not "already gone": `_delete_volume` reports it
         #: through `_fail`, and must not also report the path as deleted.
         self.volume_delete_error: libvirt.libvirtError | None = None

@@ -276,7 +276,7 @@ def test_the_task_wait_carries_our_ceiling_rather_than_proxmoxers(
 def test_every_abstract_method_is_reachable_through_the_class(
     backend, pve_cfg, pve_token, monkeypatch, tmp_path
 ):
-    """The eight the ABC declares, driven through the instance the registry
+    """The seven the ABC declares, driven through the instance the registry
     holds rather than through the free functions they delegate to."""
     import proxmoxer
 
@@ -288,7 +288,9 @@ def test_every_abstract_method_is_reachable_through_the_class(
             {"storage": "local", "content": "import,iso"},
             {"storage": "local-lvm", "content": "images"},
         ],
-        content={"local": {"import": [], "iso": []}},
+        # The golden image is already there, so `create` below has no local
+        # file to upload -- only the seed ISOs `prepare` just wrote.
+        content={"local": {"import": ["local:import/golden.qcow2"], "iso": []}},
     )
     monkeypatch.setattr(proxmoxer, "ProxmoxAPI", lambda host, **kw: w)
 
@@ -301,6 +303,7 @@ def test_every_abstract_method_is_reachable_through_the_class(
         assert discovered.vms == ()
         prepared = backend.prepare(pve_cfg, tmp_path, discovered)
         assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
+        assert set(backend.create(pve_cfg, session, prepared)) == {"app01", "app02"}
         # With a target rather than none, so `destroy` reaches the session it is
         # handed rather than returning on an empty list.
         w.vms[("pve1", "100")] = {
