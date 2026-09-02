@@ -154,10 +154,13 @@ and both guests came up **healthy on addresses nobody asked for** with
 `cloud-init status: done`. Nothing short of checking the address noticed.
 
 vcows writes network-config v2 keyed on `nic0`/`nic1` and matched by MAC, with the
-default route as `0.0.0.0/0`. Old cloud-init on RHEL renders through `sysconfig`
-rather than netplan, and that path is untested. The check is not "did it boot" —
-it is `ip -4 addr` inside the guest matching `configured_address` exactly, and the
-interfaces actually being named `nic0`/`nic1`.
+default route as `0.0.0.0/0`. The keys are identifiers rather than device names:
+cloud-init renames a matched interface only when the entry carries `set-name`,
+which vcows deliberately does not write, so the guest keeps whatever name the
+image gives it. Old cloud-init on RHEL renders through `sysconfig` rather than
+netplan, and that path is untested. The check is not "did it boot" — it is
+`ip -4 addr` inside the guest showing `configured_address` exactly, on the
+device carrying the MAC vcows derived, whatever that device is called.
 
 ### C6 — monolithic `libvirtd`, and the fallback that has never run
 
