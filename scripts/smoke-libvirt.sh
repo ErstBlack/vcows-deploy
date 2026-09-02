@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# The end-to-end smoke gate: the shipped OpenTofu module applied against a real
+# The end-to-end smoke gate: the shipped create path applied against a real
 # libvirtd, on an unmodified hosted runner.
 #
-# Everything else that reads this module reads a substitute. `tofu validate` and
-# `tofu console` never evaluate an attribute value; `libvirt-module.tftest.hcl`
-# evaluates them against `mock_provider "libvirt" {}`, which generates values
-# rather than sending XML anywhere. So the three things the mock stands in for
-# have never run in CI at all:
+# Everything else that reads `orchestrator/backends/libvirt/create.py` reads a
+# substitute. `tests/test_libvirt_create.py` drives it against
+# `tests/fake_libvirt.py`, which records what it was handed and answers with
+# objects it invented rather than with anything a daemon parsed. So the three
+# things that fake stands in for have never run in CI at all:
 #
-#   * `virStorageVolUpload` -- the provider streaming a local file into a pool
-#   * libvirtd parsing and accepting the domain XML the module renders
+#   * `virStorageVolUpload` -- a local file streamed into a pool
+#   * libvirtd parsing and accepting the domain XML `create.domain_xml` renders
 #   * define, start and undefine of that domain
 #
-# This runs all three. What libvirtd actually created is then asserted against
-# rather than what tofu planned -- a plan that agrees with itself is what the
-# mock already proves.
+# This runs all three, and then tears the result down through the shipped
+# `destroy.destroy` rather than with virsh, so the marker round trip is on the
+# gate too. What libvirtd actually created is then asserted against rather than
+# what was sent -- a document that agrees with itself is what the fake already
+# proves.
 #
 # **The assertions live in `tests/test_libvirt_smoke.py`, not here** (`#122`).
-# This script builds the host and drives apply and destroy; that file says what
-# the result has to look like, behind `VCOWS_GATES=smoke`. Every constant below
-# is exported for it, and it is invoked twice -- once with the domain running and
-# once after destroy -- because those are two different subjects.
+# This script builds the host and drives the create and the teardown; that file
+# says what the result has to look like, behind `VCOWS_GATES=smoke`. Every
+# constant below is exported for it, and it is invoked twice -- once with the
+# domain running and once after the teardown -- because those are two different
+# subjects.
 #
 # **No guest is booted and no guest address is observed.** The domain reaches
 # firmware and stops there; nothing here needs it to reach a login prompt. The
@@ -33,23 +36,20 @@
 # and on a GitLab.com SaaS runner. GitLab is the destination, and its shared
 # runners have no `/dev/kvm`.
 #
-# Getting there needs a two-attribute override on a *copy* of the module, and the
-# reason is worth stating because the obvious mechanism does not exist here.
-# `docs/tooling-2026-08-30.md` §4.1 credits `TF_PROVIDER_LIBVIRT_DOMAIN_TYPE=qemu`
-# with swapping `type='kvm'` for `type='qemu'`. Measured against the mirrored
-# provider: `strings` over `terraform-provider-libvirt_v0.9.8` contains no
-# `TF_..._DOMAIN_TYPE` string at all, and it would not matter if it did --
-# `main.tf` sets `type = "kvm"` explicitly, and an env-var default cannot beat a
-# declared attribute. The override is the honest form of the same swap.
+# Getting there needs a two-attribute override, and `create.py` offers no lever
+# for one: `DOMAIN_XML` writes `<domain type='kvm'>` because that is what a site
+# gets, and a switch nothing but this gate would set is surface a site pays for.
+# So the override is applied to a *copy* of that template, inside the driver
+# below and in that process only -- the shipped tree is never edited, and
+# `just check`, `just image` and every other reader keep seeing `kvm`.
 #
-# `cpu` goes with it. `main.tf` pins `host-passthrough`, which QEMU renders as
-# `-cpu host` -- a model registered only for KVM and HVF. Under TCG the domain
-# defines and then fails to start. Setting it null leaves libvirt to pick its own
-# default, which is the only part of this the runner can supply.
-#
-# The shipped tree is never edited: the module is copied into a temp directory
-# and `smoke_override.tf` is written beside the copy. `tofu fmt`, `just test-tofu`
-# and the image build all keep reading the real module.
+# `cpu` goes with it. `create.py` emits `<cpu mode='host-passthrough'/>`, which
+# QEMU renders as `-cpu host` -- a model registered only for KVM and HVF. Under
+# TCG the domain defines and then fails to start. Dropping the element leaves
+# libvirt to pick its own default, which is the only part of this the runner can
+# supply. Each substitution is checked against the template it names, so an
+# override that no longer matches `create.py` is an error rather than a silent
+# no-op.
 #
 # ## What this is not
 #
@@ -67,8 +67,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 URI="qemu:///system"
 POOL="default"
 POOL_DIR="/var/lib/libvirt/images"
-# Hardcoded in main.tf's nv_ram path and nowhere configurable, so it is a
-# constant here too rather than something read back from the domain.
+# `create.NVRAM_DIR`, and nowhere configurable, so it is a constant here too
+# rather than something read back from the domain.
 NVRAM_DIR="/var/lib/libvirt/qemu/nvram"
 NETWORK="default"
 
@@ -78,18 +78,24 @@ DOMAIN="vcows-smoke01"
 BASE_VOL="vcows-smoke-golden.qcow2"
 OVERLAY_VOL="vcows-smoke01.qcow2"
 SEED_VOL="vcows-smoke01-seed.iso"
+# Neither is derived here. `Marker.for_vm` and `derive_mac` compute both at a
+# site, and `tests/test_marker.py` pins those derivations; a literal is what
+# lets the assertions read the value back rather than recompute it with the
+# function under test. The marker's `name`, though, is not free: `destroy`
+# derives the two volume names it is allowed to delete from it, so it is the
+# domain's stem here exactly as it is at a site.
 MARKER_ID="9f2b8d40-5c1e-5a3f-9a77-1c2d3e4f5a6b"
 MAC="52:54:00:be:a8:60"
 
-# The firmware pin, in one place: the tfvars below is substituted from these and
-# the assertions read them back, so the two cannot drift apart. Ubuntu's `ovmf`
+# The firmware pin, in one place: the values file below is substituted from these
+# and the assertions read them back, so the two cannot drift apart. Ubuntu's `ovmf`
 # ships raw .fd builds and all four of its /usr/share/qemu/firmware descriptors
 # declare "raw" -- measured, CI run 33374623746.
 LOADER="/usr/share/OVMF/OVMF_CODE_4M.fd"
 NVRAM_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
 
 # The probe below defines its own domain, so it needs a name the asserts and the
-# EXIT trap can tell apart from the one the module creates.
+# EXIT trap can tell apart from the one the create makes.
 PROBE_DOMAIN="vcows-smoke-probe"
 
 WORK=""
@@ -104,8 +110,7 @@ contains() { grep -qF -- "$2" <<<"$1"; }
 
 # The constants above, over the environment, because tests/test_libvirt_smoke.py
 # asserts about the objects this script names and a second copy there would be
-# one fixture maintained in two languages. `$WORK` is exported later, from
-# `prepare`, since it does not exist yet.
+# one fixture maintained in two languages.
 #
 # Exported here rather than passed through CI: the workflow gate rejects any
 # `VAR=x just recipe` line, and `sudo "$0"` drops the environment at the re-exec
@@ -137,18 +142,15 @@ asserts() {
         "$PY" -m pytest -q -rs -p no:cacheprovider "$REPO/tests/test_libvirt_smoke.py::$1"
 }
 
-# `tofu destroy` is the thing under test, so it runs in `main` where its exit
-# status is read. This is the second line of defence: an apply that failed
-# halfway leaves objects the state may not record, and a runner left with a
-# defined domain fails every later run for a reason that has nothing to do with
-# the change under review.
+# The teardown is the thing under test, so it runs in `main` where its exit
+# status is read. This is the second line of defence: a create that failed
+# halfway leaves objects with nothing to record them but their marker, and a
+# runner left with a defined domain fails every later run for a reason that has
+# nothing to do with the change under review.
 cleanup() {
     local status=$? vol
     set +e
     trap - EXIT
-    if [ -n "$WORK" ] && [ -f "$WORK/terraform.tfstate" ]; then
-        tofu -chdir="$WORK" destroy -auto-approve -input=false >/dev/null 2>&1
-    fi
     vsh destroy "$DOMAIN" >/dev/null 2>&1
     vsh undefine --nvram "$DOMAIN" >/dev/null 2>&1
     vsh undefine --nvram "$PROBE_DOMAIN" >/dev/null 2>&1
@@ -159,77 +161,46 @@ cleanup() {
     exit "$status"
 }
 
-# -- the module copy --------------------------------------------------------
+# -- the values -------------------------------------------------------------
 
-# Deliberately first, before a single package is installed: a typo in the tfvars
-# below, or an override that no longer matches a resource in main.tf, is a
-# three-second failure, and finding it after ninety seconds of apt is ninety
-# seconds wasted on every run that has one.
+# Deliberately first, before a single package is installed: a typo in the values
+# below, or an override that no longer matches `create.py`, is a three-second
+# failure, and finding it after ninety seconds of apt is ninety seconds wasted on
+# every run that has one.
 prepare() {
-    local version lock
-    version="$(provider_version)"
-    lock="$REPO/docs/provider-${version}.lock.hcl"
-    [ -f "$lock" ] || die "no committed lock at $lock"
-    [ -d "$MIRROR" ] || die "no provider mirror -- run 'just ensure-mirror' first"
-
     WORK="$(mktemp -d)"
-    # The remaining VCOWS_SMOKE_ constant, exported here because the others are
-    # known before this runs and this one is not. The drift assertion plans in
-    # it.
-    export VCOWS_SMOKE_WORK="$WORK"
-    cp "$MODULE"/*.tf "$WORK/"
-    # The committed lock, so init cannot quietly select a different build --
-    # the same reason tests/test_tofu_module.py copies it.
-    cp "$lock" "$WORK/.terraform.lock.hcl"
 
-    # The shipped CLI config with one path substituted, not a second config.
-    # tests/conftest.py has the argument: a test-only tofurc grows a `direct`
-    # block and stops exercising the air-gap behaviour the image ships.
-    sed "s|/opt/tofu-mirror|$MIRROR|" "$REPO/container/tofurc" > "$WORK/tofurc"
-    export TF_CLI_CONFIG_FILE="$WORK/tofurc"
-    export CHECKPOINT_DISABLE=1
-    export NO_COLOR=1
-
-    cat > "$WORK/smoke_override.tf" <<'HCL'
-// Written by scripts/smoke-libvirt.sh into a copy of the module. The shipped
-// tree is not edited. See that script's header for why each of these two is
-// here; the short version is that a hosted runner has no /dev/kvm and that
-// `-cpu host` is a model QEMU registers only under KVM and HVF.
-//
-// An override naming a resource the module does not have is an error rather
-// than a silent no-op, so this cannot rot into nothing.
-resource "libvirt_domain" "vm" {
-  type = "qemu"
-  cpu  = null
-}
-HCL
-
+    # `render.render`'s output, written by hand -- the same fixture role
+    # tests/golden/libvirt.tfvars.json plays offline, and the reason this gate
+    # needs no config.yaml: `schema._check_target` requires a
+    # `qemu+ssh://host/system` URI and this runner's daemon is on a local socket.
+    # `create.create` takes these values and a connection, so the URI is an
+    # argument to the driver below rather than a key here.
+    #
     # A placeholder rather than an unquoted heredoc: the marker is JSON inside
     # JSON, and in an unquoted heredoc every \" in it would collapse to " and
-    # produce a document tofu cannot parse.
+    # produce a document `json.load` cannot parse.
     #
     # One VM, `firmware = "efi"` with a raw .fd loader and varstore template
     # pinned beside it -- the app02 shape from tests/golden/libvirt.tfvars.json
     # in RHEL's format rather than Fedora's. That is the branch #75 died on, and
-    # the branch the delivery target takes (variables.tf's loader comment --
-    # "RHEL ships a raw .fd"). Before #75 it had never been applied against a
-    # real libvirtd anywhere: not here, not on the rig, not in the acceptance
-    # run.
+    # the branch the delivery target takes (schema.py's loader comment -- "RHEL
+    # ships a raw .fd"). Before #75 it had never been applied against a real
+    # libvirtd anywhere: not here, not on the rig, not in the acceptance run.
     #
     # **This replaced the autoselect shape** -- loader, loader_format and
     # nvram_template all null, app01's -- and the swap gives up real coverage,
     # recorded here because nothing else records it. Nothing anywhere now
     # exercises libvirt selecting a firmware from the host's own descriptors and
-    # materialising a varstore from no template. What the module *emits* on that
-    # branch is still pinned offline (libvirt-module.tftest.hcl asserts app01's
-    # `os.firmware == "efi"`, `os.nv_ram == null` and the three null firmware
-    # arms); what libvirtd does with it is pinned by nothing. The trade taken:
-    # the branch given up has no known defect and the Fedora acceptance run
-    # applied it, while the branch taken here had a live one. Carrying both means
-    # two VMs in one apply, and DOMAIN/OVERLAY_VOL/SEED_VOL/MAC/MARKER_ID are
-    # script globals that four functions key off -- roughly +60 lines against a
-    # -3/+2 module fix. If autoselect later needs its own CI coverage, that is
-    # its own change.
+    # materialising a varstore from no template. What vcows *emits* on that
+    # branch is still pinned offline (test_libvirt_create.py's
+    # `test_autoselected_firmware_pins_nothing`); what libvirtd does with it is
+    # pinned by nothing. The trade taken: the branch given up has no known defect
+    # and the Fedora acceptance run applied it, while the branch taken here had a
+    # live one. Carrying both means two VMs in one create, and
+    # DOMAIN/OVERLAY_VOL/SEED_VOL/MAC/MARKER_ID are script globals that four
+    # functions key off -- roughly +60 lines against a -3/+2 fix. If autoselect
+    # later needs its own CI coverage, that is its own change.
     #
     # A qcow2 pin cannot substitute on this runner class, and the reason changed
     # with #107. It used to be that beside `firmware = "efi"` libvirt validates
@@ -237,16 +208,16 @@ HCL
     # every Ubuntu descriptor declares raw, so a qcow2 pin was refused at define
     # with "Unable to find 'efi' firmware that is compatible with the current
     # configuration" (CI runs 33374365926, 33374623746). That measurement is what
-    # produced #107, and the module no longer emits `firmware = "efi"` beside a
-    # pin, so it no longer applies. What remains is simpler and was always true:
-    # Ubuntu ships no qcow2 OVMF build for this to point at -- every descriptor
-    # declaring raw is the evidence -- so there is no qcow2 file here to pin.
+    # produced #107, and `create.firmware_xml` emits no `firmware` attribute
+    # beside a pin, so it no longer applies. What remains is simpler and was
+    # always true: Ubuntu ships no qcow2 OVMF build for this to point at -- every
+    # descriptor declaring raw is the evidence -- so there is no qcow2 file here
+    # to pin.
     sed -e "s|@WORK@|$WORK|g" \
         -e "s|@LOADER@|$LOADER|g" \
         -e "s|@NVRAM_TEMPLATE@|$NVRAM_TEMPLATE|g" \
-        > "$WORK/main.auto.tfvars.json" <<'JSON'
+        > "$WORK/tfvars.json" <<'JSON'
 {
-  "uri": "qemu:///system",
   "pool": "default",
   "base_volume": {
     "name": "vcows-smoke-golden.qcow2",
@@ -259,7 +230,7 @@ HCL
       "domain_name": "vcows-smoke01",
       "overlay_name": "vcows-smoke01.qcow2",
       "seed_name": "vcows-smoke01-seed.iso",
-      "marker_xml": "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"smoke\",\"name\":\"smoke01\",\"id\":\"9f2b8d40-5c1e-5a3f-9a77-1c2d3e4f5a6b\"}</vcows>",
+      "marker_xml": "<vcows xmlns=\"urn:vcows:1\">{\"v\":\"0.1.0.0\",\"deployment\":\"smoke\",\"name\":\"vcows-smoke01\",\"id\":\"9f2b8d40-5c1e-5a3f-9a77-1c2d3e4f5a6b\"}</vcows>",
       "vcpus": 1,
       "memory_mib": 512,
       "disk_bytes": 268435456,
@@ -283,20 +254,31 @@ HCL
 }
 JSON
 
-    log "initialising the module copy at $WORK"
-    tofu -chdir="$WORK" init -input=false >/dev/null
-    tofu -chdir="$WORK" validate >/dev/null
-    log "  ok    the module validates with the smoke override applied"
+    # What `tofu validate` used to buy, and the reason this function runs first:
+    # the values are read and every domain XML is rendered from them, so a key
+    # this fixture spells wrong fails here rather than after apt.
+    "$PY" - "$WORK/tfvars.json" <<'PY'
+import json
+import sys
+
+from orchestrator.backends.libvirt import create
+
+with open(sys.argv[1]) as handle:
+    values = json.load(handle)
+for vm in values["vms"].values():
+    create.domain_xml(vm, "overlay", "seed")
+PY
+    log "  ok    the values render a domain XML"
 }
 
 # -- the host ---------------------------------------------------------------
 
 # The recipe is terraform-provider-libvirt's own CI, which runs its acceptance
 # suite on unmodified ubuntu-latest. `libvirt-dev` is in that list and not in
-# this one: nothing here compiles against the headers -- the provider ships as a
-# prebuilt binary in the mirror. `ovmf` is here and not in that list, because
-# this module asks libvirt to select an EFI firmware and a host with no
-# descriptors installed has none to select.
+# this one: nothing here compiles against the headers -- os-deps.sh installs the
+# distro's python3-libvirt and `just dev-env` is what makes it visible. `ovmf` is
+# here and not in that list, because the values below pin a firmware out of it,
+# and the probe converts the same two files.
 packages() {
     have apt-get || die "this gate installs libvirt with apt-get -- it needs a Debian or Ubuntu runner"
     log "installing qemu, libvirt and ovmf"
@@ -309,7 +291,7 @@ packages() {
 # terraform-provider-libvirt's own CI sets. The pool, the uploaded volumes and
 # the domain all belong to root here; letting libvirt relabel and confine them
 # buys nothing on a runner that is deleted at the end of the job, and costs a
-# class of AppArmor denial that reads like a module bug.
+# class of AppArmor denial that reads like a bug in the XML vcows rendered.
 configure_qemu() {
     local conf=/etc/libvirt/qemu.conf
     if grep -q '^# vcows-smoke' "$conf" 2>/dev/null; then
@@ -329,7 +311,7 @@ CONF
 # a Docker executor, which is what .gitlab-ci.yml's `linux` tag describes --
 # start the daemons directly. virtlogd is socket-activated under systemd and is
 # not optional either way: a domain with a serial console cannot start without
-# it, and this module gives every domain one.
+# it, and `create.DOMAIN_XML` gives every domain one.
 start_libvirtd() {
     local i
     if [ -d /run/systemd/system ]; then
@@ -380,9 +362,10 @@ storage_pool() {
     fi
 }
 
-# The module renders `<interface type='network'><source network='default'/>`, so
-# libvirtd needs that network defined and active or the domain will not define.
-# libvirt-daemon-system defines it; nothing starts it on a fresh runner.
+# `create.domain_xml` renders `<interface type='network'><source
+# network='default'/>`, so libvirtd needs that network defined and active or the
+# domain will not define. libvirt-daemon-system defines it; nothing starts it on
+# a fresh runner.
 default_network() {
     local err state
     vsh net-info "$NETWORK" >/dev/null 2>&1 \
@@ -418,33 +401,35 @@ inputs() {
 }
 
 # #107, and the one property in this file that is about libvirt rather than about
-# the module. The fix for #107 is that main.tf stops emitting `firmware = "efi"`
-# beside a pinned loader, because autoselection does not defer to a pin -- it
-# validates the pin against the host's own firmware descriptors and refuses a
-# format they do not carry. That fix is only worth anything while omitting the
-# attribute actually keeps a pin out of that validation, which is a property of
-# libvirt and not of anything this repo controls.
+# what vcows renders. The fix for #107 is that a pinned loader is emitted with no
+# `firmware = "efi"` beside it -- `create.firmware_xml`'s exclusivity -- because
+# autoselection does not defer to a pin: it validates the pin against the host's
+# own firmware descriptors and refuses a format they do not carry. That fix is
+# only worth anything while omitting the attribute actually keeps a pin out of
+# that validation, which is a property of libvirt and not of anything this repo
+# controls.
 #
 # Nothing else can stand guard over it:
 #
-#   * libvirt-module.tftest.hcl pins what the module *emits* (`app02.os.firmware
-#     == null`) against a mock, which cannot refuse anything.
+#   * tests/test_libvirt_create.py pins what vcows *emits*
+#     (`test_a_pinned_loader_replaces_the_autoselection_and_names_its_varstore`)
+#     against a fake, which cannot refuse anything.
 #   * `virsh dumpxml` cannot carry it either. libvirt fills `firmware='efi'` back
 #     into the stored XML when the pin matches a descriptor it can name, so the
-#     module's raw .fd fixture dumps with the attribute present even though the
-#     module never sent it -- an `absent` on it FAILs against the raw pin (CI run
+#     raw .fd fixture below dumps with the attribute present even though nothing
+#     sent it -- an `absent` on it FAILs against the raw pin (CI run
 #     33436774063) and passes against a qcow2 one (run 33437247928). Nothing in
-#     that capture distinguishes "the module sent it" from "libvirt deduced it".
-#   * The module's own fixture cannot carry it, because the format this runner's
+#     that capture distinguishes "vcows sent it" from "libvirt deduced it".
+#   * This gate's own fixture cannot carry it, because the format this runner's
 #     descriptors refuse is qcow2 and the fixture pins raw. Swapping it would
 #     give up the raw .fd branch, which is #75's and the delivery target's shape;
-#     carrying both means a second VM in the apply, which the header above prices
+#     carrying both means a second VM in the create, which the values above price
 #     at roughly +60 lines because DOMAIN and four other globals are keyed off by
 #     four functions.
 #
-# So this defines one throwaway domain directly, out of band of the module, with
-# the shape the module now renders: a qcow2 loader and no `firmware` attribute,
-# on a host whose four descriptors all declare raw. Before #107 that same
+# So this defines one throwaway domain directly, out of band of the create, with
+# the shape `create.firmware_xml` now renders: a qcow2 loader and no `firmware`
+# attribute, on a host whose four descriptors all declare raw. Before #107 that same
 # configuration was refused at define with "Unable to find 'efi' firmware that is
 # compatible with the current configuration" (runs 33374365926, 33374623746).
 # `define` is the whole test -- no start, no boot, no KVM -- because define is
@@ -453,12 +438,12 @@ inputs() {
 # The refusal is loud rather than silent, so this is early notice and not the
 # only line of defence. It earns its place because the notice arrives in CI
 # instead of at a site, and because a libvirt that changes this behaviour is the
-# one thing that reopens #107 without anyone touching the module.
+# one thing that reopens #107 without anyone touching this repo.
 probe_pinned_loader_escapes_autoselection() {
     local err="" defined=0
     # Ubuntu ships no qcow2 OVMF build -- that is the same fact its descriptors
     # record -- so convert the raw ones. Under $WORK, which cleanup removes, and
-    # only the declared format differs from the module's own fixture.
+    # only the declared format differs from the values file's own pin.
     qemu-img convert -O qcow2 "$LOADER" "$WORK/probe_CODE.qcow2"
     qemu-img convert -O qcow2 "$NVRAM_TEMPLATE" "$WORK/probe_VARS.qcow2"
     cat > "$WORK/probe.xml" <<XML
@@ -494,6 +479,97 @@ XML
     # the verdict crosses, and TestApplied carries it with the rationale above.
     export VCOWS_SMOKE_PROBE_DEFINED="$defined"
 }
+
+# -- the create and the teardown --------------------------------------------
+
+# `orchestrator.backends.libvirt.create.create`, against this runner's daemon,
+# with the values `prepare` wrote. The same call `cli._deploy` makes, handed the
+# same shape `render.render` returns.
+#
+# The TCG override lives here because this is the only process that needs it. It
+# rewrites a *copy* of the template held by this interpreter -- the file on disk
+# is untouched -- and each substitution is checked against the text it names, so
+# an override that no longer matches `create.py` stops the gate instead of
+# quietly leaving `type='kvm'` in place for the domain to fail to start on. The
+# header above says why each of the two is here.
+create_vm() {
+    log "creating through orchestrator.backends.libvirt.create against $URI"
+    "$PY" - "$URI" "$WORK/tfvars.json" <<'PY'
+import json
+import logging
+import sys
+
+import libvirt
+
+from orchestrator.backends.libvirt import create
+
+logging.basicConfig(level=logging.INFO, format="  %(message)s")
+
+for old, new in (
+    ("<domain type='kvm'>", "<domain type='qemu'>"),
+    ("  <cpu mode='host-passthrough'/>\n", ""),
+):
+    if old not in create.DOMAIN_XML:
+        raise SystemExit(f"create.DOMAIN_XML no longer carries {old!r}")
+    create.DOMAIN_XML = create.DOMAIN_XML.replace(old, new)
+
+uri, values = sys.argv[1], sys.argv[2]
+with open(values) as handle:
+    tfvars = json.load(handle)
+conn = libvirt.open(uri)
+try:
+    create.create(conn, tfvars)
+finally:
+    conn.close()
+PY
+}
+
+# `orchestrator.backends.libvirt.destroy.destroy`, which is what `vcows destroy`
+# runs. It is driven by markers rather than by state, so the domain is looked up
+# by name and read with preflight's own `marker_of` and `disks_of` -- the
+# enumeration is all this replaces, for the same reason the values file replaces
+# a config.yaml. If the marker did not survive define, `_deletable` refuses both
+# volumes and TestDestroyed says so.
+#
+# No `--nvram` and no `vol-delete` here: what the varstore and the two volumes
+# cost is exactly what is under test.
+tear_down() {
+    log "tearing down through orchestrator.backends.libvirt.destroy"
+    "$PY" - "$URI" "$DOMAIN" <<'PY'
+import logging
+import sys
+from xml.etree import ElementTree as ET
+
+import libvirt
+
+from orchestrator.backends.base import Existing
+from orchestrator.backends.libvirt import destroy, preflight
+
+logging.basicConfig(level=logging.INFO, format="  %(message)s")
+
+uri, name = sys.argv[1], sys.argv[2]
+conn = libvirt.open(uri)
+try:
+    dom = conn.lookupByName(name)
+    root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))
+    outcome = destroy.destroy(
+        {},
+        conn,
+        [
+            Existing(
+                name=dom.name(),
+                id=dom.UUIDString(),
+                marker=preflight.marker_of(root),
+                disks=preflight.disks_of(root),
+            )
+        ],
+    )
+finally:
+    conn.close()
+print(f"  destroyed {outcome.destroyed}, skipped {outcome.skipped}")
+PY
+}
+
 main() {
     local uid applied destroyed
     # qemu:///system is root's socket, and adding this user to the libvirt group
@@ -512,7 +588,6 @@ main() {
         exec sudo "$0" "$@"
     fi
 
-    need tofu
     need_venv
     trap cleanup EXIT
 
@@ -524,13 +599,12 @@ main() {
     default_network
     inputs
 
-    # Out of band of the module, and before it, so a libvirt that reopened #107
-    # is named as such rather than surfacing as an apply failure.
+    # Out of band of the create, and before it, so a libvirt that reopened #107
+    # is named as such rather than surfacing as a define failure.
     log "probing whether a pinned loader escapes firmware autoselection"
     probe_pinned_loader_escapes_autoselection
 
-    log "applying the module against $URI"
-    tofu -chdir="$WORK" apply -auto-approve -input=false
+    create_vm
 
     # Both statuses are captured rather than left to `set -e`, and that is
     # deliberate: an aborting assertion phase would skip the destroy below, so a
@@ -541,15 +615,14 @@ main() {
     applied=0
     asserts TestApplied || applied=$?
 
-    log "destroying"
-    tofu -chdir="$WORK" destroy -auto-approve -input=false
+    tear_down
     destroyed=0
     asserts TestDestroyed || destroyed=$?
 
     if [ "$applied" -ne 0 ] || [ "$destroyed" -ne 0 ]; then
         die "the smoke gate failed -- see the pytest output above"
     fi
-    log "the module applies, libvirtd accepts what it renders, and destroy removes it"
+    log "the create runs, libvirtd accepts what it renders, and destroy removes it"
 }
 
 main "$@"
