@@ -79,3 +79,24 @@ header read (verified against `qemu-img info`; see `spikes.md`).
 Adding a package back to a Containerfile is a one-line, fully reversible change.
 It is the opposite of a one-way door, and `prepare()` is per-backend precisely so
 a future backend can bring its own tools without touching core.
+
+---
+
+## Re-measured 2026-09-02, after the second backend
+
+Four facts above or in `orchestrator-architecture.md` moved. Recorded here so
+the next reader does not re-derive them; the decisions they feed live in #196
+(vSphere effort and decisions) and #198 (OpenTofu's role), not in this file.
+
+| Claim | Now |
+|---|---|
+| pyVmomi needs pinning as a wheel, or `vcf-sdk` replaces it | `python3-pyvmomi` 9.0.0.0 is in EPEL 10 (`dnf repoquery`, 2026-09-02). The SDK path is an RPM like `python3-libvirt`, not a wheel like `proxmoxer`. `vcf-sdk` (12 dependencies, no RPM) is not needed for preflight or destroy. |
+| Provider status | `vsphere` v2.17.0, released 2026-09-01, MPL-2.0, active. `ovf_deploy.local_ovf_path`, `vsphere_file`, `cdrom` from a datastore path, `clone` with `linked_clone`, and `annotation` cover what the marker, the seed ISO and a shared-image design need. |
+| The conversion chain is the hard part | Only if vcows converts at the site. Delivery shipping an OVA beside the qcow2, built where `qemu-img` is free to use, removes every step above from the image. That is #196's D1, and the recommended option. |
+| One connection to the target | Not established for vSphere. `ovf_deploy` streams disk bytes to the ESXi host's HTTP lease URL rather than to vCenter, so the container may need a route to every host. Rig-only fact; nothing in this repo has spoken to a vCenter. |
+
+One more rig-only fact: `cloudinit.derive_mac` emits `52:54:00` and is
+documented as permanent, and vCenter has historically restricted manually
+assigned MACs to `00:50:56:00` through `00:50:56:3F`. A rejection means a
+per-backend MAC policy in core. Neither this nor the lease question can be
+settled from documentation.
