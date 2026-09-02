@@ -617,6 +617,10 @@ main() {
     # the destroy assertions too. This is what the ok/FAIL accumulator bought,
     # and pytest already reports every failure within a phase.
     log "what libvirtd created"
+    # The <os> block, live and stored, so a needle that misses in CI is readable
+    # from the job log: pytest truncates the document before it reaches <os>.
+    log "$(vsh dumpxml "$DOMAIN" | sed -n '/<os/,/<\/os>/p' || true)"
+    log "$(vsh dumpxml --inactive "$DOMAIN" | sed -n '/<os/,/<\/os>/p' || true)"
     applied=0
     asserts TestApplied || applied=$?
 
