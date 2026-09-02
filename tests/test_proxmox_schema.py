@@ -41,6 +41,8 @@ def test_a_missing_token_is_refused_and_says_where_to_put_it(pve_cfg, monkeypatc
     assert len(problems) == 1
     assert "PROXMOX_VE_API_TOKEN is unset" in problems[0].message
     assert "user@realm!tokenid=<secret>" in problems[0].message
+    # The variable, not a config path: there is nothing in the file to go and fix.
+    assert problems[0].where == schema.TOKEN_ENV
 
 
 def test_a_malformed_token_is_refused_without_echoing_it(pve_cfg, monkeypatch):
@@ -53,6 +55,7 @@ def test_a_malformed_token_is_refused_without_echoing_it(pve_cfg, monkeypatch):
     assert len(problems) == 1
     assert "SUPERSECRETVALUE" not in messages(problems)
     assert "not in the form" in problems[0].message
+    assert problems[0].where == schema.TOKEN_ENV
 
 
 def test_a_well_formed_token_splits_into_the_three_fields():
@@ -93,22 +96,55 @@ def test_http_is_refused_because_the_token_is_a_bearer_credential(pve_cfg):
     assert "must be 'https'" in messages(problems)
 
 
-def test_credentials_in_the_endpoint_are_refused(pve_cfg):
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://root:hunter2@pve.example.com",
+        # A username with no password is still a credential in the netloc, and
+        # still travels into the run directory.
+        "https://root@pve.example.com",
+    ],
+)
+def test_credentials_in_the_endpoint_are_refused(pve_cfg, endpoint):
     """The netloc travels verbatim into the tfvars, which sit in the run
     directory. Same refusal, and the same reason, as the libvirt backend's."""
-    pve_cfg["target"]["proxmox"]["endpoint"] = "https://root:hunter2@pve.example.com"
+    pve_cfg["target"]["proxmox"]["endpoint"] = endpoint
     problems = errors(schema.validate(pve_cfg))
     assert "no credentials" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.endpoint"}
 
 
 def test_a_query_string_is_refused(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://pve.example.com?verify=0"
-    assert "no query string" in messages(errors(schema.validate(pve_cfg)))
+    problems = errors(schema.validate(pve_cfg))
+    assert "no query string" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.endpoint"}
 
 
 def test_a_path_beyond_the_api_root_is_refused(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://pve.example.com/nodes/pve1"
-    assert "path must be empty" in messages(errors(schema.validate(pve_cfg)))
+    problems = errors(schema.validate(pve_cfg))
+    assert "path must be empty" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.endpoint"}
+
+
+def test_an_endpoint_with_no_host_is_refused(pve_cfg):
+    """`_endpoint_host` would hand proxmoxer the string 'None' and the connect
+    would fail against a hostname nobody wrote."""
+    pve_cfg["target"]["proxmox"]["endpoint"] = "https://"
+    problems = errors(schema.validate(pve_cfg))
+    assert "no host in" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.endpoint"}
+
+
+def test_an_endpoint_that_is_not_a_url_is_reported_not_raised(pve_cfg):
+    """`urlsplit` raises on this one. Every check below it reads the parts, so
+    the refusal returns early -- an unhandled ValueError here would unwind past
+    `config.load`'s every-problem contract."""
+    pve_cfg["target"]["proxmox"]["endpoint"] = "https://[pve.example.com:8006"
+    problems = errors(schema.validate(pve_cfg))
+    assert "is not a URL" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.endpoint"}
 
 
 def test_a_bare_origin_and_the_api_root_are_both_accepted(pve_cfg):
@@ -117,6 +153,8 @@ def test_a_bare_origin_and_the_api_root_are_both_accepted(pve_cfg):
         "https://pve.example.com/",
         "https://pve.example.com:8006",
         "https://pve.example.com/api2/json",
+        # PVE's own UI links carry the trailing slash.
+        "https://pve.example.com/api2/json/",
     ):
         pve_cfg["target"]["proxmox"]["endpoint"] = endpoint
         assert errors(schema.validate(pve_cfg)) == [], endpoint
@@ -130,6 +168,8 @@ def test_insecure_warns_but_does_not_refuse(pve_cfg):
     problems = schema.validate(pve_cfg)
     assert errors(problems) == []
     assert "verification is disabled" in messages(problems)
+    # The field that turned it off, not the endpoint it applies to.
+    assert "target.proxmox.insecure" in wheres(problems)
 
 
 def test_there_is_no_ca_file_field(pve_cfg):
@@ -205,8 +245,49 @@ def test_every_problem_is_reported_not_just_the_first(pve_cfg):
     pve_cfg["vms"][0]["name"] = "app_01"
     pve_cfg["vms"][1]["nics"][0]["vlan_id"] = 9999
     problems = errors(schema.validate(pve_cfg))
-    assert len(problems) >= 3
-    assert {"target.proxmox.endpoint", "vms[0].name"} <= wheres(problems)
+    # Exactly these three: a fourth would mean one typo produced two refusals,
+    # which is the round trip this contract exists to avoid.
+    assert wheres(problems) == {
+        "target.proxmox.endpoint",
+        "vms[0].name",
+        "vms[1].nics[0].vlan_id",
+    }
+
+
+def test_a_bad_name_does_not_hide_this_vms_addressing_problem(pve_cfg):
+    """The nic checks are skipped only when the *nics* are the unsafe part. A
+    problem elsewhere in the same VM must not cost the operator a second run."""
+    pve_cfg["vms"][0]["name"] = "app_01"
+    pve_cfg["vms"][0]["nics"][0]["gateway"] = "10.0.0.1"
+    problems = errors(schema.validate(pve_cfg))
+    assert wheres(problems) == {"vms[0].name", "vms[0].nics[0].gateway"}
+
+
+def test_a_vm_that_is_not_a_mapping_is_reported_rather_than_crashing(pve_cfg):
+    """`vms: [app01]` in YAML. The schema's verdict comes first, and the nic
+    checks are not attempted on something with no fields to read."""
+    pve_cfg["vms"][0] = "app01"
+    problems = errors(schema.validate(pve_cfg))
+    assert "vms[0]" in wheres(problems)
+
+
+def test_a_vm_with_no_nics_is_reported_rather_than_crashing(pve_cfg):
+    """Missing entirely, so the schema files it against the VM rather than
+    against a nic. `check_addressing` would reach for `vm["nics"]` and raise."""
+    pve_cfg["vms"][0].pop("nics")
+    problems = errors(schema.validate(pve_cfg))
+    assert "vms[0]" in wheres(problems)
+    assert "nics" in messages(problems)
+
+
+def test_a_hand_written_mac_that_collides_with_a_derived_one_is_refused(pve_cfg):
+    """MACs are derived from the deployment and the VM, so a hand-set one can
+    collide with a MAC no config file contains. The deployment has to reach the
+    derivation for this to be seen at all."""
+    from orchestrator.cloudinit import mac_of
+
+    pve_cfg["vms"][1]["nics"][0]["mac"] = mac_of(pve_cfg["vms"][0], 0, "lab-a")
+    assert "already used by" in messages(errors(schema.validate(pve_cfg)))
 
 
 def test_a_malformed_nic_does_not_lose_the_other_problems(pve_cfg):
@@ -226,7 +307,8 @@ def test_an_image_name_pve_will_not_recognise_warns(pve_cfg):
     pve_cfg["image"]["base_volume_name"] = "golden"
     problems = schema.validate(pve_cfg)
     assert errors(problems) == []
-    assert "import" in messages(problems)
+    assert "recognises a disk image by extension" in messages(problems)
+    assert "image.base_volume_name" in wheres(problems)
 
 
 def test_a_recognised_image_name_says_nothing(pve_cfg):

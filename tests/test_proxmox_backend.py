@@ -15,8 +15,9 @@ from pathlib import Path
 import pytest
 
 from orchestrator.backends import REGISTRY
-from orchestrator.backends.base import Backend, Discovered
+from orchestrator.backends.base import Backend, Discovered, Existing
 from orchestrator.backends.proxmox import api
+from orchestrator.marker import Marker
 from tests.fake_proxmox import FakeProxmox
 
 
@@ -112,6 +113,9 @@ def test_parse_outputs_raises_on_a_module_with_no_vms_output(backend):
     with pytest.raises(ValueError, match="declared no `vms` output"):
         backend.parse_outputs({"something_else": {"value": {}}})
     assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
+    # A declared output with nothing in it is an empty inventory, not a None that
+    # `cli._deploy` would then compare against the set it asked for.
+    assert backend.parse_outputs({"vms": {}}).vms == {}
 
 
 def test_prepare_builds_a_seed_per_vm_and_carries_the_image(
@@ -223,6 +227,8 @@ def test_a_rejected_token_is_re_raised_as_our_own_error(
 
 
 def test_an_api_failure_is_re_raised_as_our_own_error(pve_cfg, monkeypatch, pve_token):
+    """Named by host, because a 500 from the wrong cluster is the confusing one.
+    proxmoxer's own type does not escape the session."""
     import proxmoxer
     from proxmoxer.core import ResourceException as RealResourceException
 
@@ -231,7 +237,10 @@ def test_an_api_failure_is_re_raised_as_our_own_error(pve_cfg, monkeypatch, pve_
             raise RealResourceException(500, "Internal Server Error", "boom")
 
     monkeypatch.setattr(proxmoxer, "ProxmoxAPI", lambda host, **kw: Boom())
-    with pytest.raises(api.ProxmoxApiError), api.connect(pve_cfg) as session:
+    with (
+        pytest.raises(api.ProxmoxApiError, match=r"pve\.example\.com:8006"),
+        api.connect(pve_cfg) as session,
+    ):
         api.cluster_vms(session)
 
 
@@ -267,9 +276,41 @@ def test_a_client_with_no_closable_session_is_not_fatal(
     pve_cfg, fake_proxmoxer, pve_token
 ):
     """`_close` reaches through a private attribute, so it is guarded: proxmoxer
-    is free to move it and a failed close must never fail a run."""
-    with api.connect(pve_cfg):
-        pass
+    is free to move it and a failed close must never fail a run.
+
+    `FakeProxmox` has no `_backend`, so the guarded call raises inside `_close`
+    on the way out of the block below -- the session still has to arrive, and
+    leaving the block still has to be uneventful.
+    """
+    with api.connect(pve_cfg) as session:
+        assert isinstance(session, api.Session)
+    assert fake_proxmoxer["verify_ssl"] is True
+
+
+def test_the_task_wait_carries_our_ceiling_rather_than_proxmoxers(
+    pve_cfg, pve_token, monkeypatch
+):
+    """A stop on a wedged guest is the slow one, and proxmoxer's own default
+    would abandon a teardown that was going to finish. The poll interval is a
+    fixed tax per wait, so it is ours to set too."""
+    from proxmoxer.tools import Tasks
+
+    seen = {}
+
+    def record(prox, task_id, **kw):
+        seen.update(kw)
+        return {"status": "stopped", "exitstatus": "OK"}
+
+    monkeypatch.setattr(Tasks, "blocking_status", record)
+    w = FakeProxmox(vms={("pve1", "100"): {"name": "app01"}})
+    session = api.Session(
+        prox=w, node="pve1", datastore="local-lvm", import_datastore="local"
+    )
+    api.delete_vm(session, "pve1", "100")
+    assert seen == {
+        "timeout": api.TASK_TIMEOUT,
+        "polling_interval": api.POLL_INTERVAL,
+    }
 
 
 def test_every_abstract_method_is_reachable_through_the_class(
@@ -279,6 +320,9 @@ def test_every_abstract_method_is_reachable_through_the_class(
     holds rather than through the free functions they delegate to."""
     import proxmoxer
 
+    # proxmoxer's task poller sleeps once per wait; the teardown below is the
+    # only thing here that waits on one.
+    monkeypatch.setattr(api, "POLL_INTERVAL", 0)
     w = FakeProxmox(
         storages=[
             {"storage": "local", "content": "import,iso"},
@@ -298,5 +342,14 @@ def test_every_abstract_method_is_reachable_through_the_class(
         with backend.prepare(pve_cfg, tmp_path, discovered) as prepared:
             tfvars = backend.render(pve_cfg, prepared)
         assert set(tfvars["vms"]) == {"app01", "app02"}
-        assert backend.destroy(pve_cfg, session, []).destroyed == []
+        # With a target rather than none, so `destroy` reaches the session it is
+        # handed rather than returning on an empty list.
+        w.vms[("pve1", "100")] = {
+            "name": "app01",
+            "description": Marker.for_vm("app01", "lab-a").to_description(),
+        }
+        target = Existing(
+            name="app01", id="pve1/100", marker=Marker.for_vm("app01", "lab-a")
+        )
+        assert backend.destroy(pve_cfg, session, [target]).destroyed == ["app01"]
     assert backend.parse_outputs({"vms": {"value": {}}}).vms == {}

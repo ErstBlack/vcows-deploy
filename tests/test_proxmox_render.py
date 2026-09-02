@@ -54,12 +54,22 @@ def test_render_does_no_io(pve_cfg, prepared, monkeypatch):
     render(pve_cfg, prepared)
 
 
-def test_no_credential_is_rendered(pve_cfg, prepared, pve_token):
+def test_no_credential_and_no_operator_free_text_is_rendered(
+    pve_cfg, prepared, pve_token
+):
     """The provider reads PROXMOX_VE_API_TOKEN from its own environment. If the
     token ever reached the tfvars it would sit in the run directory in plaintext,
-    which is the thing this design exists to avoid."""
-    assert pve_token not in dumped(render(pve_cfg, prepared))
-    assert "api_token" not in dumped(render(pve_cfg, prepared))
+    which is the thing this design exists to avoid.
+
+    The same goes for `user_data`, which is where an operator's own secrets
+    actually end up: it is built into the seed ISO and named nowhere here.
+    """
+    pve_cfg["vms"][0]["user_data"] = "#cloud-config\npassword: hunter2\n"
+    rendered = dumped(render(pve_cfg, prepared))
+    assert pve_token not in rendered
+    assert "hunter2" not in rendered
+    assert "user_data" not in rendered
+    assert "api_token" not in rendered
 
 
 def test_the_marker_round_trips_per_vm(pve_cfg, prepared):
@@ -135,8 +145,32 @@ def test_only_the_vms_it_is_given_are_rendered(pve_cfg, prepared):
 
 def test_the_seed_name_is_not_one_proxmox_claims(pve_cfg, prepared):
     """Proxmox pattern-matches `vm-<vmid>-cloudinit.iso` and fails the VM's start
-    task trying to regenerate it."""
+    task trying to regenerate it. Not even for the name that comes closest."""
     import re
 
-    for vm in render(pve_cfg, prepared)["vms"].values():
+    pve_cfg["vms"][0]["name"] = "vm-100-cloudinit"
+    prepared.artifacts["seed_isos"]["vm-100-cloudinit"] = "/runs/lab-a/seed/x.iso"
+    for name, vm in render(pve_cfg, prepared)["vms"].items():
+        assert vm["seed_name"] == f"{name}-seed.iso"
         assert not re.match(r"^vm-\d+-cloudinit\.iso$", vm["seed_name"])
+
+
+def test_the_per_vm_values_the_config_overrides_reach_the_tfvars(pve_cfg, prepared):
+    """Each has a default the fixture happens to agree with, so a key read from
+    the wrong name renders the right value anyway until something disagrees."""
+    pve_cfg["vms"][0]["machine"] = "pc"
+    pve_cfg["vms"][0]["os_type"] = "win11"
+    pve_cfg["vms"][0]["nics"][0]["model"] = "e1000"
+    app01 = render(pve_cfg, prepared)["vms"]["app01"]
+    assert (app01["machine"], app01["os_type"]) == ("pc", "win11")
+    assert app01["nics"][0]["model"] == "e1000"
+
+
+def test_the_target_values_the_config_overrides_reach_the_provider(pve_cfg, prepared):
+    """`insecure` decides whether the apply verifies the cluster's certificate,
+    and the checksum is what the provider verifies the upload against."""
+    pve_cfg["target"]["proxmox"]["insecure"] = True
+    pve_cfg["image"]["sha256"] = "a" * 64
+    tfvars = render(pve_cfg, prepared)
+    assert tfvars["insecure"] is True
+    assert tfvars["image"]["checksum"] == "a" * 64

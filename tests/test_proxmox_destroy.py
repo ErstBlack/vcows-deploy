@@ -77,8 +77,14 @@ def test_a_stopped_vm_is_not_asked_to_stop_again(pve_cfg):
 
 
 def test_the_delete_purges_so_no_backup_job_outlives_the_vm(pve_cfg):
+    """`purge=1` removes it from any backup job and from HA;
+    `destroy-unreferenced-disks=1` collects disks that name the vmid but are not
+    in its config. The fake refuses a delete carrying neither, so this fails
+    rather than deleting a VM that leaves a job failing nightly."""
     w = FakeProxmox(vms={("pve1", "100"): vm("app01")})
-    destroy.destroy(pve_cfg, session(w), [target("app01")])
+    out = destroy.destroy(pve_cfg, session(w), [target("app01")])
+    assert out.destroyed == ["app01"]
+    assert out.problems == []
     assert w.vms == {}
 
 
@@ -107,6 +113,8 @@ def test_a_changed_marker_refuses_that_vm_and_keeps_going(pve_cfg):
     assert out.destroyed == ["app02"]
     assert ("pve1", "100") in w.vms
     assert "marker on VM 100 changed" in str(caught.value)
+    # Filed under the VM it is about, so `run.json` names what to go and look at.
+    assert [p.where for p in out.problems] == ["app01"]
 
 
 def test_a_vm_that_vanished_is_skipped_not_failed(pve_cfg):
@@ -137,16 +145,38 @@ def test_the_seed_iso_is_deleted_with_the_vm(pve_cfg):
 
 def test_media_that_is_not_this_vms_seed_is_left_alone(pve_cfg):
     """Guarded on the basename `cloudinit.seed_name` derives for the marker's
-    logical name, so an installer ISO attached by hand is not a candidate."""
+    logical name, so an installer ISO attached by hand is not a candidate -- and
+    the seed attached after it is still collected."""
     w = FakeProxmox(
         vms={("pve1", "100"): vm("app01")},
-        content={"local": {"iso": ["local:iso/rocky10-dvd.iso"]}},
+        content={
+            "local": {"iso": ["local:iso/rocky10-dvd.iso", "local:iso/app01-seed.iso"]}
+        },
     )
     out = destroy.destroy(
-        pve_cfg, session(w), [target("app01", disks=("local:iso/rocky10-dvd.iso",))]
+        pve_cfg,
+        session(w),
+        [
+            target(
+                "app01",
+                disks=("local:iso/rocky10-dvd.iso", "local:iso/app01-seed.iso"),
+            )
+        ],
+    )
+    assert out.destroyed == ["app01", "local:iso/app01-seed.iso"]
+    assert w.content["local"]["iso"] == ["local:iso/rocky10-dvd.iso"]
+
+
+def test_a_volume_id_that_is_not_a_path_is_left_alone(pve_cfg):
+    """PVE writes a cloud-init drive on a block store as `store:vm-100-cloudinit`
+    -- one segment, no `/`. It is not this VM's seed, and reading it must not end
+    the teardown with an IndexError instead of an Outcome."""
+    w = FakeProxmox(vms={("pve1", "100"): vm("app01")})
+    out = destroy.destroy(
+        pve_cfg, session(w), [target("app01", disks=("local:vm-100-cloudinit",))]
     )
     assert out.destroyed == ["app01"]
-    assert w.content["local"]["iso"] == ["local:iso/rocky10-dvd.iso"]
+    assert out.problems == []
 
 
 def test_a_seed_that_will_not_delete_is_a_skip_not_a_stop(pve_cfg):
@@ -165,6 +195,8 @@ def test_a_seed_that_will_not_delete_is_a_skip_not_a_stop(pve_cfg):
     out = caught.value.outcome
     assert out.destroyed == ["app01"]
     assert out.skipped == ["local:iso/app01-seed.iso"]
+    # The volume, not the VM: the VM is gone and the file is what is still there.
+    assert [p.where for p in out.problems] == ["local:iso/app01-seed.iso"]
 
 
 def test_a_failed_task_is_a_failure_not_a_success(pve_cfg):
@@ -177,6 +209,7 @@ def test_a_failed_task_is_a_failure_not_a_success(pve_cfg):
         destroy.destroy(pve_cfg, session(w), [target("app01")])
     assert "task failed somehow" in str(caught.value)
     assert caught.value.outcome.destroyed == []
+    assert [p.where for p in caught.value.outcome.problems] == ["app01"]
 
 
 def test_a_task_that_never_finishes_times_out_rather_than_hanging(pve_cfg, monkeypatch):

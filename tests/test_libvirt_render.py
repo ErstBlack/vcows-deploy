@@ -100,6 +100,17 @@ def test_firmware_defaults_and_overrides(cfg, prepared):
     assert vms["app02"]["loader_format"] == "qcow2"
 
 
+def test_the_per_vm_values_the_config_overrides_reach_the_tfvars(cfg, prepared):
+    """Each has a default the fixture happens to agree with, so a key read from
+    the wrong name renders the right value anyway until something disagrees."""
+    cfg["vms"][0]["firmware"] = "bios"
+    cfg["vms"][0]["machine"] = "pc"
+    cfg["vms"][0]["nics"][0]["model"] = "e1000"
+    app01 = render(cfg, prepared)["vms"]["app01"]
+    assert (app01["firmware"], app01["machine"]) == ("bios", "pc")
+    assert app01["nics"][0]["model"] == "e1000"
+
+
 def test_configured_address_is_the_primary_nics(cfg, prepared):
     second = dict(cfg["vms"][0]["nics"][0])
     second["ip_cidr"] = "192.168.122.70/24"

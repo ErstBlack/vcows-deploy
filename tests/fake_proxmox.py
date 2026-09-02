@@ -33,6 +33,11 @@ def upid(node: str = "pve1", kind: str = "qmstop", vmid: str = "100") -> str:
     return f"UPID:{node}:0000ABCD:00000000:6600ABCD:{kind}:{vmid}:vcows@pve!deploy:"
 
 
+#: How long the fake plays along with a task that never finishes. Small, because
+#: the only caller that reaches it has already had its ceiling cut to zero.
+MAX_POLLS = 50
+
+
 class ResourceException(Exception):
     """Stands in for proxmoxer's. Raised where the real client would raise."""
 
@@ -76,8 +81,15 @@ class FakeProxmox:
         vms: dict[tuple[str, str], dict] | None = None,
         storages: list[dict] | None = None,
         content: dict[str, dict[str, list[str]]] | None = None,
+        node_names: tuple[str, ...] = ("pve1",),
     ):
         self.vms = dict(vms or {})
+        #: The nodes this cluster has. A path naming any other one errors at
+        #: PVE rather than answering emptily, so the fake refuses it instead of
+        #: serving `nodes/None/...` as if it were the configured node. Spelled
+        #: `node_names` and not `nodes` because `prox.nodes(...)` resolves
+        #: through `__getattr__`, which only fires for a missing attribute.
+        self.node_names = {*node_names, *(node for node, _vmid in self.vms)}
         #: What `/nodes/{node}/storage` returns. `content` is PVE's own
         #: comma-separated string, not a list -- parsing it is the code's job.
         self.storages = storages if storages is not None else []
@@ -90,8 +102,11 @@ class FakeProxmox:
         self.resources: list[dict] | None = None
         #: Paths whose task should report failure rather than "OK".
         self.task_fails: set[str] = set()
-        #: Never finish; `wait` must time out rather than hang forever.
+        #: Never finish; `wait` must time out rather than hang forever. The fake
+        #: stops answering after MAX_POLLS so a wait that carries no ceiling
+        #: fails the test rather than running until something else kills it.
         self.task_never_finishes = False
+        self.polls = 0
 
         self.resources_error: Exception | None = None
         self.config_error: Exception | None = None
@@ -116,6 +131,12 @@ class FakeProxmox:
 
         if parts == ("cluster", "resources"):
             self._raise(self.resources_error)
+            # `type` is a filter over every resource kind PVE knows -- storages
+            # and nodes included -- so a call that drops it or spells it wrong
+            # gets rows this fake has no shape for. Refused rather than answered
+            # as though the filter had been sent.
+            if kw.get("type") != "vm":
+                raise ResourceException(f"unknown resource type {kw.get('type')!r}")
             return self._resources()
 
         if parts[:1] == ("nodes",):
@@ -124,6 +145,9 @@ class FakeProxmox:
         raise ResourceException(f"fake has no route for {verb} {'/'.join(parts)}")
 
     def _node(self, verb: str, node: str, rest: tuple[str, ...], kw: dict) -> Any:
+        if node not in self.node_names:
+            raise ResourceException(f"no such node {node!r}")
+
         # /nodes/{node}/storage
         if rest == ("storage",):
             self._raise(self.storage_error)
@@ -149,6 +173,12 @@ class FakeProxmox:
         # /nodes/{node}/tasks/{upid}/status
         if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "status":
             if self.task_never_finishes:
+                self.polls += 1
+                if self.polls > MAX_POLLS:
+                    raise ResourceException(
+                        f"{rest[1]} has been polled {self.polls} times; the "
+                        f"caller is waiting on it without a ceiling"
+                    )
                 return {"status": "running"}
             failed = rest[1] in self.task_fails
             return {
@@ -188,6 +218,14 @@ class FakeProxmox:
         # DELETE /nodes/{node}/qemu/{vmid}
         if rest == () and verb == "delete":
             self._raise(self.delete_error)
+            # Both default to 0 at the API. A delete that omits either one leaves
+            # the VM in its backup jobs, or leaves disks that name its vmid, so
+            # the fake refuses it the way FakeVolume.delete refuses a wrong flag.
+            if (kw.get("purge"), kw.get("destroy-unreferenced-disks")) != (1, 1):
+                raise ResourceException(
+                    f"delete of {vmid} must purge and collect unreferenced "
+                    f"disks; got {kw!r}"
+                )
             if key not in self.vms:
                 raise ResourceException(f"VM {vmid} does not exist on {node}")
             # PVE refuses to delete a running VM. Modelled, because the ordering
