@@ -1,8 +1,9 @@
 # vcows-deploy
 
-Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`.
-Shipped as a container image, built to run at a site with no network beyond the
-SSH tunnel to the hypervisor.
+Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`,
+or to Proxmox VE over its HTTPS API. `backend:` in the config picks one. Shipped
+as a container image, built to run at a site with no network beyond that one
+connection to the hypervisor.
 
 ## Read this first: the config is not declarative
 
@@ -26,16 +27,17 @@ Tearing something down is `vcows destroy`, and nothing else.
 | | |
 |---|---|
 | **preflight** | Enumerates the target by ownership marker. What exists, what is ours, what conflicts. |
-| **deploy** | OpenTofu applies a static module: the golden image once per host, then a per-VM overlay, a cloud-init seed ISO, and a domain carrying its marker. |
-| **destroy** | Python and `libvirt` directly, by marker. Works with the state file deleted, and after a VM has been renamed. |
+| **deploy** | OpenTofu applies a static module: the golden image once per host, then a per-VM disk, a cloud-init seed ISO, and a VM carrying its marker. |
+| **destroy** | Python and the hypervisor's own client (`libvirt`, `proxmoxer`) directly, by marker. Works with the state file deleted, and after a VM has been renamed. |
 
-Identity is the **marker**, never the name — a JSON payload in the domain's
-`<metadata>`. A renamed VM is still ours and still destroyable; a VM vcows did not
-create is never adopted or overwritten.
+Identity is the **marker**, never the name — a JSON payload in the libvirt
+domain's `<metadata>`, or in the Proxmox VM's `description`. A renamed VM is
+still ours and still destroyable; a VM vcows did not create is never adopted or
+overwritten.
 
 ## Requirements
 
-**On the hypervisor**
+**On a libvirt host**
 
 * `qemu+ssh://` reachable for the configured user, and `nc` or `virt-ssh-helper`
   present — the SSH transport needs one of them on the *target*.
@@ -43,6 +45,19 @@ create is never adopted or overwritten.
   Creating one is a host-level change to somebody else's hypervisor.
 * Golden images with `cloud-init` and `growpart`. Each VM's disk is an overlay
   with a larger capacity, and the guest grows into it on first boot.
+
+**On a Proxmox node**
+
+* An API token, exported as `PROXMOX_VE_API_TOKEN` where you run the container.
+  `preflight` is what tries it against the cluster: it lists the node's VMs,
+  reads both storages and their content types, and lists the `import` content
+  of `import_datastore`. `validate` checks only the token's shape.
+* `import_datastore` must allow the **Import** and **ISO image** content types,
+  and `datastore` must allow **Disk image**. Import is off by default on a PVE
+  storage and is enabled under Datacenter → Storage → Content; `preflight` names
+  the storage and the missing type. **vcows never creates a storage** either.
+* The bridge each NIC names must exist on the node.
+* The same golden image requirement as above: `cloud-init` and `growpart`.
 
 **Where you run the container**
 
@@ -123,6 +138,27 @@ podman run --rm \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
 
+On Proxmox there is no key and no `known_hosts` to mount. The token is an
+environment variable, read by vcows and by the OpenTofu provider alike:
+
+```bash
+export PROXMOX_VE_API_TOKEN='vcows@pve!deploy=<secret>'   # user@realm!tokenid=secret
+podman run --rm \
+  -e PROXMOX_VE_API_TOKEN \
+  -v ./lab-a.yaml:/config.yaml:ro,z \
+  -v /srv/images:/images:ro,z \
+  -v ./runs:/runs:Z \
+  vcows-deploy:0.1.0.0 preflight /config.yaml
+```
+
+A PVE certificate from a private CA goes in the environment too: `SSL_CERT_FILE`
+for the provider and `REQUESTS_CA_BUNDLE` for vcows, both naming a mounted
+bundle. There is deliberately no `ca_file` in the config — bpg/proxmox 0.111.1
+has no CA option, so a field only vcows honoured would pass `preflight` and fail
+`deploy`. `insecure: true` under `target.proxmox` skips verification for a
+self-signed certificate, and `validate` warns about it: the token is a bearer
+credential and goes to whatever answers.
+
 **The read-only mounts are `:z` and the run directory is `:Z`.** On an SELinux
 host `:Z` relabels the *host* path with a category private to one container, so
 nothing else — including your own `ssh` — can read it afterwards. That is right
@@ -179,6 +215,48 @@ vms:
         nameservers: [192.168.122.1]
 ```
 
+The same deployment against Proxmox:
+
+```yaml
+schema_version: 1
+deployment: lab-a
+backend: proxmox
+target:
+  proxmox:
+    endpoint: https://pve.example.com:8006   # https, host[:port], no path, no credentials
+    node: pve1
+    datastore: local-lvm                     # VM disks; must allow "Disk image"
+    import_datastore: local                  # golden image and seed ISOs; must allow "Import" and "ISO image"
+    # insecure: true                         # self-signed certificate; validate warns
+image:
+  source_qcow2: /images/golden.qcow2
+  base_volume_name: golden.qcow2   # uploaded once into import_datastore, reused
+vms:
+  - name: app01                    # a DNS name: no underscore
+    vcpus: 2
+    memory_mib: 4096
+    disk_gb: 40
+    firmware: efi                  # efi | bios; PVE owns OVMF and the EFI vars disk
+    user_data: |
+      #cloud-config
+      packages: [tmux]
+    nics:
+      - bridge: vmbr0              # bridge only; there is no network:
+        ip_cidr: 192.168.122.60/24
+        gateway: 192.168.122.1
+        nameservers: [192.168.122.1]
+        # vlan_id: 42
+```
+
+**A Proxmox NIC attaches to a bridge, and only a bridge.** PVE has no equivalent
+of a libvirt network, so `network:` is rejected and `bridge` is required;
+`vlan_id` (1–4094) tags it. **Firmware is a choice, not a set of paths.** PVE
+owns its OVMF and allocates the EFI vars disk itself, so `firmware: efi` is the
+whole of it, and the libvirt keys `loader`, `loader_format` and `nvram_template`
+are rejected. **A Proxmox VM name is a DNS name**, so the `_` a libvirt domain
+name allows is refused. A libvirt config ported across hits all of these in
+`validate`, offline.
+
 vcows owns `meta-data` and `network-config`; `user_data` is yours and is passed
 through with no interpretation.
 
@@ -224,18 +302,23 @@ by every deployment on that host and every VM's disk is an overlay on it, so
 removing it breaks running VMs. Point `base_volume_name` at a name the pool does
 not hold and re-run: vcows uploads the new image alongside, and VMs created from
 then on back onto it. Sweeping the old one is a host-level chore for when nothing
-references it any more.
+references it any more. On Proxmox the image is uploaded once into
+`import_datastore` and stays there after `destroy`, so the next `deploy` skips
+the upload; removing it is the same chore, done in the PVE UI.
 
-**VMs vcows creates start with the host.** Every domain is defined with
-autostart on, so a hypervisor reboot brings them back without vcows. The
-alternative is worse than it sounds: a re-run after a reboot finds the domains
-defined, reports them as ours, prints `nothing to create` and exits 0, with every
-guest powered off. There is no `start` verb — turn autostart off per domain
-with `virsh autostart --disable <name>` if a host must come up quiet.
+**VMs vcows creates start with the host.** Every libvirt domain is defined with
+autostart on and every Proxmox VM with *Start at boot*, so a hypervisor reboot
+brings them back without vcows. The alternative is worse than it sounds: a re-run
+after a reboot finds the VMs defined, reports them as ours, prints `nothing to
+create` and exits 0, with every guest powered off. There is no `start` verb —
+turn autostart off per domain with `virsh autostart --disable <name>`, or clear
+*Start at boot* on the PVE VM, if a host must come up quiet.
 
 > **The config is a secret artifact.** Credentials are cleartext at v0.1,
 > deliberately and temporarily. Do not commit it, and do not ship it as an
-> example.
+> example. On Proxmox the token is not in the file — it is never written
+> anywhere: not the config, the tfvars, `run.json` or the log — but `user_data`
+> still is.
 
 ### How the SSH credentials actually reach libvirt
 
@@ -317,7 +400,10 @@ its own account without anyone having opted in beforehand — which matters most
 for `destroy`, since it cannot be re-run to reproduce what was not captured.
 **`VCOWS_LOG_LEVEL=WARNING` is a quiet mode**: the report goes away and the
 problems stay. A value that is not a level name is reported and ignored rather
-than being fatal.
+than being fatal. `VCOWS_TRACEBACK=1` appends the Python traceback to the `ERROR`
+line an unexpected exception produces: the message is what an operator needs,
+the traceback is what a bug report needs, and an air-gapped site cannot re-run
+to get it later.
 
 Timestamps are UTC, matching the run directory's name. The first `run directory`
 line is the join key that ties a `podman logs` dump to the `run.json` an
@@ -336,7 +422,7 @@ Treat it as less protected than the run directory even so: that directory is
 
 ## Air gap
 
-The image carries the OpenTofu provider in `/opt/tofu-mirror` and points at it
+The image carries both OpenTofu providers in `/opt/tofu-mirror` and points at it
 through `TF_CLI_CONFIG_FILE=/opt/tofu/tofurc`. There is no `direct` block in that
 config: a provider missing from the mirror fails immediately instead of resolving
 DNS and hanging. The gate for this is `tests/test_image.py`, which runs
@@ -345,18 +431,21 @@ the real module with no network at all.
 
 ## The image
 
-Built from `quay.io/rockylinux/rockylinux:10`, pinned by digest, ~444 MB on disk
-and 151 MB compressed for delivery (measured: 150,784,598 bytes). Most of that is
-payload rather than base: the OpenTofu binary is 115 MB and the provider another
-26 MB. Smaller bases were measured and both pass the same gate — `10-minimal`
+Built from `quay.io/rockylinux/rockylinux:10`, pinned by digest, 486 MB on disk
+(`podman image ls`, with both providers). The delivery figure below is from the
+one-provider build — 151 MB compressed, measured: 150,784,598 bytes — and has not
+been re-measured, because `just scan`, which gates `just bundle`, is red on the
+bpg/proxmox binary's Go stdlib findings. Most of the image is payload rather than
+base: `du -sm` inside it puts the OpenTofu binary at 110 MiB and the two
+providers at 53 MiB unpacked in the plugin cache plus 19 MiB of mirror zips.
+Smaller bases were measured and both pass the same gate — `10-minimal`
 delivers at 134 MB, losing `vi`, `less`, `tar`, `ping` and `dnf`; a
 `10-ubi-micro` builder build delivers at 118 MB and additionally has no `rpm`, so
 the image cannot report its own contents at a site. Switching later is one `ARG`
 and a package-manager name.
 
 The provider plugin cache is warmed at build time, so `tofu init` symlinks into
-`/opt/tofu/plugin-cache` instead of unpacking a 26 MB copy into every run
-directory.
+`/opt/tofu/plugin-cache` instead of unpacking a copy into every run directory.
 
 ## Delivering it
 
@@ -397,15 +486,17 @@ revision that built it. The same file is copied into every run directory.
 The image contains GPL-2.0-**only** components, and GPLv2 §3 offers no
 network-server option for source — so **source ships as a separate medium
 accompanying the delivery**, mirrored from the `source_rpms` list in that
-manifest. The OpenTofu provider's licence and its provenance are vendored at
-`/opt/vcows/licenses/dmacvicar-libvirt/`; upstream ships no `LICENSE` file in
-0.9.x, and the note there explains why that is a gap rather than a revocation.
+manifest. Each non-RPM component has its licence and provenance vendored under
+`/opt/vcows/licenses/`: `dmacvicar-libvirt/`, where upstream ships no `LICENSE`
+file in 0.9.x and the note explains why that is a gap rather than a revocation;
+`bpg-proxmox/`, MPL-2.0 and the only one of the three whose package the mirror
+reports as signed; and `proxmoxer/`, MIT, the one pip-installed dependency.
 
 ## Development
 
 ```bash
-./scripts/os-deps.sh        # python3-libvirt, xorriso, shellcheck
-./scripts/install-tools.sh  # pinned uv, tofu, just, hadolint, trivy, syft
+./scripts/os-deps.sh        # python3-libvirt, xorriso, shellcheck, jq
+./scripts/install-tools.sh  # pinned uv, tofu, just, hadolint, trivy, syft, gitleaks
 just dev-env
 just check
 ```
@@ -434,7 +525,8 @@ explicit reason rather than quietly passing:
 
 | | |
 |---|---|
-| `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real hypervisor. |
+| `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real libvirt hypervisor. |
+| `VCOWS_PVE_ENDPOINT=https://…` **and** `PROXMOX_VE_API_TOKEN` | Runs against a real Proxmox cluster. Both, or the gate answers nothing. |
 | `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. Needs podman; buildah cannot substitute. |
 | `.tools/tofu-mirror` present | Runs the OpenTofu module gates. `just mirror` builds it. |
 | `python3-libvirt` importable | Pins our literal flag and error constants against the real ABI. |
@@ -445,7 +537,7 @@ explicit reason rather than quietly passing:
 `VCOWS_GATES` turns a named gate's skip into a failure carrying its reason:
 
 ```bash
-VCOWS_GATES=tofu just test        # or: rig, image, libvirt, pycdlib, smoke, or all
+VCOWS_GATES=tofu just test        # or: rig, image, libvirt, pycdlib, smoke, proxmox, or all
 ```
 
 It is comma-separated, case-sensitive, and does **not** strip whitespace —
