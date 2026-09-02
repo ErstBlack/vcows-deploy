@@ -2,9 +2,8 @@
 
 Three of them delegate to the free functions in ``schema.py``, which imports
 nothing hypervisor-specific, and to ``orchestrator/cloudinit.py``, which is core
-because nothing in the seed ISO is hypervisor-specific. The three that hold a
-connection live in ``preflight.py`` and ``destroy.py``. ``create`` is the
-seventh and is a stub: it lands in the commit that replaces the tofu module.
+because nothing in the seed ISO is hypervisor-specific. The four that hold a
+connection live in ``preflight.py``, ``destroy.py`` and ``create.py``.
 
 **No libvirt import at module level, here or in any module this one imports at
 import time.** ``orchestrator/backends/__init__.py`` names this class, so importing
@@ -31,8 +30,10 @@ from ..base import (
     Outcome,
     Prepared,
 )
+from . import create as _create
 from . import destroy as _destroy
 from . import preflight as _preflight
+from . import render as _render
 from . import schema as _schema
 
 
@@ -75,4 +76,11 @@ class LibvirtBackend(Backend):
         )
 
     def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
-        raise NotImplementedError("create lands in the next commit")
+        """Render the values, then make the objects they describe.
+
+        ``render`` stays a step of its own now that nothing consumes its output
+        but this line: it is the pure config-to-values half, golden-file tested
+        byte for byte, and keeping it separate is what lets ``create`` be tested
+        against a dict rather than against a config.
+        """
+        return _create.create(session, _render.render(cfg, prepared))

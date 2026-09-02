@@ -1,19 +1,14 @@
-"""Pure: config plus what ``prepare`` resolved, out to a tfvars dict. No I/O.
+"""Pure: config plus what ``prepare`` resolved, out to a values dict. No I/O.
 
-Everything OpenTofu needs that is not in the static module comes through here as
-*values*. The module itself is hand-written and never generated -- that is what
-makes ``tofu validate`` a real gate rather than a check that the generator agrees
-with itself.
+Everything ``create`` needs that is not in its XML templates comes through here
+as *values*, which is what keeps the whole config-to-values step testable with
+no hypervisor: it is compared against a golden file byte for byte.
 
-Two shapes here are dictated by HCL rather than by taste:
-
-* A NIC emits **both** ``network`` and ``bridge`` with the unused one ``null``. A
-  ternary between two differently-shaped objects does not type-check in HCL, so
-  the shape stays uniform and the choice lives in the values.
-* ``loader_readonly`` is the **string** ``"yes"``, not a boolean. The provider's
-  generated docs say boolean; ``tofu providers schema -json`` says string, and
-  the schema wins. That disagreement is the whole reason spike A6 pinned the
-  ground truth (docs/provider-schema-0.9.8.json).
+One shape here was dictated by HCL rather than by taste, and it stays. A NIC
+emits **both** ``network`` and ``bridge`` with the unused one ``None``: a ternary
+between two differently-shaped objects did not type-check in HCL, so the shape
+stayed uniform and the choice lived in the values. ``create.domain_xml`` reads it
+the same way, so there is nothing to gain by narrowing it now.
 """
 
 from __future__ import annotations
@@ -23,15 +18,11 @@ from typing import Any
 from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
 from ..base import Prepared
-from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT, connection_uri
+from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT
 
 # Names are the logical name, undecorated (D16). Maximally predictable for
 # hand-debugging at a site, where an operator has the config and `virsh list` and
 # nothing else.
-
-
-def domain_name(vm_name: str) -> str:
-    return vm_name
 
 
 def overlay_name(vm_name: str) -> str:
@@ -44,18 +35,12 @@ def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
     seeds = prepared.artifacts["seed_isos"]
 
     return {
-        # `sshcmd`, not the operator's `ssh`. The provider's qemu+ssh dials a
-        # monolithic socket that a split-daemon host does not have, through a
-        # forward SELinux refuses; qemu+sshcmd runs ssh and asks for
-        # virt-ssh-helper. libvirt's own client cannot use sshcmd at all, which
-        # is why preflight and the apply are handed different schemes.
-        "uri": connection_uri(target, "sshcmd"),
         "pool": target["pool"],
         "base_volume": {
             "name": base["name"],
-            # False once the image is already on this host. The apply runs against
-            # a fresh state every time, so without this it would try to create an
-            # existing volume on every deploy after the first.
+            # False once the image is already on this host. `create` only ever
+            # creates (D23), so without this it would try to create an existing
+            # volume on every deploy after the first.
             "create": base["create"],
             # Empty when creating; the pool's own path for it when not.
             "path": base["path"],
@@ -70,7 +55,10 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
     firmware = vm.get("firmware", FIRMWARE_DEFAULT)
     primary = vm["nics"][primary_index(vm)]
     return {
-        "domain_name": domain_name(name),
+        # The logical name itself, undecorated (D16). `decide`'s name-clash
+        # refusal compares `Existing.name` against the config's logical name, and
+        # that comparison only means anything while these two are the same string.
+        "domain_name": name,
         "overlay_name": overlay_name(name),
         "seed_name": seed_name(name),
         "marker_xml": Marker.for_vm(name, cfg["deployment"]).to_xml(),

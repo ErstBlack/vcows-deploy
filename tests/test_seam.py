@@ -252,8 +252,28 @@ def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch)
 
     assert calls == [(function, args) for _, _, function, args in delegations]
     assert backend.config_schema() is schema_mod.TARGET_SCHEMA
-    # `create` delegates to nothing yet. It is on the ABC and it is abstract, so
-    # the class would not instantiate without it -- a stub that raises is what
-    # keeps "the seam is done" and "the backend is done" separate facts.
-    with pytest.raises(NotImplementedError):
-        backend.create({}, "session", Prepared())
+
+
+def test_create_renders_first_and_hands_the_values_to_the_session(monkeypatch):
+    """The one delegation that is not a straight forwarding line: it calls two
+    functions, and the argument order it calls the second one with is not the
+    order it was called with. Both are what a rename or a swapped pair breaks
+    while each half keeps passing its own tests.
+    """
+    from orchestrator.backends.libvirt import LibvirtBackend
+    from orchestrator.backends.libvirt import create as create_mod
+    from orchestrator.backends.libvirt import render as render_mod
+
+    monkeypatch.setattr(
+        render_mod, "render", lambda cfg, prepared: ("rendered", cfg, prepared)
+    )
+    monkeypatch.setattr(
+        create_mod, "create", lambda conn, values: ("created", conn, values)
+    )
+
+    cfg, prepared = {"deployment": "lab-a"}, Prepared()
+    assert LibvirtBackend().create(cfg, "session", prepared) == (
+        "created",
+        "session",
+        ("rendered", cfg, prepared),
+    )

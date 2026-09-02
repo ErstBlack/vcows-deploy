@@ -1,5 +1,5 @@
-"""A hypervisor-shaped stand-in, for the parts of preflight and destroy that hold
-a connection.
+"""A hypervisor-shaped stand-in, for the parts of preflight, create and destroy
+that hold a connection.
 
 This is not the fake *backend* -- that one proves the seam by having no hypervisor
 semantics at all. This one has hypervisor semantics deliberately, because the
@@ -17,16 +17,21 @@ attribute, ``None`` by default and raised at the top of the method. One
 convention rather than several, because the question these tests ask is always
 the same one: what does the code do when *this* call is the one that fails.
 
-The flag argument is asserted rather than ignored, wherever the code under test
-has a right answer for it. A fake that takes any flags at all cannot tell a
-correct call from ``XMLDesc(None)`` -- which is a ``TypeError`` against the real
-binding -- or from the live document being read where the persistent one was
-meant. ``FakeVolume.delete`` asserted its own from the start; the rest followed.
+Every argument is asserted or recorded, never ignored -- a fake whose method
+drops what it was handed leaves the caller's wiring unchecked, and the test then
+proves only that a call happened. The flag argument is the case that bites
+hardest, wherever the code under test has a right answer for it: a fake that
+takes any flags at all cannot tell a correct call from ``XMLDesc(None)`` -- which
+is a ``TypeError`` against the real binding -- or from the live document being
+read where the persistent one was meant. ``FakeVolume.delete`` asserted its own
+from the start; the rest followed.
 """
 
 from __future__ import annotations
 
+import uuid as _uuid
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import libvirt
 
@@ -45,6 +50,27 @@ class FakeVolume:
 
     def name(self) -> str:
         return self._name
+
+    def path(self) -> str:
+        """The file inside the pool's target directory.
+
+        Built the same way `FakeConnection.storageVolLookupByPath` matches, so a
+        path `create` reports and a path `destroy` resolves are the same string.
+        """
+        return f"{self.pool._path}/{self._name}"
+
+    def upload(self, stream: FakeStream, offset: int, length: int, flags: int) -> None:
+        """Record the whole call, not just that one happened.
+
+        Every argument here has one right answer and a wrong one that would go
+        unnoticed: an offset places the bytes, and the flag is the sparse stream
+        the dense path measured no faster than. `length` and the stream are kept
+        on the pool because `createXML` hands out a fresh volume object each
+        time, so a test has nothing else to hold on to.
+        """
+        assert offset == 0, "a volume is uploaded whole, from its start"
+        assert flags == 0, "dense: VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM is not used"
+        self.pool.uploads[self._name] = (length, stream)
 
     def XMLDesc(self, flags: int = 0) -> str:
         assert flags == 0, "a volume's document takes no flags"
@@ -81,6 +107,10 @@ class FakePool:
         self._active = active
         self.refreshed = 0
         self.deleted: list[str] = []
+        #: Names `createXML` made, in order.
+        self.created: list[str] = []
+        #: name -> (declared length, the stream its bytes were sent down).
+        self.uploads: dict[str, tuple[int, FakeStream]] = {}
         self.refresh_error: libvirt.libvirtError | None = None
         self.active_error: libvirt.libvirtError | None = None
         self.name_error: libvirt.libvirtError | None = None
@@ -121,10 +151,55 @@ class FakePool:
         assert flags == 0, "every volume, not a filtered subset"
         return [FakeVolume(self, n, self.volumes[n]) for n in sorted(self.visible)]
 
+    def createXML(self, xml: str, flags: int = 0) -> FakeVolume:
+        """Define a volume from its document, and keep the document.
+
+        The new volume is visible immediately, as libvirt's is: the pool cache
+        knows about anything the pool itself just made, and only volumes that
+        appeared behind its back need `refresh`.
+        """
+        assert flags == 0, "virStorageVolCreateXML takes no flags the dir backend uses"
+        name = ET.fromstring(xml).findtext("name")
+        assert name is not None, "a volume document names the volume"
+        self.volumes[name] = xml
+        self.visible.add(name)
+        self.created.append(name)
+        return FakeVolume(self, name, xml)
+
     def storageVolLookupByName(self, name: str) -> FakeVolume:
         if name not in self.visible:
             raise lv_error(50, f"no storage vol with matching name '{name}'")
         return FakeVolume(self, name, self.volumes[name])
+
+
+class FakeStream:
+    """A byte sink, which is all the upload path uses one for.
+
+    `sendAll` drives the handler exactly as libvirt does -- call it until it
+    returns nothing -- so the bytes collected here are the bytes the caller's
+    handler actually read, not the bytes it was asked to read.
+    """
+
+    def __init__(self) -> None:
+        self.data = b""
+        self.finished = False
+        self.aborted = False
+        #: The daemon refusing a write partway through. `virStreamSendAll` aborts
+        #: the stream itself only when the *handler* raises, so this is the case
+        #: the caller has to clean up after.
+        self.send_error: libvirt.libvirtError | None = None
+
+    def sendAll(self, handler: Any, opaque: Any) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+        while chunk := handler(self, 262144, opaque):
+            self.data += chunk
+
+    def finish(self) -> None:
+        self.finished = True
+
+    def abort(self) -> None:
+        self.aborted = True
 
 
 class FakeDomain:
@@ -136,6 +211,10 @@ class FakeDomain:
         self.log: list[str] = []
         #: Flag bits this daemon refuses, as `virCheckFlags` would.
         self.rejects = 0
+        #: `None` until `setAutostart` is called, so "never set" and "set to 0"
+        #: are distinguishable -- a domain that comes back after a host reboot
+        #: and one that does not.
+        self.autostart_flag: int | None = None
         self.stop_error: libvirt.libvirtError | None = None
         self.xml_error: libvirt.libvirtError | None = None
         self.active_error: libvirt.libvirtError | None = None
@@ -169,6 +248,19 @@ class FakeDomain:
         if self.active_error is not None:
             raise self.active_error
         return self.active
+
+    def setAutostart(self, flag: int) -> None:
+        self.log.append(f"autostart:{flag}")
+        self.autostart_flag = flag
+
+    def autostart(self) -> int:
+        return 0 if self.autostart_flag is None else self.autostart_flag
+
+    def create(self) -> None:
+        self.log.append("start")
+        if self.active:
+            raise lv_error(55, "domain is already running")
+        self.active = True
 
     def destroyFlags(self, flags: int = 0) -> None:
         assert flags == 0, "no VIR_DOMAIN_DESTROY_GRACEFUL: this is the forced stop"
@@ -205,6 +297,18 @@ class FakeConnection:
         #: Raised by `lookupByUUIDString` instead of the NO_DOMAIN default, for
         #: the failures that are not "already gone". Mirrors `FakeDomain.stop_error`.
         self.lookup_error: libvirt.libvirtError | None = None
+        #: domain name -> the error `defineXML` raises for it. Keyed rather than
+        #: a single attribute because the question a create failure asks is what
+        #: a run that got partway through leaves behind, and that needs the
+        #: domains before the failing one to succeed.
+        self.define_errors: dict[str, libvirt.libvirtError] = {}
+        #: Every stream `newStream` handed out, in order.
+        self.streams: list[FakeStream] = []
+        #: Stamped onto every stream this connection hands out, the way
+        #: `lease_error` is stamped onto every network. The stream a failing
+        #: upload has to clean up is made inside the code under test, so there is
+        #: nowhere else to arm it from.
+        self.send_error: libvirt.libvirtError | None = None
         self.domains_error: libvirt.libvirtError | None = None
         self.pools_error: libvirt.libvirtError | None = None
         self.version_error: libvirt.libvirtError | None = None
@@ -221,6 +325,21 @@ class FakeConnection:
         if self.domains_error is not None:
             raise self.domains_error
         return list(self.domains)
+
+    def defineXML(self, xml: str) -> FakeDomain:
+        """Define a persistent domain and register it, as libvirt does.
+
+        The UUID is derived from the name rather than random: the daemon picks
+        one when the document omits it, and a test asserting on the inventory
+        needs the same answer twice.
+        """
+        name = ET.fromstring(xml).findtext("name")
+        assert name is not None, "a domain document names the domain"
+        if name in self.define_errors:
+            raise self.define_errors[name]
+        dom = FakeDomain(name, str(_uuid.uuid5(_uuid.NAMESPACE_DNS, name)), xml)
+        self.domains.append(dom)
+        return dom
 
     def lookupByUUIDString(self, uuid: str) -> FakeDomain:
         if self.lookup_error is not None:
@@ -275,6 +394,13 @@ class FakeConnection:
         return net
 
     # -- misc ------------------------------------------------------------
+
+    def newStream(self, flags: int = 0) -> FakeStream:
+        assert flags == 0, "no VIR_STREAM_NONBLOCK: sendAll is a blocking send"
+        stream = FakeStream()
+        stream.send_error = self.send_error
+        self.streams.append(stream)
+        return stream
 
     def getLibVersion(self) -> int:
         if self.version_error is not None:

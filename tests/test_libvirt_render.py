@@ -1,8 +1,8 @@
 """`render` is pure, so it is golden-file tested byte for byte.
 
-The golden file is the tfvars document OpenTofu actually consumes. Comparing it
-whole rather than field by field is what makes an accidental rename or a dropped
-key show up as a diff instead of as a passing test.
+The golden file is the values document `create` consumes. Comparing it whole
+rather than field by field is what makes an accidental rename or a dropped key
+show up as a diff instead of as a passing test.
 """
 
 from __future__ import annotations
@@ -150,24 +150,3 @@ def test_only_the_vms_it_is_given_are_rendered(cfg, prepared):
 def test_module_helpers_agree_with_the_rendered_names():
     assert render_mod.overlay_name("app01") == "app01.qcow2"
     assert render_mod.seed_name("app01") == "app01-seed.iso"
-
-
-def test_the_provider_is_given_the_transport_that_can_reach_the_host(cfg, prepared):
-    """The two clients need different schemes, and getting it wrong fails only at
-    apply time, after a multi-GB upload.
-
-    libvirt's own client does not recognise `sshcmd` at all. The provider's `ssh`
-    dials a hardcoded monolithic socket that a split-daemon host does not have,
-    through a forward SELinux refuses. Both measured against the rig; the apply is
-    the only thing that would have noticed.
-    """
-    from orchestrator.backends.libvirt.schema import connection_uri
-
-    target = cfg["target"]["libvirt"]
-    rendered = render(cfg, prepared)["uri"]
-    assert rendered.startswith("qemu+sshcmd://")
-    assert rendered == connection_uri(target, "sshcmd")
-    assert rendered != connection_uri(target), "preflight and the apply differ"
-    # Credentials travel through ~/.ssh/config, which the container's entrypoint
-    # writes -- no spelling of the URI parameters reaches both clients.
-    assert "?" not in rendered
