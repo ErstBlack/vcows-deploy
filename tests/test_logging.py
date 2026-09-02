@@ -65,12 +65,11 @@ def test_a_diagnostics_detail_reaches_the_log(fake_tofu, tmp_path, monkeypatch, 
     assert "storage volume 'app01.qcow2' exists already" in logged
 
 
-def test_the_record_keeps_its_shape_while_the_log_carries_the_detail():
-    """#89's RX-B6: a diagnostic message must not widen a typed record field.
+def test_the_headline_stays_one_line_while_the_log_carries_the_detail():
+    """#89's RX-B6: a diagnostic's `detail` must not widen its headline.
 
-    `_note_warnings` stays `list[str]` and `Diagnostic.__str__` stays one line.
-    The detail goes to the log instead of into the record, which is what makes
-    this fix additive rather than a type change.
+    `Diagnostic.__str__` stays one line and the detail goes to the log, which is
+    what makes the fix additive rather than a change of shape.
     """
     d = tofu.Diagnostic(
         severity="warning",
@@ -80,13 +79,6 @@ def test_the_record_keeps_its_shape_while_the_log_carries_the_detail():
     )
     assert str(d) == "warning [libvirt_domain.vm]: headline"
     assert "\n" not in str(d)
-
-    # `path` is never touched by `_note_warnings`; nothing is written here.
-    run = cli._Run(path=Path("/nonexistent"), command="deploy", cfg={}, started="now")
-    run.extra["tofu_warnings"] = []
-    cli._note_warnings(run, tofu.Result(0, (d,)))
-    assert run.extra["tofu_warnings"] == ["warning [libvirt_domain.vm]: headline"]
-    assert all(isinstance(w, str) for w in run.extra["tofu_warnings"])
 
 
 def test_the_argv_is_recorded(fake_tofu, tmp_path, caplog):

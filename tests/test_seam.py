@@ -19,9 +19,14 @@ import textwrap
 
 import pytest
 
-from orchestrator.backends.base import Action, Backend, Discovered, Existing, decide
+from orchestrator.backends.base import (
+    Action,
+    Backend,
+    Discovered,
+    Prepared,
+    decide,
+)
 from orchestrator.config import load, vm_names
-from orchestrator.marker import Marker
 from tests.fake_backend import FakeBackend
 
 CONFIG = """\
@@ -80,7 +85,7 @@ def test_libvirt_is_actually_blocked(no_libvirt):
 
 
 def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
-    """validate -> preflight -> prepare -> render -> outputs -> destroy."""
+    """validate -> preflight -> prepare -> create -> destroy."""
     backend = FakeBackend()
     registry = {"fake": backend}
 
@@ -97,36 +102,26 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
 
     assert session.closed, "connect() must close its session on the way out"
 
-    # -- and the apply runs with the connection already closed --------------
+    # -- and prepare runs with the connection already closed ----------------
     # prepare gets what preflight found, not the ability to go and look again.
     workdir = tmp_path / "work"
     workdir.mkdir()
-    with backend.prepare(config, workdir, discovered) as prepared:
-        tfvars = backend.render(config, prepared)
+    prepared = backend.prepare(config, workdir, discovered)
     assert prepared.artifacts["existing_names"] == []
 
-    assert set(tfvars["vms"]) == {"app01", "app02"}
-    for name, vm in tfvars["vms"].items():
-        assert (
-            Marker.from_json(vm["marker_xml"].split(">", 1)[1].rsplit("<", 1)[0]).name
-            == name
-        )
+    # -- create, against a session of its own -------------------------------
+    with backend.connect(config) as session:
+        vms = backend.create(config, session, prepared)
 
-    # Stand in for `tofu apply` + `tofu output -json`.
-    backend.world.extend(
-        Existing(
-            name=n,
-            id=Marker.for_vm(n, "lab-a").id,
-            marker=Marker.for_vm(n, "lab-a"),
-        )
-        for n in tfvars["vms"]
-    )
-    inventory = backend.parse_outputs(
-        {"vms": {"value": {n: {"name": n} for n in tfvars["vms"]}}}
-    )
-    assert set(inventory.vms) == {"app01", "app02"}
+    assert set(vms) == {"app01", "app02"}
+    for name, record in vms.items():
+        # The two keys `Backend.create` promises of every backend's record.
+        assert record["name"] == name
+        assert "configured_address" in record
 
     # -- second deploy is a no-op ------------------------------------------
+    # Which is also the check that `create` marked what it made: an unmarked VM
+    # of the same name would be a REFUSE here rather than a SKIP.
     with backend.connect(config) as session:
         decisions, _ = decide(
             vm_names(config),
@@ -159,18 +154,17 @@ def test_prepare_is_handed_data_not_a_connection():
     assert list(params) == ["self", "cfg", "workdir", "discovered"]
 
 
-def test_prepare_and_render_work_from_data_alone(no_libvirt, cfg, tmp_path):
-    """No session is constructed anywhere in this test, and the apply half still
-    completes."""
+def test_prepare_works_from_data_alone(no_libvirt, cfg, tmp_path):
+    """No session is constructed anywhere in this test, and prepare still
+    produces what `create` is handed."""
     backend = FakeBackend()
     config, _ = load(cfg, {"fake": backend})
 
-    with backend.prepare(
+    prepared = backend.prepare(
         config, tmp_path, Discovered(vms=(), artifacts={"existing_names": []})
-    ) as prepared:
-        tfvars = backend.render(config, prepared)
+    )
 
-    assert set(tfvars["vms"]) == {"app01", "app02"}
+    assert prepared.artifacts["existing_names"] == []
     assert backend.sessions == [], "prepare must not have opened a connection"
 
 
@@ -227,16 +221,14 @@ def test_registry_is_importable_without_libvirt(no_libvirt, monkeypatch):
 
 def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch):
     """`REGISTRY` holds this class, not the modules behind it, so the wiring is
-    the only path core ever takes -- and five of its six delegating methods were
-    reached by no test at all. Every one is a single forwarding line, which is
-    exactly the kind of line a rename breaks silently: the free function keeps its
-    own tests and passes them while the method calls the wrong one, or drops an
-    argument on the way.
+    the only path core ever takes. Every delegation is a single forwarding line,
+    which is exactly the kind of line a rename breaks silently: the free function
+    keeps its own tests and passes them while the method calls the wrong one, or
+    drops an argument on the way.
     """
     from orchestrator.backends.libvirt import LibvirtBackend
     from orchestrator.backends.libvirt import destroy as destroy_mod
     from orchestrator.backends.libvirt import preflight as preflight_mod
-    from orchestrator.backends.libvirt import render as render_mod
     from orchestrator.backends.libvirt import schema as schema_mod
 
     backend = LibvirtBackend()
@@ -247,7 +239,6 @@ def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch)
         ("connect", preflight_mod, "connect", ("cfg",)),
         ("preflight", preflight_mod, "preflight", ("cfg", "session")),
         ("destroy", destroy_mod, "destroy", ("cfg", "session", "targets")),
-        ("render", render_mod, "render", ("cfg", "prepared")),
     ]
     for _, module, function, _ in delegations:
         monkeypatch.setattr(
@@ -261,3 +252,8 @@ def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch)
 
     assert calls == [(function, args) for _, _, function, args in delegations]
     assert backend.config_schema() is schema_mod.TARGET_SCHEMA
+    # `create` delegates to nothing yet. It is on the ABC and it is abstract, so
+    # the class would not instantiate without it -- a stub that raises is what
+    # keeps "the seam is done" and "the backend is done" separate facts.
+    with pytest.raises(NotImplementedError):
+        backend.create({}, "session", Prepared())

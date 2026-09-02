@@ -47,34 +47,7 @@ def fake_proxmoxer(monkeypatch):
 
 def test_it_is_registered_under_its_own_name(backend):
     assert isinstance(backend, Backend)
-    assert backend.name == "proxmox"
     assert REGISTRY["proxmox"] is backend
-
-
-def test_the_module_lives_beside_the_class(backend):
-    """`cli.module_dir` resolves `<package>/tofu/` by convention, not by method,
-    and only while the class is defined in the package's own __init__."""
-    from orchestrator.cli import module_dir
-
-    where = module_dir(backend)
-    assert where.name == "tofu"
-    assert (where / "main.tf").is_file()
-    assert (where / "variables.tf").is_file()
-    assert (where / "outputs.tf").is_file()
-
-
-def test_the_module_stages_cleanly(backend, tmp_path):
-    """`_stage_module` refuses anything that is not *.tf or the lock file, so a
-    stray file in the module directory fails the deploy rather than being
-    silently left behind."""
-    from orchestrator.cli import _stage_module, module_dir
-
-    _stage_module(module_dir(backend), tmp_path)
-    assert {p.name for p in tmp_path.iterdir()} == {
-        "main.tf",
-        "variables.tf",
-        "outputs.tf",
-    }
 
 
 def test_proxmoxer_is_not_imported_at_module_scope(monkeypatch):
@@ -104,18 +77,7 @@ def test_proxmoxer_is_not_imported_at_module_scope(monkeypatch):
 
     import orchestrator.backends.proxmox as pkg
 
-    assert pkg.ProxmoxBackend().name == "proxmox"
-
-
-def test_parse_outputs_raises_on_a_module_with_no_vms_output(backend):
-    """Read as an empty inventory it would be reported as `created 0 VM(s)`
-    under `outcome: ok`, beside an inventory.json that says otherwise."""
-    with pytest.raises(ValueError, match="declared no `vms` output"):
-        backend.parse_outputs({"something_else": {"value": {}}})
-    assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
-    # A declared output with nothing in it is an empty inventory, not a None that
-    # `cli._deploy` would then compare against the set it asked for.
-    assert backend.parse_outputs({"vms": {}}).vms == {}
+    assert isinstance(pkg.ProxmoxBackend(), Backend)
 
 
 def test_prepare_builds_a_seed_per_vm_and_carries_the_image(
@@ -124,23 +86,21 @@ def test_prepare_builds_a_seed_per_vm_and_carries_the_image(
     discovered = Discovered(
         vms=(), artifacts={"image": {"create": True, "volid": "local:import/g.qcow2"}}
     )
-    with backend.prepare(pve_cfg, tmp_path, discovered) as prepared:
-        assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
-        assert prepared.artifacts["image"]["create"] is True
+    prepared = backend.prepare(pve_cfg, tmp_path, discovered)
+    assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
+    assert prepared.artifacts["image"]["create"] is True
     assert (tmp_path / "app01-seed.iso").is_file()
     assert (tmp_path / "app02-seed.iso").is_file()
 
 
-def test_prepare_holds_nothing_open(backend, pve_cfg, tmp_path):
-    """The research predicted this backend would be the one that serves the image
-    over HTTP for the duration of the apply. It is not: the provider uploads over
-    the same API token, so there is no socket to hold."""
+def test_prepare_cleans_up_after_nothing(backend, pve_cfg, tmp_path):
+    """The seed ISOs outlive `prepare` deliberately: the run directory keeps them
+    so a VM that will not boot can be debugged from the media it was given."""
     discovered = Discovered(
         vms=(), artifacts={"image": {"create": False, "volid": "x"}}
     )
-    with backend.prepare(pve_cfg, tmp_path, discovered) as prepared:
-        first = Path(prepared.artifacts["seed_isos"]["app01"])
-    assert first.is_file(), "prepare must not clean up after itself"
+    prepared = backend.prepare(pve_cfg, tmp_path, discovered)
+    assert Path(prepared.artifacts["seed_isos"]["app01"]).is_file()
 
 
 # -- connect -------------------------------------------------------------
@@ -339,9 +299,8 @@ def test_every_abstract_method_is_reachable_through_the_class(
     with backend.connect(pve_cfg) as session:
         discovered = backend.preflight(pve_cfg, session)
         assert discovered.vms == ()
-        with backend.prepare(pve_cfg, tmp_path, discovered) as prepared:
-            tfvars = backend.render(pve_cfg, prepared)
-        assert set(tfvars["vms"]) == {"app01", "app02"}
+        prepared = backend.prepare(pve_cfg, tmp_path, discovered)
+        assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
         # With a target rather than none, so `destroy` reaches the session it is
         # handed rather than returning on an empty list.
         w.vms[("pve1", "100")] = {
@@ -352,4 +311,3 @@ def test_every_abstract_method_is_reachable_through_the_class(
             name="app01", id="pve1/100", marker=Marker.for_vm("app01", "lab-a")
         )
         assert backend.destroy(pve_cfg, session, [target]).destroyed == ["app01"]
-    assert backend.parse_outputs({"vms": {"value": {}}}).vms == {}

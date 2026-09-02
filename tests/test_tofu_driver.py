@@ -3,8 +3,7 @@
 A fake binary on PATH is the only way to pin the things that actually go wrong
 here: which flags are passed, what the child's environment is, and whether the
 JSON stream or the exit code is treated as the authority. None of that needs a
-real OpenTofu, and none of it should skip when one is absent -- `tests/
-test_tofu_cli_gate.py` is where the real binary earns its place.
+real OpenTofu, and none of it should skip when one is absent.
 
 The fake records its argv and environment and writes whatever stream the test
 asks for, so a test can produce a diagnostic, a change summary, a truncated file

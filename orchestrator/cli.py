@@ -9,9 +9,9 @@ the whole reason the first two are commands rather than flags on ``deploy``.
 debugging a VM that will not boot means inspecting the media it was actually given
 rather than rebuilding it -- and those ISOs contain ``user_data`` verbatim. It is
 created 0700 and documented as an artifact to handle like the config it came from
-(F12). OpenTofu's state encryption is not used: it would encrypt the state file
-while the ISOs sit unencrypted beside it, at the cost of a passphrase that, if
-lost, makes unreadable a file D23 already calls disposable.
+(F12). Encrypting the directory is not attempted: the ISOs are the secret in it,
+and a passphrase that, if lost, makes unreadable a directory D23 already calls
+disposable buys nothing an operator cannot get from the mount it sits on.
 
 **Exit codes are 0 and 1** -- from vcows. Anything richer is a contract with no
 consumer at v0.1. argparse is the exception and it is not ours: an unknown verb,
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import inspect
 import json
 import logging
 import os
@@ -42,7 +41,6 @@ from . import VERSION, tofu
 from .backends import REGISTRY
 from .backends.base import (
     Action,
-    Backend,
     Decision,
     Discovered,
     decide,
@@ -55,9 +53,6 @@ from .problems import Problem
 #: outside the image, where there is nothing to record -- a checkout is not a
 #: release, and inventing a manifest for one would make the two indistinguishable.
 MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
-
-#: The one non-`.tf` file `_stage_module` will carry out of a module directory.
-LOCK_NAME = ".terraform.lock.hcl"
 
 #: Every line vcows writes goes through here: prefixed, level-tagged, on stderr.
 #: The one exception is `_confirm`'s prompt -- see its docstring.
@@ -93,21 +88,6 @@ def manifest() -> dict | None:
         return json.loads(MANIFEST.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"{MANIFEST}: {exc}") from exc
-
-
-def module_dir(backend: Backend) -> Path:
-    """The backend's tofu module, by convention rather than by method.
-
-    findings.md §3 fixes the layout as ``backends/<name>/tofu/`` and deliberately
-    does not put it on the ABC. Reading it off the class's own module keeps that
-    promise without an eighth abstract method nobody would implement differently.
-
-    Strictly this resolves beside the file *defining the class*, so it is
-    ``backends/<name>/tofu/`` only while that file is the package's
-    ``__init__.py``. A backend defining its class in a submodule gets that
-    submodule's directory, and ``_stage_module`` then reports an empty one.
-    """
-    return Path(inspect.getfile(type(backend))).parent / "tofu"
 
 
 def _timestamp() -> str:
@@ -149,8 +129,8 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
         ) from exc
     if any(path.iterdir()):
         raise UsageError(
-            f"{path} is not empty. Every run writes its own directory -- the "
-            f"OpenTofu state is thrown away between them, so two runs cannot "
+            f"{path} is not empty. Every run writes its own directory -- its "
+            f"record, its inventory and its seed media, so two runs cannot "
             f"share one. "
             + (
                 "Pass a --run-dir that does not exist yet, or one that is empty, "
@@ -394,36 +374,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return _guard(run, lambda: _deploy(run, config_problems))
 
 
-def _note_warnings(run: _Run, result: tofu.Result) -> None:
-    """Add one step's warnings to the record, now rather than at the end."""
-    run.extra["tofu_warnings"] += [str(d) for d in result.warnings]
-
-
-def _tofu_version(run: _Run, workdir: Path) -> dict | None:
-    """What actually ran, or ``None`` -- never an exception over a good deploy.
-
-    This is provenance, and it is asked for *after* the apply succeeded and
-    ``inventory.json`` is on disk. Letting it raise -- `tofu version` exits
-    non-zero, takes longer than ``SHORT_TIMEOUT``, or prints something that will
-    not parse -- reaches ``_guard``, which then writes ``outcome: "failed"`` over
-    a deploy that created every VM it was asked to. Tolerated the way
-    ``_print_manifest`` tolerates a manifest that will not parse.
-    """
-    try:
-        return tofu.version(workdir)
-    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
-        # Both halves, not just stderr: `tofu: null` in the shipped record reads
-        # as "vcows did not try" and means "tried and could not". The field stays
-        # `dict | None` -- a sentence in it would make it `dict | str` and break
-        # a consumer reading `record["tofu"]["terraform_version"]`.
-        problem = Problem.warning(
-            f"cannot record the tofu version ({exc})", where="tofu"
-        )
-        log.warning("%s", problem.message)
-        run.extra["problems"].append(str(problem))
-        return None
-
-
 def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     cfg = run.cfg
     backend = REGISTRY[cfg["backend"]]
@@ -435,9 +385,6 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     # including the failure one. A refusal's reason belonged only to stderr.
     run.decisions = decisions
     run.extra["problems"] = [str(p) for p in problems]
-    # Same rule, same reason: the list exists from here on so that whichever
-    # record gets written carries whatever had been learned by then.
-    run.extra["tofu_warnings"] = []
 
     # Nothing has been touched yet, and this is the last point where that is true.
     if any(d.action is Action.REFUSE for d in decisions) or any(
@@ -453,130 +400,41 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         log.info("nothing to create")
         return 0
 
-    # D23: the module only ever creates, so VMs that already exist are dropped
-    # here rather than skipped later. Against a *reused* state, dropping a key
-    # from `for_each` would plan a destroy of that live VM; against the fresh
-    # state of a new run directory (D40) there is nothing to drop it from.
+    # D23: `create` only ever creates, so VMs that already exist are dropped here
+    # rather than skipped further down. It also keeps `prepare` from writing a
+    # seed ISO -- `user_data` verbatim -- for a VM nobody asked to create.
     create_cfg = {**cfg, "vms": [vm for vm in cfg["vms"] if vm["name"] in creating]}
 
     seed = run.path / "seed"
     seed.mkdir()
-    workdir = run.path / "tofu"
-    workdir.mkdir()
+    # Data, never a session: `prepare` is handed what preflight found, and the
+    # connection `_look` opened is closed by the time this runs.
+    prepared = backend.prepare(create_cfg, seed, discovered)
 
-    with backend.prepare(create_cfg, seed, discovered) as prepared:
-        tfvars = backend.render(create_cfg, prepared)
-        _stage_module(module_dir(backend), workdir)
-        _write_json(workdir / "main.auto.tfvars.json", tfvars)
+    # A second session rather than one held across `prepare`. `_look`'s closes
+    # before `decide` runs, and holding it open would mean threading it through
+    # the pure half of the pipeline to reach the one call that needs it.
+    with backend.connect(create_cfg) as session:
+        vms = backend.create(create_cfg, session, prepared)
 
-        # OpenTofu printed these live -- `_run` inherits stdout -- so they are not
-        # re-printed. What they were missing is the run directory an air-gapped
-        # site ships back, where nothing recorded them at all. Accumulated after
-        # each step rather than after all three: a plan that warns and an apply
-        # that raises is exactly the run whose warnings are worth keeping, and
-        # collecting them at the end means that run records none of them.
-        try:
-            inited = tofu.init(workdir)
-            _note_warnings(run, inited)
-            planned = tofu.plan(workdir, workdir / "plan.bin")
-            _note_warnings(run, planned)
-            if not planned.changes:
-                # No change summary at all is not the same fact as a plan that
-                # creates nothing. `_read_stream` returns `{}` for a stream that
-                # is missing or will not parse -- deliberately, since the exit
-                # code is the authority on success -- and without this branch
-                # that arrives as "the module proposes no creates", which sends
-                # whoever reads it to the module rather than to the file.
-                raise tofu.TofuError(
-                    f"tofu plan exited 0 but reported no change summary; "
-                    f"{workdir / 'plan.json'} is the stream it should be in"
-                )
-            if not planned.changes.get("add"):
-                raise tofu.TofuError(
-                    f"plan proposes no creates for {len(creating)} VM(s); "
-                    f"refusing to apply"
-                )
-            applied = tofu.apply(workdir, workdir / "plan.bin")
-            _note_warnings(run, applied)
-            raw = tofu.outputs(workdir)
-        except tofu.TofuError as exc:
-            # The step that raised warned too, and `TofuError.result` is the only
-            # thing carrying those warnings. Without this they die with the
-            # exception -- the run whose warnings are worth most keeps none of
-            # its own.
-            if exc.result is not None:
-                _note_warnings(run, exc.result)
-            raise
-
-    inventory = backend.parse_outputs(raw)
     # Names, not counts. The message below already computes the set difference and
     # carries an `or 'names differ'` fallback, so the intent was always a set
     # comparison; a length test made that fallback reachable only when the lengths
     # already differed, and let two same-sized disagreeing lists through.
-    if set(inventory.vms) != set(creating):
-        # The module is the authority on what it created and `creating` is the
+    if set(vms) != set(creating):
+        # The backend is the authority on what it created and `creating` is the
         # authority on what was asked for. When they disagree the run has two
         # artifacts that contradict each other, and recording either as the truth
         # is worse than refusing to record.
-        raise tofu.TofuError(
-            f"the module reported {len(inventory.vms)} VM(s) for the "
+        raise RuntimeError(
+            f"the backend reported {len(vms)} VM(s) for the "
             f"{len(creating)} it was asked to create: "
-            f"{', '.join(sorted(set(creating) - set(inventory.vms))) or 'names differ'}"
+            f"{', '.join(sorted(set(creating) - set(vms))) or 'names differ'}"
         )
-    _write_json(run.path / "inventory.json", {"vms": inventory.vms})
-    _record(
-        run,
-        "ok",
-        created=sorted(creating),
-        tofu=_tofu_version(run, workdir),
-    )
-    log.info("created %d VM(s); run directory %s", len(inventory.vms), run.path)
+    _write_json(run.path / "inventory.json", {"vms": vms})
+    _record(run, "ok", created=sorted(creating))
+    log.info("created %d VM(s); run directory %s", len(vms), run.path)
     return 0
-
-
-def _stage_module(source: Path, workdir: Path) -> None:
-    """Copy the static module into the run directory.
-
-    The lock file travels with it when the module ships one, and in the image it
-    does: the Containerfile copies ``docs/provider-0.9.8.lock.hcl`` in as the
-    module's ``.terraform.lock.hcl``. A checkout has no lock beside the ``.tf``
-    files, so the dev-box path stages three files and the image path stages four.
-
-    **This copy is not superseded.** R6 asked whether the run directory could be
-    seeded from a pre-initialised tree instead; D48 decided against it, and what
-    shipped is the mirror plus a plugin cache warmed at build time
-    (``TF_PLUGIN_CACHE_DIR=/opt/tofu/plugin-cache``), so ``init`` symlinks into
-    that cache rather than unpacking a 26 MB provider into every run directory.
-    Every deploy still stages and still initialises. Reading this as transitional
-    and removing it breaks every deploy.
-
-    **Module content this does not copy is refused, not skipped.** It copies two
-    patterns, so a ``.tftpl``, a ``modules/`` subdirectory or a ``main.tf.json``
-    would be left behind in silence and the apply would run against a module
-    missing a piece of itself -- diagnosed at a site, through OpenTofu's error for
-    whatever the absent file defined. Widening the copy instead would invent a
-    layout nobody has chosen.
-
-    Dotfiles other than the lock are byproducts rather than content: ``tofu init``
-    run in the source tree leaves ``.terraform/`` and a state file behind, and the
-    staged copy initialises itself, so neither is a missing piece.
-    """
-    if not any(source.glob("*.tf")):
-        raise RuntimeError(f"no module to stage: {source} holds no .tf files")
-    for entry in sorted(source.iterdir()):
-        if entry.name.startswith(".") and entry.name != LOCK_NAME:
-            continue
-        if not (entry.is_file() and (entry.suffix == ".tf" or entry.name == LOCK_NAME)):
-            raise RuntimeError(
-                f"the module at {source} holds {entry.name!r}, which staging does "
-                f"not copy -- only *.tf and {LOCK_NAME}. Applying without it would "
-                f"run against an incomplete module."
-            )
-        # `copyfile` rather than `copy`, so the module lands at the umask `main`
-        # set rather than at whatever mode a checkout or an image layer gave it.
-        # It is the only thing in the run directory that comes from a file
-        # already on disk, and so the only one that could arrive world-readable.
-        shutil.copyfile(entry, workdir / entry.name)
 
 
 # -- destroy ----------------------------------------------------------------
@@ -785,11 +643,10 @@ def cmd_version(args: argparse.Namespace) -> int:
     _print_manifest()
     try:
         info = tofu.version()
-    # The same four classes `_tofu_version` names for the identical call: both
-    # sites intend "report and carry on", so the narrower tuple was a divergence
-    # and not a policy. `subprocess.TimeoutExpired` and `json.JSONDecodeError`
-    # -- a slow `tofu` and a `tofu` printing something unparseable, the two
-    # states this command is run to discover -- used to reach `main` and exit 1.
+    # Four classes, because this command is run *because* something is wrong
+    # with the build. `subprocess.TimeoutExpired` and `json.JSONDecodeError` --
+    # a slow `tofu` and a `tofu` printing something unparseable, the two states
+    # this command is run to discover -- used to reach `main` and exit 1.
     except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
         log.info("tofu: unavailable (%s)", exc)
         return 0
@@ -836,11 +693,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # The run directory is 0700, and until this its *contents* were not: the
-    # OpenTofu state, the saved plan and the JSON streams are written by a
-    # subprocess and the seed ISOs by pycdlib, so vcows opens none of them and no
-    # per-file chmod can reach them. A umask is the only lever that covers a
-    # child process, and it has to be set before the first verb runs.
+    # The run directory is 0700, and until this its *contents* were not: the seed
+    # ISOs are written by pycdlib, so vcows opens none of them and no per-file
+    # chmod can reach them. A umask is the only lever that covers a write vcows
+    # does not make itself, and it has to be set before the first verb runs.
     os.umask(0o077)
     args = _parser().parse_args(argv)
     try:

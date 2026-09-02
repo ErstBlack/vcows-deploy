@@ -20,11 +20,10 @@ GOLDEN = Path(__file__).parent / "golden" / "proxmox.tfvars.json"
 
 
 @pytest.fixture
-def prepared(tmp_path):
+def prepared():
     """What `prepare` resolves: the seed ISOs it built, and preflight's answer
     about whether the golden image is already on the cluster."""
     return Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {
                 "app01": "/runs/lab-a/seed/app01-seed.iso",
@@ -119,11 +118,10 @@ def test_configured_address_is_the_primary_nics(pve_cfg, prepared):
     assert render(pve_cfg, prepared)["vms"]["app01"]["configured_address"] == "10.0.0.5"
 
 
-def test_the_image_is_not_re_uploaded_once_it_is_there(pve_cfg, tmp_path):
+def test_the_image_is_not_re_uploaded_once_it_is_there(pve_cfg):
     """The apply runs against a fresh state every time, so without `create` it
     would push a multi-GB image on every deploy after the first."""
     prepared = Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {"app01": "/s/app01.iso", "app02": "/s/app02.iso"},
             "image": {"create": False, "volid": "local:import/golden.qcow2"},

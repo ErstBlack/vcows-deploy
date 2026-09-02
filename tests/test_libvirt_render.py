@@ -21,11 +21,10 @@ GOLDEN = Path(__file__).parent / "golden" / "libvirt.tfvars.json"
 
 
 @pytest.fixture
-def prepared(tmp_path):
+def prepared():
     """What `prepare` resolves against the session: the seed ISOs it built, and
     whether the golden image is already on this host."""
     return Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {
                 "app01": "/run/vcows/lab-a/app01-seed.iso",
@@ -120,11 +119,10 @@ def test_configured_address_is_the_primary_nics(cfg, prepared):
     assert vms["app01"]["configured_address"] == "192.168.122.70"
 
 
-def test_base_volume_when_it_is_already_on_the_host(cfg, tmp_path):
+def test_base_volume_when_it_is_already_on_the_host(cfg):
     """Each apply runs against a fresh state, so without this the module would
     try to create an existing volume on every deploy after the first."""
     prepared = Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
             "base_volume": {
@@ -173,19 +171,3 @@ def test_the_provider_is_given_the_transport_that_can_reach_the_host(cfg, prepar
     # Credentials travel through ~/.ssh/config, which the container's entrypoint
     # writes -- no spelling of the URI parameters reaches both clients.
     assert "?" not in rendered
-
-
-# -- the other half of the module contract ---------------------------------
-
-
-def test_a_missing_vms_output_is_a_broken_module_not_an_empty_inventory():
-    """`parse_outputs` exists so the module's `output` block is not the public
-    API. Reading a renamed output as `{}` spends that isolation on silence: the
-    deploy records `created 0 VM(s)` and `outcome: ok` beside an `inventory.json`
-    that contradicts both."""
-    from orchestrator.backends.libvirt import LibvirtBackend
-
-    backend = LibvirtBackend()
-    assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
-    with pytest.raises(ValueError, match="vms"):
-        backend.parse_outputs({"something_else": {"value": "not an inventory"}})

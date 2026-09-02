@@ -47,8 +47,8 @@ MIRROR="$REPO/.tools/tofu-mirror"
 readonly MODULE
 
 # Every backend's OpenTofu module, one path per line. Discovered rather than
-# listed: `cli.module_dir` resolves `backends/<name>/tofu` by convention, so a
-# list here would be a second place to forget when a backend is added.
+# listed: the layout is `backends/<name>/tofu` by convention, so a list here
+# would be a second place to forget when a backend is added.
 backend_modules() {
     find "$REPO/orchestrator/backends" -mindepth 2 -maxdepth 2 -type d -name tofu \
         | sort
