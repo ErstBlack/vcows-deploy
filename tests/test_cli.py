@@ -230,8 +230,8 @@ def test_deploy_runs_the_whole_pipeline(no_libvirt, backend, config, tmp_path): 
 
     # `create` was handed a session of its own, after `prepare` ran without one.
     assert [s.closed for s in backend.sessions] == [True, True]
-    # ...and the `Prepared` that `prepare` returned, not one core built. Passing
-    # a fresh `Prepared()` here loses the media the VMs are supposed to boot.
+    # ...and the artifacts dict that `prepare` returned, not one core built. Passing
+    # a fresh `{}` here loses the media the VMs are supposed to boot.
     assert backend.sessions[1].seed == str(run / "seed" / "fake-artifact")
 
     inventory = json.loads((run / "inventory.json").read_text())

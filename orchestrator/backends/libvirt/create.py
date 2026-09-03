@@ -115,8 +115,8 @@ def domain_xml(vm: dict, overlay_path: str, seed_path: str) -> str:
     firmware, loader = firmware_xml(vm)
     interfaces = "".join(
         INTERFACE_XML.format(
-            kind="network" if n["network"] else "bridge",
-            source=n["network"] or n["bridge"],
+            kind=n["kind"],
+            source=n["source"],
             mac=n["mac"],
             model=n["model"],
         )

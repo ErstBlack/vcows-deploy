@@ -28,7 +28,6 @@ from ..base import (
     Discovered,
     Existing,
     Outcome,
-    Prepared,
 )
 from . import create as _create
 from . import destroy as _destroy
@@ -59,23 +58,23 @@ class LibvirtBackend(Backend):
 
     # -- apply -----------------------------------------------------------
 
-    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered) -> Prepared:
+    def prepare(
+        self, cfg: dict, workdir: Path, discovered: Discovered
+    ) -> dict[str, Any]:
         """Build the seed ISOs and carry preflight's findings through to ``create``.
 
         Nothing is torn down afterwards -- the run directory keeps the ISOs so a
         VM that will not boot can be debugged by inspecting the one it was given.
         """
-        return Prepared(
-            artifacts={
-                "seed_isos": _cloudinit.build_all(cfg, workdir),
-                # Discovered while connected, because nothing downstream can find
-                # it out: the pool's directory belongs to somebody else's pool
-                # definition, and `create` is handed data rather than a lookup.
-                "base_volume": discovered.artifacts["base_volume"],
-            },
-        )
+        return {
+            "seed_isos": _cloudinit.build_all(cfg, workdir),
+            # Discovered while connected, because nothing downstream can find
+            # it out: the pool's directory belongs to somebody else's pool
+            # definition, and `create` is handed data rather than a lookup.
+            "base_volume": discovered.artifacts["base_volume"],
+        }
 
-    def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
+    def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Render the values, then make the objects they describe.
 
         ``render`` stays a step of its own now that nothing consumes its output

@@ -13,9 +13,8 @@ Two shapes are dictated by PVE rather than by taste:
 
 * ``bios`` is PVE's vocabulary (``ovmf``/``seabios``), translated here from the
   config's ``efi``/``bios``, so one operator reads both backends' configs.
-* ``vlan_id`` is emitted as ``null`` rather than omitted, because a map of
-  objects in HCL must have a uniform shape -- the same reason the libvirt
-  backend emits both halves of its NIC union.
+* ``vlan_id`` is emitted as ``null`` rather than omitted, so every NIC in the
+  map has the same keys and ``create`` reads one shape.
 """
 
 from __future__ import annotations
@@ -24,14 +23,13 @@ from typing import Any
 
 from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
-from ..base import Prepared
 from .schema import BIOS, FIRMWARE_DEFAULT, MACHINE_DEFAULT, OS_TYPE_DEFAULT
 
 
-def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
+def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
     target = cfg["target"]["proxmox"]
-    image = prepared.artifacts["image"]
-    seeds = prepared.artifacts["seed_isos"]
+    image = prepared["image"]
+    seeds = prepared["seed_isos"]
 
     return {
         "endpoint": target["endpoint"],

@@ -192,7 +192,7 @@ class Backend(ABC):
     @abstractmethod
     def preflight(self, cfg, session) -> Discovered: ...
     @abstractmethod
-    def prepare(self, cfg, workdir, discovered) -> Prepared: ...
+    def prepare(self, cfg, workdir, discovered) -> dict: ...  # opaque to core
     @abstractmethod
     def create(self, cfg, session, prepared) -> dict: ...  # the inventory map
     @abstractmethod

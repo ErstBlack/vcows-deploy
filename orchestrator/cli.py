@@ -44,7 +44,7 @@ from .backends.base import (
     Discovered,
     decide,
 )
-from .config import ConfigError, load, vm_names
+from .config import ConfigError, load
 from .problems import Problem
 
 #: The R5 build manifest, baked into the image at build time: which RPMs and
@@ -71,22 +71,6 @@ class UsageError(Exception):
     ``error: FileExistsError: /runs/lab-a`` and leave the operator to work out
     which of the two paths they passed it means.
     """
-
-
-def manifest() -> dict | None:
-    """The build manifest, or ``None`` when there is none to read.
-
-    Absent and unreadable are different facts and used to be one return value.
-    Absent is ordinary -- a checkout is not a release. A file that exists and will
-    not parse is the R5 record of a delivered artifact being unreadable, which is
-    worth a line on stderr rather than the silence a dev box gets.
-    """
-    if not MANIFEST.is_file():
-        return None
-    try:
-        return json.loads(MANIFEST.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{MANIFEST}: {exc}") from exc
 
 
 def _timestamp() -> str:
@@ -255,8 +239,11 @@ def _decision(d: Decision) -> dict[str, Any]:
     return record
 
 
-def _record(run: _Run, outcome: str, **extra: Any) -> None:
+def _record(run: _Run, outcome: str) -> None:
     """``run.json``: what was asked, what was decided, what happened.
+
+    Everything beyond the fixed keys arrives through ``run.extra``, which is the
+    only channel: a caller with something to add writes it there first.
 
     The R5 build manifest is copied in beside it, not merged into it: that half is
     baked at image build time and this half is what a runtime can observe. The
@@ -284,7 +271,6 @@ def _record(run: _Run, outcome: str, **extra: Any) -> None:
             "outcome": outcome,
             "decisions": [_decision(d) for d in run.decisions],
             **run.extra,
-            **extra,
         },
     )
 
@@ -305,7 +291,8 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
         # run directory is the whole account an air-gapped site ships back, and
         # its absence is otherwise indistinguishable from a run that never ran.
         try:
-            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+            run.extra["error"] = f"{type(exc).__name__}: {exc}"
+            _record(run, "failed")
         except OSError as unwritable:
             # The original invariant restated: a closed stderr must not become
             # the exception the operator sees instead of `exc`.
@@ -345,7 +332,9 @@ def _look(cfg: dict) -> tuple[Discovered, list[Decision], list[Problem]]:
     backend = REGISTRY[cfg["backend"]]
     with backend.connect(cfg) as session:
         discovered = backend.preflight(cfg, session)
-    decisions, policy = decide(vm_names(cfg), discovered.vms, cfg["deployment"])
+    decisions, policy = decide(
+        [vm["name"] for vm in cfg["vms"]], discovered.vms, cfg["deployment"]
+    )
     return discovered, decisions, list(discovered.problems) + policy
 
 
@@ -425,7 +414,8 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
             f"{', '.join(sorted(set(creating) - set(vms))) or 'names differ'}"
         )
     _write_json(run.path / "inventory.json", {"vms": vms})
-    _record(run, "ok", created=sorted(creating))
+    run.extra["created"] = sorted(creating)
+    _record(run, "ok")
     log.info("created %d VM(s); run directory %s", len(vms), run.path)
     return 0
 
@@ -547,13 +537,10 @@ def _destroy(
     for problem in out.problems:
         _problem(problem)
 
-    _record(
-        run,
-        "failed" if out.failed else "partial" if out.skipped else "ok",
-        destroyed=sorted(out.destroyed),
-        skipped=sorted(out.skipped),
-        problems=run.extra["problems"] + [str(p) for p in out.problems],
-    )
+    run.extra["destroyed"] = sorted(out.destroyed)
+    run.extra["skipped"] = sorted(out.skipped)
+    run.extra["problems"] += [str(p) for p in out.problems]
+    _record(run, "failed" if out.failed else "partial" if out.skipped else "ok")
     log.info("destroyed %d object(s)", len(out.destroyed))
     if out.failed:
         # `Outcome`'s docstring says a backend that returns this "without its
@@ -608,18 +595,24 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
 
 
 def _print_manifest() -> None:
-    """What this image is, printed before anything that can return early."""
+    """What this image is, printed before anything that can return early.
+
+    Absent and unreadable are different facts. Absent is ordinary -- a checkout is
+    not a release, and it prints nothing. A file that exists and will not parse is
+    the R5 record of a delivered artifact being unreadable, which is worth a line
+    on stderr rather than the silence a dev box gets.
+    """
+    if not MANIFEST.is_file():
+        return
     try:
-        build = manifest()
-        if build is None:
-            return
+        build = json.loads(MANIFEST.read_text())
         log.info("image   %s built %s", build["git_sha"], build["built"])
         log.info(
             "base    %s@%s", build["base_image"]["name"], build["base_image"]["digest"]
         )
         packages, sources = len(build["packages"]), len(build["source_rpms"])
         log.info("packages %s from %s sources", packages, sources)
-    except (ValueError, KeyError, TypeError) as exc:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         log.warning("image: %s will not parse (%s)", MANIFEST, exc)
 
 

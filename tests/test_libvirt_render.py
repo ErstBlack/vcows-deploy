@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.backends.base import Prepared
 from orchestrator.backends.libvirt import render as render_mod
 from orchestrator.backends.libvirt.render import render
 from orchestrator.marker import Marker
@@ -24,15 +23,13 @@ GOLDEN = Path(__file__).parent / "golden" / "libvirt.tfvars.json"
 def prepared():
     """What `prepare` resolves against the session: the seed ISOs it built, and
     whether the golden image is already on this host."""
-    return Prepared(
-        artifacts={
-            "seed_isos": {
-                "app01": "/run/vcows/lab-a/app01-seed.iso",
-                "app02": "/run/vcows/lab-a/app02-seed.iso",
-            },
-            "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
+    return {
+        "seed_isos": {
+            "app01": "/run/vcows/lab-a/app01-seed.iso",
+            "app02": "/run/vcows/lab-a/app02-seed.iso",
         },
-    )
+        "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
+    }
 
 
 def dumped(tfvars: dict) -> str:
@@ -75,12 +72,11 @@ def test_capacity_is_in_bytes_on_the_overlay(cfg, prepared):
     assert render(cfg, prepared)["vms"]["app01"]["disk_bytes"] == 40 * 1024**3
 
 
-def test_a_nic_carries_both_union_keys_with_one_null(cfg, prepared):
-    """A ternary between two differently-shaped objects does not type-check in
-    HCL, so the shape stays uniform and the choice lives in the values."""
+def test_a_nic_names_the_attachment_kind_and_its_source(cfg, prepared):
+    """The config names either a network or a bridge; the choice is made here, so
+    `create.domain_xml` has one shape to spell into its `<interface>`."""
     nic = render(cfg, prepared)["vms"]["app01"]["nics"][0]
-    assert nic["network"] == "default"
-    assert nic["bridge"] is None
+    assert (nic["kind"], nic["source"]) == ("network", "default")
 
     cfg["vms"][0]["nics"][0] = {
         "bridge": "br0",
@@ -88,7 +84,7 @@ def test_a_nic_carries_both_union_keys_with_one_null(cfg, prepared):
         "gateway": "192.168.122.1",
     }
     nic = render(cfg, prepared)["vms"]["app01"]["nics"][0]
-    assert (nic["network"], nic["bridge"]) == (None, "br0")
+    assert (nic["kind"], nic["source"]) == ("bridge", "br0")
 
 
 def test_firmware_defaults_and_overrides(cfg, prepared):
@@ -122,16 +118,14 @@ def test_configured_address_is_the_primary_nics(cfg, prepared):
 def test_base_volume_when_it_is_already_on_the_host(cfg):
     """Each apply runs against a fresh state, so without this the module would
     try to create an existing volume on every deploy after the first."""
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
-            "base_volume": {
-                "name": "golden.qcow2",
-                "create": False,
-                "path": "/var/lib/libvirt/images/golden.qcow2",
-            },
+    prepared = {
+        "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
+        "base_volume": {
+            "name": "golden.qcow2",
+            "create": False,
+            "path": "/var/lib/libvirt/images/golden.qcow2",
         },
-    )
+    }
     base = render(cfg, prepared)["base_volume"]
     assert base == {
         "name": "golden.qcow2",

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator.backends.base import Discovered, Prepared
+from orchestrator.backends.base import Discovered
 from orchestrator.backends.libvirt import LibvirtBackend
 from orchestrator.backends.libvirt import create as create_mod
 from tests.fake_libvirt import FakeConnection, FakePool, lv_error
@@ -40,12 +40,10 @@ def sources(tmp_path, cfg):
 
 @pytest.fixture
 def prepared(sources):
-    return Prepared(
-        artifacts={
-            "seed_isos": sources,
-            "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
-        },
-    )
+    return {
+        "seed_isos": sources,
+        "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
+    }
 
 
 @pytest.fixture
@@ -96,13 +94,13 @@ def test_prepare_builds_a_seed_per_vm_and_carries_the_base_volume(cfg, tmp_path)
 
     prepared = LibvirtBackend().prepare(cfg, tmp_path, discovered)
 
-    assert prepared.artifacts["seed_isos"] == {
+    assert prepared["seed_isos"] == {
         "app01": str(tmp_path / "app01-seed.iso"),
         "app02": str(tmp_path / "app02-seed.iso"),
     }
     assert (tmp_path / "app01-seed.iso").is_file()
     assert (tmp_path / "app02-seed.iso").is_file()
-    assert prepared.artifacts["base_volume"] == discovered.artifacts["base_volume"]
+    assert prepared["base_volume"] == discovered.artifacts["base_volume"]
 
 
 # -- the base volume -------------------------------------------------------
@@ -124,16 +122,14 @@ def test_the_base_image_is_not_uploaded_when_the_host_already_has_it(cfg, conn, 
     """The second deploy to a host. Re-uploading would be a multi-GB no-op at
     best, and at worst would overwrite the image every other overlay backs onto.
     """
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": {"app01": "/nonexistent", "app02": "/nonexistent"},
-            "base_volume": {
-                "name": "golden.qcow2",
-                "create": False,
-                "path": "/var/lib/libvirt/images/golden.qcow2",
-            },
+    prepared = {
+        "seed_isos": {"app01": "/nonexistent", "app02": "/nonexistent"},
+        "base_volume": {
+            "name": "golden.qcow2",
+            "create": False,
+            "path": "/var/lib/libvirt/images/golden.qcow2",
         },
-    )
+    }
     cfg["vms"] = []
 
     assert deployed(cfg, conn, prepared) == {}
@@ -185,16 +181,14 @@ def test_the_overlay_backs_onto_the_base_and_carries_the_configured_capacity(
 def test_the_overlay_backs_onto_the_path_the_host_already_had(cfg, conn, pool, sources):
     """`create: False` means the backing path comes from what preflight found,
     not from a volume this run made."""
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": sources,
-            "base_volume": {
-                "name": "golden.qcow2",
-                "create": False,
-                "path": "/somewhere/else/golden.qcow2",
-            },
+    prepared = {
+        "seed_isos": sources,
+        "base_volume": {
+            "name": "golden.qcow2",
+            "create": False,
+            "path": "/somewhere/else/golden.qcow2",
         },
-    )
+    }
     deployed(cfg, conn, prepared)
     assert "<path>/somewhere/else/golden.qcow2</path>" in pool.volumes["app01.qcow2"]
 
