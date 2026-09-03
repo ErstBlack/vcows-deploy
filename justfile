@@ -8,6 +8,10 @@
 # Recipes stay short on purpose. Anything with real logic -- a temp directory, a
 # trap, a digest check -- lives in scripts/ where shellcheck reads it.
 
+# `dev-env` calls a bare `uv`, and the pinned uv is in .tools/bin -- which no
+# recipe sees, because `just` does not source scripts/lib.sh.
+export PATH := justfile_directory() + "/.tools/bin:" + env("PATH")
+
 # List the recipes.
 default:
     @just --list --unsorted

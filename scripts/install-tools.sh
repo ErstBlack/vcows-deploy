@@ -123,7 +123,13 @@ install_one() {
     # behaviour; being silent about it was not. Report the version beside the
     # path, and say so when it is not the pinned one. A warning, not a failure:
     # the early return is deliberate.
-    if have "$tool" && [ "${FORCE:-0}" != 1 ]; then
+    #
+    # **Not in a linked worktree.** There, `have` finds the main checkout's
+    # binaries through the /usr/local/bin symlinks `expose_on_path` wrote, and
+    # this arm would install nothing -- measured 2026-09-02: every tool "using
+    # /usr/local/bin/...", .tools/bin empty. A worktree owns its own copies
+    # (8-9 s, 366 MB, measured) so nothing it runs depends on another checkout.
+    if have "$tool" && [ "${FORCE:-0}" != 1 ] && ! in_linked_worktree; then
         local found path
         path="$(command -v "$tool")"
         found="$(version_of "$path")" \
@@ -161,8 +167,18 @@ install_one() {
 # Deliberately not $GITHUB_PATH: nothing under scripts/ may read a CI platform's
 # variables, because that is what keeps .github/ deletable. A symlink works the
 # same on a runner, in a container and on a developer box.
+#
+# **Never from a linked worktree** (`in_linked_worktree`, lib.sh). The symlinks
+# outlive the tree they point into, so a worktree that is removed leaves
+# /usr/local/bin naming binaries that are gone -- measured 2026-09-02:
+# /usr/local/bin/uv pointed into a deleted scratch checkout. The main checkout
+# and CI still link, which is what the mechanism was for.
 expose_on_path() {
     local dir=/usr/local/bin sudo="" tool
+    if in_linked_worktree; then
+        log "  note: linked worktree; leaving $dir alone"
+        return 0
+    fi
     [ -w "$dir" ] || sudo=sudo
     for tool in "$TOOLS_BIN"/*; do
         [ -x "$tool" ] || continue
@@ -177,16 +193,43 @@ expose_on_path() {
 main() {
     mkdir -p "$TOOLS_BIN"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local tofu_version
+    local tofu_version entry name file listed=""
     tofu_version="$(containerfile_arg TOFU_VERSION)"
+    # One list, read twice: once to install and once to decide what does not
+    # belong. `tool:version` is the same key `digest()` takes, so the two spell
+    # a pair the same way. IFS here is $'\n\t' (lib.sh), so a space-separated
+    # pair would not split.
+    local -a tools=(
+        "uv:$UV_VERSION"
+        "just:$JUST_VERSION"
+        "tofu:$tofu_version"
+        "hadolint:$HADOLINT_VERSION"
+        "trivy:$TRIVY_VERSION"
+        "syft:$SYFT_VERSION"
+        "gitleaks:$GITLEAKS_VERSION"
+    )
     log "installing tools into .tools/bin"
-    install_one uv       "$UV_VERSION"
-    install_one just     "$JUST_VERSION"
-    install_one tofu     "$tofu_version"
-    install_one hadolint "$HADOLINT_VERSION"
-    install_one trivy    "$TRIVY_VERSION"
-    install_one syft     "$SYFT_VERSION"
-    install_one gitleaks "$GITLEAKS_VERSION"
+    for entry in "${tools[@]}"; do
+        install_one "${entry%%:*}" "${entry#*:}"
+        listed="$listed ${entry%%:*}"
+    done
+    # .tools/bin converges to that list: what is missing is installed above, and
+    # what is not on it is removed here. Adding only is how a directory becomes
+    # whatever every past run and every copy left in it, with nothing that
+    # notices. Measured 2026-09-02: the main checkout's .tools/bin carried
+    # `cosign`, 141 MB, on no list in this repo and installed by nothing in this
+    # tree -- and a copied or symlinked .tools/bin hands it to every worktree.
+    # Only regular files, so the tofu mirror's sibling directories are out of
+    # scope by construction.
+    for file in "$TOOLS_BIN"/*; do
+        [ -f "$file" ] || continue
+        name="${file##*/}"
+        case "$listed " in
+            *" $name "*) continue ;;
+        esac
+        log "  prune: $name"
+        rm -f "$file"
+    done
     expose_on_path
     log "done"
 }
