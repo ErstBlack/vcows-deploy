@@ -88,7 +88,6 @@ class FakeProxmox:
         vms: dict[tuple[str, str], dict] | None = None,
         storages: list[dict] | None = None,
         content: dict[str, dict[str, list[str]]] | None = None,
-        node_names: tuple[str, ...] = ("pve1",),
     ):
         self.vms = dict(vms or {})
         #: The nodes this cluster has. A path naming any other one errors at
@@ -96,7 +95,7 @@ class FakeProxmox:
         #: serving `nodes/None/...` as if it were the configured node. Spelled
         #: `node_names` and not `nodes` because `prox.nodes(...)` resolves
         #: through `__getattr__`, which only fires for a missing attribute.
-        self.node_names = {*node_names, *(node for node, _vmid in self.vms)}
+        self.node_names = {"pve1", *(node for node, _vmid in self.vms)}
         #: What `/nodes/{node}/storage` returns. `content` is PVE's own
         #: comma-separated string, not a list -- parsing it is the code's job.
         self.storages = storages if storages is not None else []
@@ -136,9 +135,7 @@ class FakeProxmox:
         self.config_error: Exception | None = None
         self.storage_error: Exception | None = None
         self.content_error: Exception | None = None
-        self.status_error: Exception | None = None
         self.stop_error: Exception | None = None
-        self.delete_error: Exception | None = None
         self.volume_delete_error: Exception | None = None
         self.nextid_error: Exception | None = None
 
@@ -265,7 +262,6 @@ class FakeProxmox:
             return dict(self.vms[key])
 
         if rest == ("status", "current"):
-            self._raise(self.status_error)
             if key not in self.vms:
                 raise ResourceException(f"VM {vmid} does not exist on {node}")
             return {"status": self.vms[key].get("status", "stopped")}
@@ -290,7 +286,6 @@ class FakeProxmox:
 
         # DELETE /nodes/{node}/qemu/{vmid}
         if rest == () and verb == "delete":
-            self._raise(self.delete_error)
             # Both default to 0 at the API. A delete that omits either one leaves
             # the VM in its backup jobs, or leaves disks that name its vmid, so
             # the fake refuses it the way FakeVolume.delete refuses a wrong flag.

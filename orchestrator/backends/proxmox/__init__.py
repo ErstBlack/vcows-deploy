@@ -29,6 +29,7 @@ from typing import Any
 from ... import cloudinit as _cloudinit
 from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome, Prepared
+from . import api as _api
 from . import create as _create
 from . import destroy as _destroy
 from . import preflight as _preflight
@@ -48,7 +49,7 @@ class ProxmoxBackend(Backend):
     # -- connected -------------------------------------------------------
 
     def connect(self, cfg: dict) -> Any:
-        return _preflight.connect(cfg)
+        return _api.connect(cfg)
 
     def preflight(self, cfg: dict, session: Any) -> Discovered:
         return _preflight.preflight(cfg, session)

@@ -73,30 +73,19 @@ def lines(value):
             yield from lines(item)
 
 
-def commands(node):
-    """Every shell command in a workflow, from either platform's shape."""
+def find(node, keys):
+    """Every `(key, value)` pair under one of `keys`, from either platform's
+    shape. One walk: the commands a job runs and the actions it uses differ
+    only in which key they hang from."""
     if isinstance(node, dict):
         for key, value in node.items():
-            if key in ("run", "script", "before_script", "after_script"):
-                yield from lines(value)
+            if key in keys:
+                yield key, value
             else:
-                yield from commands(value)
+                yield from find(value, keys)
     elif isinstance(node, list):
         for item in node:
-            yield from commands(item)
-
-
-def uses(node):
-    """Every action a workflow runs."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "uses" and isinstance(value, str):
-                yield value
-            else:
-                yield from uses(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from uses(item)
+            yield from find(item, keys)
 
 
 # Both extensions: GitHub reads either, so a check that reads only one fails
@@ -109,12 +98,13 @@ if gitlab.is_file():
 
 for path in files:
     document = yaml.safe_load(path.read_text())
-    for command in commands(document):
-        command = command.strip()
-        if command and not ok.fullmatch(command):
-            bad.append(f"{path.name}: {command}")
-    for action in uses(document):
-        if not uses_ok.fullmatch(action.strip()):
+    for _, value in find(document, {"run", "script", "before_script", "after_script"}):
+        for command in lines(value):
+            command = command.strip()
+            if command and not ok.fullmatch(command):
+                bad.append(f"{path.name}: {command}")
+    for _, action in find(document, {"uses"}):
+        if isinstance(action, str) and not uses_ok.fullmatch(action.strip()):
             bad.append(f"{path.name}: uses {action.strip()}")
 
 if bad:
@@ -196,12 +186,8 @@ main() {
                                  "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
     gate "workflows carry no logic" workflows_carry_no_logic
     # The secret scan, and the only gate here that is about the repository's
-    # contents rather than its code. `.pre-commit-config.yaml` has carried a
-    # gitleaks hook since early on, but `pre-commit` is in no recipe, no script
-    # and neither pipeline -- README calls installing it "Optionally" -- so it
-    # only ever fired for a developer who had run `pre-commit install`, and it
-    # scans the staged diff rather than the tree. This is the whole tree, on
-    # every run, in CI.
+    # contents rather than its code. It runs on the whole tree, on every run,
+    # in CI.
     #
     # `dir`, not `detect`: 8.30 removed `detect` and split it into `dir` (a
     # filesystem tree) and `git` (history). The tree is the right recurring

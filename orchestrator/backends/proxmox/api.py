@@ -19,13 +19,12 @@ them.
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from .schema import TOKEN_ENV, token_parts
+from .schema import token_parts
 
 log = logging.getLogger(__name__)
 
@@ -78,52 +77,61 @@ def _endpoint_host(endpoint: str) -> str:
 def connect(cfg: dict):
     """Open a PVE API session against the configured endpoint.
 
-    **The token is read here and nowhere else.** ``schema.token_parts`` splits it
-    into the three fields proxmoxer wants; none of them, and least of all the
-    secret, is logged or returned. The log line below names the endpoint and the
-    token's *user*, because that is what an operator debugging a 401 needs and it
-    is not the credential.
+    **The credential is read here and nowhere else.** ``target.proxmox`` carries
+    either a token, which ``schema.token_parts`` splits into the three fields
+    proxmoxer wants, or a user and a password. Neither a token's secret half nor
+    a password is logged or returned. The log line below names the endpoint and
+    the *user*, because that is what an operator debugging a 401 needs and it is
+    not the credential.
     """
     from proxmoxer import ProxmoxAPI
     from proxmoxer.core import AuthenticationError, ResourceException
 
     target = cfg["target"]["proxmox"]
-    raw = os.environ.get(TOKEN_ENV, "")
-    parts = token_parts(raw)
-    if parts is None:
-        # `validate` reports this as a Problem and every verb runs it, so
-        # reaching here means the variable changed underneath the run.
-        raise ProxmoxApiError(
-            f"{TOKEN_ENV} is unset or malformed; expected 'user@realm!tokenid=<secret>'"
-        )
+    token = target.get("token")
+    if token is not None:
+        parts = token_parts(token)
+        if parts is None:
+            # `validate` reports this as a Problem and every verb runs it, so
+            # reaching here means the config changed underneath the run.
+            raise ProxmoxApiError(
+                "target.proxmox.token is malformed; expected "
+                "'user@realm!tokenid=<secret>'"
+            )
+        user = parts.group("user")
+        auth = {
+            "user": user,
+            "token_name": parts.group("name"),
+            "token_value": parts.group("secret"),
+        }
+    else:
+        user = target["user"]
+        auth = {"user": user, "password": target["password"]}
 
-    # A bool, not a path. There is no `ca_file` in the schema -- see schema.py.
-    # `requests` honours REQUESTS_CA_BUNDLE by itself when this is True.
-    verify = not target.get("insecure", False)
+    # A bool or a path: proxmoxer hands `verify_ssl` to requests' `verify=`
+    # unchanged, and requests takes a CA bundle path there as readily as True.
+    verify = False if target.get("insecure") else target.get("ca_file", True)
 
     host = _endpoint_host(target["endpoint"])
-    log.info("connecting to %s as %s", host, parts.group("user"))
-    prox = ProxmoxAPI(
-        host,
-        user=parts.group("user"),
-        token_name=parts.group("name"),
-        token_value=parts.group("secret"),
-        verify_ssl=verify,
-        timeout=30,
-    )
-    session = Session(
-        prox=prox,
-        node=target["node"],
-        datastore=target["datastore"],
-        import_datastore=target["import_datastore"],
-    )
+    log.info("connecting to %s as %s", host, user)
     try:
-        yield session
+        # Constructed inside the `try` because password auth fetches a ticket
+        # here rather than on first use, so AuthenticationError can be raised by
+        # the constructor itself.
+        prox = ProxmoxAPI(host, verify_ssl=verify, timeout=30, **auth)
+        yield Session(
+            prox=prox,
+            node=target["node"],
+            datastore=target["datastore"],
+            import_datastore=target["import_datastore"],
+        )
     except AuthenticationError as exc:
-        # proxmoxer raises this for a token the cluster rejects. Re-raised as our
-        # own type so callers do not import proxmoxer to catch it -- the same
-        # reason `cli` never imports the libvirt backend's error type.
-        raise ProxmoxApiError(f"{host} rejected the {TOKEN_ENV} token: {exc}") from exc
+        # proxmoxer raises this for a credential the cluster rejects. Re-raised
+        # as our own type so callers do not import proxmoxer to catch it -- the
+        # same reason `cli` never imports the libvirt backend's error type.
+        raise ProxmoxApiError(
+            f"{host} rejected the credentials in target.proxmox: {exc}"
+        ) from exc
     except ResourceException as exc:
         raise ProxmoxApiError(f"{host}: {exc}") from exc
 

@@ -15,17 +15,17 @@ differ because Proxmox differs, and each one is the seam earning its keep:
 * **A name must be a DNS name.** PVE validates ``name`` as one, so ``_`` is legal
   in a libvirt domain name and illegal here.
 
-**Credentials are not in this file's schema and never in the config.** The API
-token arrives in ``PROXMOX_VE_API_TOKEN`` and nothing writes it anywhere: not the
-config, not ``run.json``, not the log. ``validate`` checks that it is *present
-and well formed* and reports neither its value nor any part of it -- the shape
-of a token is enough to say what is wrong with it.
+**Credentials live in ``target.proxmox``**: an API token, or a user and a
+password, and exactly one of the two forms. Nothing carries either onward -- not
+``run.json``, not the log. ``validate`` reports the *shape* only: which form is
+missing or doubled, or that a token is not in the form a token takes, never any
+part of a value -- the shape is enough to say what is wrong.
 """
 
 from __future__ import annotations
 
-import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -45,14 +45,11 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
-#: **There is deliberately no ``ca_file``.** A private CA goes in the environment
-#: instead, where proxmoxer already looks: ``REQUESTS_CA_BUNDLE`` (requests). One
-#: mechanism, and the container can set it once.
-
-#: **The one place the token's variable name is written.**
-#: S105 is a false positive here: this is the *name* of an environment
-#: variable, not a credential. The value it names is never assigned in this repo.
-TOKEN_ENV = "PROXMOX_VE_API_TOKEN"  # noqa: S105
+#: ``ca_file`` is a path on whichever machine runs the deploy, so it carries the
+#: same absolute-no-whitespace rule libvirt's ``SSH_PATH_PATTERN`` states. A
+#: literal rather than an import: the two fields reach different libraries, and
+#: neither backend's rule is the other's to widen.
+CA_PATH_PATTERN = r"^/[^\s]*\Z"
 
 #: ``user@realm!tokenid=secret``. The secret half is matched but never captured
 #: into a message.
@@ -117,7 +114,8 @@ TARGET_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": ["endpoint", "node", "datastore", "import_datastore"],
     "properties": {
-        # The API base URL, https only. No credentials in it -- see TOKEN_ENV.
+        # The API base URL, https only. The credential is a field of its own
+        # below and is never part of this URL.
         "endpoint": {"type": "string", "minLength": 1},
         # Which node to create on. Single-node at v0.1: a cluster-wide scheduler
         # is a decision nobody has made, and picking one silently is worse than
@@ -128,6 +126,15 @@ TARGET_SCHEMA: dict[str, Any] = {
         # Where the golden image and the seed ISOs are uploaded. Must allow both
         # the `import` and `iso` content types; preflight checks and says so.
         "import_datastore": {"type": "string", "minLength": 1},
+        # Exactly one of `token`, or `user` and `password` -- checked in
+        # `_check_auth` rather than as a jsonschema `oneOf`, the way the libvirt
+        # backend checks its NIC union in `_check_nics`.
+        "token": {"type": "string", "minLength": 1},
+        "user": {"type": "string", "minLength": 1},
+        "password": {"type": "string", "minLength": 1},
+        # A CA bundle for a PVE certificate signed by a private CA. proxmoxer
+        # hands this to requests' `verify=`, which takes a path there.
+        "ca_file": {"type": "string", "pattern": CA_PATH_PATTERN},
         "insecure": {"type": "boolean"},
     },
 }
@@ -145,7 +152,7 @@ def validate(cfg: dict) -> list[Problem]:
     """
     problems: list[Problem] = []
     problems += _check_target(cfg["target"]["proxmox"])
-    problems += _check_token()
+    problems += _check_auth(cfg["target"]["proxmox"])
 
     seen_ips: dict[str, str] = {}
     seen_macs: dict[str, str] = {}
@@ -163,38 +170,58 @@ def validate(cfg: dict) -> list[Problem]:
     return problems
 
 
-def _check_token() -> list[Problem]:
-    """The token is present and shaped like a token. **Its value never appears.**
+def _check_auth(target: dict) -> list[Problem]:
+    """One credential form, and shaped like one. **No value ever appears.**
 
-    An offline check because it is one: this reads an environment variable and
-    matches a regex, and getting it wrong is the single most likely reason a
+    An offline check because it is one: this reads three fields and matches a
+    regex, and getting a token's shape wrong is the single most likely reason a
     first run against a new cluster fails. Catching it in `vcows validate` costs
     nothing and saves a round trip to a site.
 
-    Whether the token is *valid*, and whether it carries the privileges to
+    Whether the credential is *valid*, and whether it carries the privileges to
     upload, create and delete, is a question only the cluster can answer --
     `preflight` asks it.
     """
-    raw = os.environ.get(TOKEN_ENV)
-    where = TOKEN_ENV
-    if not raw:
+    where = "target.proxmox"
+    token = target.get("token")
+    user = target.get("user")
+    password = target.get("password")
+    if bool(token) == bool(user or password):
+        # Neither form, or both of them. Filed against the block rather than a
+        # field, because there is no one field to go and fix.
         return [
             Problem.error(
-                f"{TOKEN_ENV} is unset. The Proxmox backend authenticates with an "
-                f"API token and reads it from this variable only -- it is never "
-                f"written in the config. Export it as "
-                f"'user@realm!tokenid=<secret>'.",
+                "exactly one of `token`, or `user` and `password`, is required. "
+                "A token is 'user@realm!tokenid=<secret>'; a user is a PVE login "
+                "such as 'root@pam', with its password beside it.",
                 where=where,
             )
         ]
-    if token_parts(raw) is None:
+    if token:
+        if token_parts(token) is None:
+            return [
+                Problem.error(
+                    "not in the form 'user@realm!tokenid=<secret>'. It must "
+                    "carry the realm (for example 'vcows@pve'), then '!', the "
+                    "token id, then '=' and the secret. The value is not shown "
+                    "here.",
+                    where=f"{where}.token",
+                )
+            ]
+        return []
+    if not password:
         return [
             Problem.error(
-                f"{TOKEN_ENV} is set but is not in the form "
-                f"'user@realm!tokenid=<secret>'. It must carry the realm (for "
-                f"example 'vcows@pve'), then '!', the token id, then '=' and the "
-                f"secret. The value is not shown here.",
-                where=where,
+                "`user` is set, so the password that goes with it is required.",
+                where=f"{where}.password",
+            )
+        ]
+    if not user:
+        return [
+            Problem.error(
+                "`password` is set, so the user it belongs to is required -- a "
+                "PVE login such as 'root@pam'.",
+                where=f"{where}.user",
             )
         ]
     return []
@@ -250,18 +277,43 @@ def _check_target(target: dict) -> list[Problem]:
         # check.
         problems.append(
             Problem.error(
-                f"endpoint must carry no credentials. Authentication is the "
-                f"{TOKEN_ENV} API token; anything here would be written to the "
-                f"run directory in plaintext.",
+                "endpoint must carry no credentials. Authentication is the "
+                "token, or the user and password, under target.proxmox; "
+                "anything here would be written to the run directory in "
+                "plaintext.",
                 where=where,
+            )
+        )
+
+    ca_file = target.get("ca_file")
+    if ca_file is not None and target.get("insecure"):
+        problems.append(
+            Problem.error(
+                "ca_file and insecure: true contradict each other. One names the "
+                "CA that must have signed the certificate, the other checks no "
+                "certificate at all. Drop whichever was not meant.",
+                where="target.proxmox.ca_file",
+            )
+        )
+    # A warning, not an error, for the same reason the libvirt backend warns
+    # about ssh_keyfile: `validate` is the offline phase and runs anywhere, while
+    # this is a path on whichever machine runs the deploy -- normally the
+    # container, where it is bind-mounted at run time.
+    if ca_file is not None and not Path(ca_file).is_file():
+        problems.append(
+            Problem.warning(
+                f"{ca_file} does not exist here. It is read on the machine "
+                f"running the deploy, not on the target, so this matters only "
+                f"if that is this one.",
+                where="target.proxmox.ca_file",
             )
         )
 
     if target.get("insecure"):
         problems.append(
             Problem.warning(
-                "certificate verification is disabled. The API token is sent to "
-                "whatever answers at this endpoint.",
+                "certificate verification is disabled. The credential under "
+                "target.proxmox is sent to whatever answers at this endpoint.",
                 where="target.proxmox.insecure",
             )
         )

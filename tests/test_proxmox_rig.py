@@ -8,7 +8,7 @@ enough to list and read, and whether the target storage really does allow the
 `import` content type.
 
     export VCOWS_PVE_ENDPOINT=https://pve.example.com:8006
-    export PROXMOX_VE_API_TOKEN='vcows@pve!deploy=...'
+    export VCOWS_PVE_TOKEN='vcows@pve!deploy=...'
     VCOWS_GATES=proxmox just test -k proxmox_rig
 
 **Nothing here creates, modifies or deletes anything.** A cluster with unrelated
@@ -35,6 +35,10 @@ def rig_cfg() -> dict:
 
     The VMs stay as they are: nothing is created, so they exist only to give
     `validate` and the orphan-seed check something to reason about.
+
+    The real token is composed into the config from `VCOWS_PVE_TOKEN` here. A
+    harness building a config out of its environment is not the product reading
+    a credential from one -- `api.connect` still reads `target.proxmox` only.
     """
     cfg = copy.deepcopy(PROXMOX_CONFIG)
     cfg["target"]["proxmox"] = {
@@ -42,6 +46,7 @@ def rig_cfg() -> dict:
         "node": os.environ.get("VCOWS_PVE_NODE", "pve"),
         "datastore": os.environ.get("VCOWS_PVE_DATASTORE", "local-lvm"),
         "import_datastore": os.environ.get("VCOWS_PVE_IMPORT_DATASTORE", "local"),
+        "token": os.environ["VCOWS_PVE_TOKEN"],
     }
     if os.environ.get("VCOWS_PVE_INSECURE"):
         cfg["target"]["proxmox"]["insecure"] = True

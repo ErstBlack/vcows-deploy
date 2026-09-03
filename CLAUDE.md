@@ -75,8 +75,10 @@ plus `all`. It is case-sensitive and does not strip whitespace, so
 `tests/test_gates.py`, not this sentence: a name absent from it is a test
 failure. `smoke` arrived when `#122` moved `scripts/smoke-libvirt.sh`'s
 assertions into `tests/test_libvirt_smoke.py`; `proxmox` needs
-`VCOWS_PVE_ENDPOINT` **and** `PROXMOX_VE_API_TOKEN`, because a gate that can
-name a cluster it cannot authenticate to answers nothing.
+`VCOWS_PVE_ENDPOINT` **and** `VCOWS_PVE_TOKEN`, because a gate that can name a
+cluster it cannot authenticate to answers nothing. The rig test composes both
+into the config it deploys; the product itself reads every Proxmox credential
+from `target.proxmox` and from nowhere else.
 
 ## Do not cite line numbers
 

@@ -1,7 +1,7 @@
 """The backend class, and the one function that reads the credential.
 
-`connect` gets its own tests because it is where the API token is read, where TLS
-verification is decided, and the only place `proxmoxer` is constructed. None of
+`connect` gets its own tests because it is where the credential is read, where
+TLS verification is decided, and the only place `proxmoxer` is constructed. None of
 that is reachable from the preflight or destroy tests, which are handed a session
 that already exists.
 """
@@ -116,13 +116,27 @@ def test_connect_reads_the_token_and_splits_it(pve_cfg, fake_proxmoxer, pve_toke
     assert fake_proxmoxer["token_value"].startswith("00000000-")
 
 
-def test_connect_refuses_without_a_token(pve_cfg, fake_proxmoxer, monkeypatch):
-    monkeypatch.delenv("PROXMOX_VE_API_TOKEN", raising=False)
-    with (
-        pytest.raises(api.ProxmoxApiError, match="unset or malformed"),
-        api.connect(pve_cfg),
-    ):
+def test_connect_reads_a_user_and_password_as_the_other_form(pve_cfg, fake_proxmoxer):
+    """proxmoxer takes either shape; which one it gets is the config's call."""
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    pve_cfg["target"]["proxmox"]["password"] = "hunter2"  # noqa: S105  not a password
+    with api.connect(pve_cfg):
         pass
+    assert fake_proxmoxer["user"] == "root@pam"
+    assert fake_proxmoxer["password"] == "hunter2"  # noqa: S105
+    assert "token_name" not in fake_proxmoxer
+
+
+def test_connect_refuses_a_malformed_token_without_echoing_it(pve_cfg, fake_proxmoxer):
+    """`validate` refuses this first and every verb runs it, so reaching here
+    means the config changed underneath the run. The value stays out of the
+    message for the same reason `validate`'s does."""
+    pve_cfg["target"]["proxmox"]["token"] = "vcows@pve-deploy-SUPERSECRET"  # noqa: S105
+    with pytest.raises(api.ProxmoxApiError) as caught, api.connect(pve_cfg):
+        pass
+    assert "target.proxmox.token is malformed" in str(caught.value)
+    assert "SUPERSECRET" not in str(caught.value)
 
 
 def test_connect_verifies_tls_by_default(pve_cfg, fake_proxmoxer, pve_token):
@@ -131,12 +145,25 @@ def test_connect_verifies_tls_by_default(pve_cfg, fake_proxmoxer, pve_token):
     assert fake_proxmoxer["verify_ssl"] is True
 
 
-def test_insecure_is_the_only_way_to_turn_verification_off(
+def test_a_ca_file_reaches_proxmoxer_as_the_path_it_is(
     pve_cfg, fake_proxmoxer, pve_token
 ):
-    """There is no ca_file: bpg/proxmox 0.111.1 has no CA-bundle option, so one
-    would be honoured here and ignored by the apply."""
+    """Measured in proxmoxer's https backend: `verify_ssl` is handed to requests'
+    `verify=` unchanged, and requests takes a CA bundle path there."""
+    pve_cfg["target"]["proxmox"]["ca_file"] = "/etc/pki/ca.pem"
+    with api.connect(pve_cfg):
+        pass
+    assert fake_proxmoxer["verify_ssl"] == "/etc/pki/ca.pem"
+
+
+def test_insecure_turns_verification_off_and_outranks_a_ca_file(
+    pve_cfg, fake_proxmoxer, pve_token
+):
+    """`validate` refuses the two together, so this is what the code does with a
+    config that got past it: no verification, rather than a bundle that reads as
+    one thing and behaves as another."""
     pve_cfg["target"]["proxmox"]["insecure"] = True
+    pve_cfg["target"]["proxmox"]["ca_file"] = "/etc/pki/ca.pem"
     with api.connect(pve_cfg):
         pass
     assert fake_proxmoxer["verify_ssl"] is False
@@ -165,7 +192,20 @@ def test_the_token_never_reaches_the_log(pve_cfg, fake_proxmoxer, pve_token, cap
     assert pve_token.split("=", 1)[1] not in caplog.text
 
 
-def test_a_rejected_token_is_re_raised_as_our_own_error(
+def test_a_password_never_reaches_the_log_either(pve_cfg, fake_proxmoxer, caplog):
+    """The other form, and the one an operator is likelier to reuse elsewhere."""
+    import logging
+
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    pve_cfg["target"]["proxmox"]["password"] = "SUPERSECRETVALUE"  # noqa: S105
+    with caplog.at_level(logging.DEBUG), api.connect(pve_cfg):
+        pass
+    assert "root@pam" in caplog.text
+    assert "SUPERSECRETVALUE" not in caplog.text
+
+
+def test_a_rejected_credential_is_re_raised_as_our_own_error(
     pve_cfg, monkeypatch, pve_token
 ):
     """`cli` never imports this backend to catch its errors, the same way it
@@ -180,10 +220,35 @@ def test_a_rejected_token_is_re_raised_as_our_own_error(
 
     monkeypatch.setattr(proxmoxer, "ProxmoxAPI", lambda host, **kw: Boom())
     with (
-        pytest.raises(api.ProxmoxApiError, match="rejected the PROXMOX_VE_API_TOKEN"),
+        pytest.raises(
+            api.ProxmoxApiError, match=r"rejected the credentials in target\.proxmox"
+        ),
         api.connect(pve_cfg) as session,
     ):
         api.cluster_vms(session)
+
+
+def test_a_password_rejected_by_the_constructor_is_re_raised_too(pve_cfg, monkeypatch):
+    """Password auth fetches a ticket inside proxmoxer's constructor, so this
+    AuthenticationError arrives before there is a session to raise it on. A
+    client built outside the `try` would let proxmoxer's own type escape."""
+    import proxmoxer
+    from proxmoxer.core import AuthenticationError
+
+    def refuse(host, **kw):
+        raise AuthenticationError("Couldn't authenticate user: root@pam")
+
+    monkeypatch.setattr(proxmoxer, "ProxmoxAPI", refuse)
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    pve_cfg["target"]["proxmox"]["password"] = "hunter2"  # noqa: S105  not a password
+    with (
+        pytest.raises(
+            api.ProxmoxApiError, match=r"rejected the credentials in target\.proxmox"
+        ),
+        api.connect(pve_cfg),
+    ):
+        pass
 
 
 def test_an_api_failure_is_re_raised_as_our_own_error(pve_cfg, monkeypatch, pve_token):

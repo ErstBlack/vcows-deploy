@@ -35,10 +35,6 @@ NEEDED = {
 }
 
 
-def connect(cfg: dict):
-    return api.connect(cfg)
-
-
 def preflight(cfg: dict, session: api.Session) -> Discovered:
     problems: list[Problem] = []
     vms = _existing(session, problems)

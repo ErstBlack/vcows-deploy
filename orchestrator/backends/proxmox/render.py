@@ -4,9 +4,10 @@ Everything ``create`` needs that is not in its request bodies comes through here
 as *values*, which is what keeps the whole config-to-values step testable with
 no cluster: it is compared against a golden file byte for byte.
 
-**No credential is rendered.** ``api.connect`` reads ``PROXMOX_VE_API_TOKEN``
-from the environment itself, so nothing in this dict is a secret and it can be
-read by whoever is debugging the run.
+**No credential is rendered.** ``api.connect`` reads the token, or the user and
+password, out of ``target.proxmox`` itself and nothing from that block is copied
+here, so nothing in this dict is a secret and it can be read by whoever is
+debugging the run.
 
 Two shapes are dictated by PVE rather than by taste:
 

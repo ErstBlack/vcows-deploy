@@ -40,25 +40,20 @@ log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Which installer provides which tool, for `need`'s message. Data rather than
-# case arms: an entry nothing has asked for yet costs a line of a table, where an
-# arm nothing reaches is a dead branch, and adding a tool is one entry instead of
-# editing control flow. Six of the twelve below are not passed to `need` from
-# anywhere in the tree today.
+# Which installer provides which tool, for `need`'s message. One row per tool
+# `need` is actually passed and an installer supplies; a tool that gains a `need`
+# call later adds its row then.
 #
 # **Keyed by command, not by package, and it cannot be generated from either
-# installer.** os-deps.sh installs ShellCheck on dnf and shellcheck on apt, and
-# its python3-libvirt puts no command on PATH at all.
+# installer.** os-deps.sh's python3-libvirt puts no command on PATH at all.
 #
 # **gzip is deliberately absent**, as are qemu-img and the rest of what `need` is
 # passed: they are in neither installer, so naming one would send the reader to a
 # script that would not supply it. A miss falls through to the bare message.
 declare -rA TOOL_INSTALLER=(
-    [jq]=os-deps             [curl]=os-deps        [unzip]=os-deps
-    [git]=os-deps            [xorriso]=os-deps     [shellcheck]=os-deps
-    [uv]=install-tools       [just]=install-tools
-    [hadolint]=install-tools [trivy]=install-tools [syft]=install-tools
-    [gitleaks]=install-tools
+    [jq]=os-deps          [curl]=os-deps        [unzip]=os-deps
+    [git]=os-deps         [xorriso]=os-deps
+    [trivy]=install-tools [syft]=install-tools
 )
 
 # `have` plus the message, for the tools whose absence should stop a script.

@@ -140,12 +140,15 @@ def pytest_runtest_setup(item) -> None:
 
 
 #: For tests that talk to a real Proxmox VE cluster. Both halves are needed: an
-#: endpoint says where, and the token is the only credential this backend has.
+#: endpoint says where, and a token to reach it with. Read from the environment
+#: because the rig test *composes* the config it deploys -- a harness building a
+#: config out of its environment is not the product reading a credential from
+#: one, which `target.proxmox` is now the only source of.
 PVE_ENDPOINT = os.environ.get("VCOWS_PVE_ENDPOINT")
 needs_proxmox = gate(
     "proxmox",
-    bool(PVE_ENDPOINT) and bool(os.environ.get("PROXMOX_VE_API_TOKEN")),
-    "needs VCOWS_PVE_ENDPOINT and PROXMOX_VE_API_TOKEN to run against a cluster",
+    bool(PVE_ENDPOINT) and bool(os.environ.get("VCOWS_PVE_TOKEN")),
+    "needs VCOWS_PVE_ENDPOINT and VCOWS_PVE_TOKEN to run against a cluster",
 )
 
 
@@ -220,7 +223,7 @@ def _root_logger():
     `configure_logging()` before the ones that assert on a line, repairing it by
     luck. Under a shuffled suite it surfaces as
     `test_every_line_carries_a_level_and_a_logger` failing because the line
-    carries the entrypoint's `orchestrator.cli:` rather than `_Short`'s `cli`.
+    carries the entrypoint's `orchestrator.cli:` rather than `%(module)s`'s `cli`.
 
     Same argument as `_umask` below, and the same remedy: global process state a
     test mutates has to be handed back.
@@ -266,6 +269,8 @@ PROXMOX_CONFIG: dict = {
             "node": "pve1",
             "datastore": "local-lvm",
             "import_datastore": "local",
+            # A fixed, obviously-fake UUID for a fake that never authenticates.
+            "token": "vcows@pve!deploy=00000000-0000-4000-8000-000000000000",
         }
     },
     "image": {
@@ -317,15 +322,11 @@ def pve_cfg() -> dict:
 
 
 @pytest.fixture
-def pve_token(monkeypatch) -> str:
-    """A syntactically valid token in the environment.
+def pve_token() -> str:
+    """The token `PROXMOX_CONFIG` carries, for the tests that assert on its value.
 
-    Every Proxmox verb reads it, so a test that does not set it is testing the
-    unset-token refusal whether it meant to or not. Not a real credential and
-    never sent anywhere: `FakeProxmox` does not authenticate.
+    Every Proxmox verb now reads it out of the config, so the fixture sets
+    nothing: it hands back the one string a test asserts is absent from a log
+    line or a rendered values dict.
     """
-
-    # A fixed, obviously-fake UUID for a fake that never authenticates.
-    token = "vcows@pve!deploy=00000000-0000-4000-8000-000000000000"  # noqa: S105
-    monkeypatch.setenv("PROXMOX_VE_API_TOKEN", token)
-    return token
+    return PROXMOX_CONFIG["target"]["proxmox"]["token"]
