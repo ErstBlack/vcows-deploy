@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import re
 import stat
-import subprocess
 import textwrap
 import time
 from datetime import UTC, datetime
@@ -82,7 +81,6 @@ BUILD: dict[str, Any] = {
     "git_sha": "da3f45c",
     "built": "2026-01-02T03:04:05Z",
     "base_image": {"name": "registry.example/base", "digest": "sha256:9f1cbeef"},
-    "provider": {"source": "registry.example/dmacvicar/libvirt", "version": "0.9.8"},
     "packages": ["one", "two", "three"],
     "source_rpms": ["one.src.rpm"],
 }
@@ -94,54 +92,6 @@ BUILD: dict[str, Any] = {
 def test_version_prints_the_single_definition(capsys):
     assert cli.main(["version"]) == 0
     assert VERSION in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "raised",
-    [
-        subprocess.TimeoutExpired(["tofu", "version"], 30),
-        json.JSONDecodeError("Expecting value", "not json", 0),
-    ],
-)
-def test_version_survives_every_way_tofu_version_can_fail(monkeypatch, capsys, raised):
-    """`version` is the command you run *because* something is wrong with the
-    build. `cmd_version` named two of the four classes `_capture` can raise for
-    this call, so a slow `tofu` and a `tofu` printing something unparseable --
-    the two states this command exists to discover -- exited 1."""
-
-    def boom(*a, **k):
-        raise raised
-
-    monkeypatch.setattr(cli.tofu, "version", boom)
-    assert cli.main(["version"]) == 0
-    out = capsys.readouterr().err
-    assert VERSION in out, "the build is still reported first"
-    assert "tofu: unavailable" in out
-
-
-def test_version_reports_the_tofu_it_found(monkeypatch, capsys):
-    """The other half of the test above: what `version` says when `tofu version`
-    answers. Both fields are read out of the same object by name."""
-    monkeypatch.setattr(
-        cli.tofu,
-        "version",
-        lambda: {"terraform_version": "1.9.0", "platform": "linux_amd64"},
-    )
-    assert cli.main(["version"]) == 0
-    err = capsys.readouterr().err
-    assert "1.9.0" in err and "linux_amd64" in err
-
-
-def test_a_field_tofu_did_not_report_reads_as_a_question_mark(monkeypatch, capsys):
-    """A tofu that answered without the field is a tofu that answered. `None`
-    there reads as something vcows never asked for, which sends whoever is
-    diagnosing the build at us rather than at it."""
-    monkeypatch.setattr(cli.tofu, "version", lambda: {})
-
-    assert cli.main(["version"]) == 0
-    err = capsys.readouterr().err
-    assert err.count("?") == 2, err
-    assert "None" not in err
 
 
 def test_version_says_which_build_the_image_is(tmp_path, monkeypatch, capsys):
@@ -161,8 +111,6 @@ def test_version_says_which_build_the_image_is(tmp_path, monkeypatch, capsys):
         BUILD["built"],
         BUILD["base_image"]["name"],
         BUILD["base_image"]["digest"],
-        BUILD["provider"]["source"],
-        BUILD["provider"]["version"],
     ):
         assert value in err, value
 
@@ -673,8 +621,8 @@ def test_a_returned_fatal_problem_is_not_recorded_as_ok(
     consumer reading it reproduces that defect exactly". Core read `skipped` and
     never `failed`, so a backend that returned a fatal problem with an empty
     `skipped` got `outcome: "ok"` and exit 0 -- the silent partial success
-    findings.md §1 rejects `tofu destroy` for, arriving through the seam meant to
-    prevent it. Unreachable through the libvirt backend, which raises."""
+    findings.md §1 names, arriving through the seam meant to prevent it.
+    Unreachable through the libvirt backend, which raises."""
     from orchestrator.backends.base import Outcome
     from orchestrator.problems import Problem, Severity
 

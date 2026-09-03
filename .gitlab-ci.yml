@@ -1,6 +1,6 @@
-# vcows-deploy -- GitLab CI. Written 2026-08-29 against OpenTofu 1.12.6,
-# uv 0.12.7 and just 1.46.0, for a self-hosted instance the project has not moved
-# to yet. **Never executed.** It is syntax-checked and its recipes are exercised
+# vcows-deploy -- GitLab CI. Written 2026-08-29 against uv 0.12.7 and just
+# 1.46.0, for a self-hosted instance the project has not moved to yet.
+# **Never executed.** It is syntax-checked and its recipes are exercised
 # by the GitHub pipeline, which is not the same as having run.
 #
 # It runs exactly the recipes .github/workflows/*.yml run; scripts/lint.sh
@@ -9,9 +9,9 @@
 #
 # Runner assumptions, stated because getting them wrong is how a pipeline hangs
 # pending rather than failing:
-#   - `linux`  a Docker-executor runner that can reach the package mirrors and
-#              the OpenTofu registry. Build-time network only; nothing here
-#              resembles what the air-gapped site runs.
+#   - `linux`  a Docker-executor runner that can reach the package mirrors.
+#              Build-time network only; nothing here resembles what the
+#              air-gapped site runs.
 #   - `podman` a runner with rootless podman. The image gate needs a runtime, not
 #              just a builder -- see scripts/image-build.sh.
 #   - artifacts  the instance's "Maximum artifacts size" must exceed ~160 MB. The
@@ -47,22 +47,6 @@ default:
     files: [pyproject.toml, uv.lock]
   paths: [.cache/uv]
 
-# Keyed on main.tf, which declares the pin, and NOT on
-# docs/provider-<v>.lock.hcl, whose filename carries the version: a bump renames
-# that file, GitLab substitutes a placeholder for a file it cannot find, and the
-# key collapses to a constant -- a stale-mirror hit on exactly the run where the
-# mirror changed. docs/ci.md records the same.
-#
-# Every backend's module is listed, not just libvirt's: one mirror holds every
-# provider, so a bump in any of them has to invalidate it. Listed rather than
-# globbed because GitLab's `files:` takes at most two paths -- a third backend
-# needs a decision here rather than another entry.
-.mirror_cache: &mirror_cache
-  key:
-    prefix: tofu-mirror
-    files: [orchestrator/backends/libvirt/tofu/main.tf, orchestrator/backends/proxmox/tofu/main.tf]
-  paths: [.tools/tofu-mirror]
-
 .bootstrap: &bootstrap
   - ./scripts/os-deps.sh
   - ./scripts/install-tools.sh
@@ -78,19 +62,6 @@ check:
   script:
     - *bootstrap
     - just check
-
-tofu:
-  stage: check
-  timeout: 15m
-  cache: [*tools_cache, *uv_cache, *mirror_cache]
-  script:
-    - *bootstrap
-    # GitLab's cache is overwritten at the end of every job, so a restored mirror
-    # is untrusted input on every run. `ensure-mirror` re-checks it against the
-    # Containerfile's digest, and builds one if the cache missed.
-    - just ensure-mirror
-    - just verify-provider
-    - just test-tofu
 
 # Mutation testing: does the suite notice when a line is wrong, not merely run it?
 # `just check` enforces a 90% coverage floor and 964 of these mutants live in code
@@ -115,10 +86,10 @@ mutation:
     - *bootstrap
     - just mutants
 
-# The end-to-end gate. `tofu` above reads the module through a mocked provider;
-# this one applies it to a libvirtd installed on the runner and asserts against
-# `virsh dumpxml`. The domain runs under TCG, so no /dev/kvm is required and this
-# job is the same one .github/workflows/ci.yml runs -- which is the point, since
+# The end-to-end gate. It deploys against a libvirtd installed on the runner and
+# asserts against `virsh dumpxml`. The domain runs under TCG, so no /dev/kvm is
+# required and this job is the same one .github/workflows/ci.yml runs -- which
+# is the point, since
 # GitLab.com's shared runners have no /dev/kvm to offer.
 smoke:
   stage: check
@@ -128,14 +99,13 @@ smoke:
   # runner property no tag can express; see docs/ci.md.
   tags: [linux]
   timeout: 30m
-  cache: [*tools_cache, *uv_cache, *mirror_cache]
+  cache: [*tools_cache, *uv_cache]
   # *bootstrap now, where this job used to spell out the two scripts and skip
   # `just dev-env`. The gate's assertions are tests/test_libvirt_smoke.py and the
   # script runs them out of that venv (#122), so the anchor's third line is the
   # one this job was missing rather than the one it had to avoid.
   script:
     - *bootstrap
-    - just ensure-mirror
     - just smoke-libvirt
 
 image:
@@ -157,8 +127,6 @@ image:
         - Containerfile
         - .containerignore
         - container/**/*
-        - orchestrator/backends/libvirt/tofu/**/*
-        - docs/provider-*.lock.hcl
         - licenses/**/*
         - scripts/image-*.sh
         # The gate's own machinery and the file it reads, both of which decide
@@ -175,7 +143,6 @@ image:
         - scripts/lib.sh
   script:
     - *bootstrap
-    - just mirror
     - just image
     - just test-image
     - just scan
@@ -206,7 +173,6 @@ rebuild-scan:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $REBUILD_SCAN == "1"
   script:
     - *bootstrap
-    - just mirror
     - just image
     - just scan
     - just bundle

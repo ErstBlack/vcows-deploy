@@ -4,7 +4,7 @@
 #   scripts/lint.sh          check
 #   scripts/lint.sh --fix    apply what ruff can fix, then check the rest
 #
-# **Runs all seven and reports all seven.** `just`'s recipe dependencies are
+# **Runs all six and reports all six.** `just`'s recipe dependencies are
 # fail-fast, which is right for a pipeline and wrong for a developer: someone who
 # has just touched Python, a shell script and the Containerfile wants three
 # verdicts, not the first one. So this accumulates rather than &&-chaining, and
@@ -143,9 +143,8 @@ main() {
     # Containerfile once put four such numbers out by 36 without touching any of
     # the instructions they described.
     #
-    # DL4006 wants pipefail before a piped RUN. Both pipes verify a download --
-    # the tofu RPM and the provider zip -- and both are
-    # `echo "$SHA  file" | sha256sum -c -`, where echo cannot fail. False
+    # DL4006 wants pipefail before a piped RUN. The pipe verifies a download and
+    # is `echo "$SHA  file" | sha256sum -c -`, where echo cannot fail. False
     # positive.
     #
     # DL3041, on the `dnf -y install` of the runtime closure, is **not** a false
@@ -157,7 +156,6 @@ main() {
     # make the closure reproducible and would break on the first Rocky update.
     # Ignored knowingly, not silently.
     gate "hadolint"          hadolint --ignore DL4006 --ignore DL3041 "$REPO/Containerfile"
-    gate "tofu fmt"          tofu fmt -check -recursive "$REPO"
     # -x follows `source lib.sh`, so a variable used only by a caller is not
     # reported unused and a genuinely unused one still is.
     #
@@ -212,7 +210,7 @@ main() {
     # more each run than it could ever find twice.
     #
     # Measured at 6.7s over 39.89 MB: it honours .gitignore, so `.venv/`,
-    # `.tools/` (441 MB of provider mirror) and `mutants/` are not walked. That
+    # `.tools/` and `mutants/` are not walked. That
     # makes it the slowest gate here and still cheap enough to keep in `check`.
     #
     # `--redact` because a finding is printed by CI. The point is to say a secret

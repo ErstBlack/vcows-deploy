@@ -177,7 +177,7 @@ def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
         ("qemu+ssh://vcows@vcows/session", "/system"),
         # The query string is not the only way a credential reaches the URI, and
         # a password survives further: `connection_uri` clears the query but
-        # leaves the netloc, so it reaches the tfvars in the run directory.
+        # leaves the netloc, so it reaches the log.
         ("qemu+ssh://vcows:hunter2@vcows/system", "no password"),
         ("qemu+ssh://vcows:@vcows/system", "no password"),
         # `urlsplit` raises on these rather than returning an unusable split, so

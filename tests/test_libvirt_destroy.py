@@ -659,8 +659,8 @@ def test_a_target_that_cannot_be_re_read_is_left_alone():
 
 def test_one_failure_does_not_stop_the_others_and_is_still_fatal():
     """Twenty objects can fail independently. Silent partial success is exactly
-    what findings.md §1 rejects `tofu destroy` for; reintroducing it here would be
-    the worst possible outcome."""
+    what findings.md §1 names; reintroducing it here would be the worst possible
+    outcome."""
     ok = domain("app01", active=False)
     bad = domain("app02", active=True)
     bad.stop_error = lv_error(1, "internal error")

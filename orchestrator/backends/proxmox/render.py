@@ -1,16 +1,14 @@
-"""Pure: config plus what ``prepare`` resolved, out to a tfvars dict. No I/O.
+"""Pure: config plus what ``prepare`` resolved, out to a values dict. No I/O.
 
-Everything OpenTofu needs that is not in the static module comes through here as
-*values*. The module itself is hand-written and never generated -- that is what
-makes ``tofu validate`` a real gate rather than a check that a generator agrees
-with itself.
+Everything ``create`` needs that is not in its request bodies comes through here
+as *values*, which is what keeps the whole config-to-values step testable with
+no cluster: it is compared against a golden file byte for byte.
 
-**No credential is rendered.** The provider reads ``PROXMOX_VE_API_TOKEN`` from
-its own environment, which ``tofu._env()`` passes through untouched, so nothing
-in this dict is a secret and the tfvars file in the run directory can be read by
-whoever is debugging the run.
+**No credential is rendered.** ``api.connect`` reads ``PROXMOX_VE_API_TOKEN``
+from the environment itself, so nothing in this dict is a secret and it can be
+read by whoever is debugging the run.
 
-Two shapes are dictated by the provider rather than by taste:
+Two shapes are dictated by PVE rather than by taste:
 
 * ``bios`` is PVE's vocabulary (``ovmf``/``seabios``), translated here from the
   config's ``efi``/``bios``, so one operator reads both backends' configs.

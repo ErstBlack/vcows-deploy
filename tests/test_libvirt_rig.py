@@ -1,8 +1,8 @@
 """Preflight against a real hypervisor.
 
-Skipped with an explicit reason when ``VCOWS_RIG_URI`` is unset -- never silently,
-following ``needs_tofu`` in ``tests/test_tofu_module.py``. A gate that quietly
-passes because it did not run is worse than no gate.
+Skipped with an explicit reason when ``VCOWS_RIG_URI`` is unset -- never
+silently. A gate that quietly passes because it did not run is worse than no
+gate.
 
 Read-only apart from ``pool.refresh()``, which is a directory rescan. Nothing here
 defines, starts, stops or undefines anything: the two probe domains are fixtures on

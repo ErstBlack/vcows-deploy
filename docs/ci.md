@@ -23,18 +23,17 @@ nothing, because nothing lives there.
 
 | Job | When | What |
 |---|---|---|
-| `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, tofu fmt, shellcheck, workflows, gitleaks, ty, pytest |
-| `tofu` | PRs/MRs and master pushes | mirror ensured and re-verified, `just verify-provider`, `just test-tofu` |
+| `check` | PRs/MRs and master pushes | `just check` — ruff, ruff format, hadolint, shellcheck, workflows, gitleaks, ty, pytest |
 | `mutation` | PRs/MRs and master pushes | `just mutants` — differential against `docs/mutation-baseline.json` |
-| `smoke` | PRs/MRs and master pushes | `just smoke-libvirt` — the module applied to a real libvirtd, then destroyed |
+| `smoke` | PRs/MRs and master pushes | `just smoke-libvirt` — the create path run against a real libvirtd, then destroyed |
 | `image` | master, tags, and PR/MRs touching the image's inputs | build, `just test-image`, `just scan` |
 | `rebuild-scan` | monthly schedule | rebuild and scan; never blocks |
 
 The `When` column describes GitHub, where `push` is scoped to `branches: [master]`
 (`.github/workflows/ci.yml`'s `on:` block) -- so a feature branch with no PR open
-runs neither `check` nor `tofu`, and `workflow_dispatch` is the only branch-side
-trigger. It exists for exactly that. GitLab's `check` and `tofu` carry no
-`rules:`, so there both also run on every push.
+runs no `check` at all, and `workflow_dispatch` is the only branch-side trigger.
+It exists for exactly that. GitLab's `check` carries no `rules:`, so there it
+also runs on every push.
 
 The `mutation` job asks what the coverage floor cannot: the suite *runs* this
 line, but would it notice the line being wrong? Measured at the current tree:
@@ -60,9 +59,9 @@ a change. Measured at 156s for the full 3835 on 16 cores; a hosted runner has 4,
 and one cold run there measured 8m48s, against a 30-minute ceiling.
 
 **`mutants/` is deliberately not cached**, and it was, until #157. The argument
-for caching it was that a stale entry is safe in a way the provider mirror's is
-not — a verdict mutmut recomputes rather than an artifact it trusts, because it
-hashes each function and resets whatever moved. That holds for a change to
+for caching it was that a stale entry is safe: a verdict mutmut recomputes rather
+than an artifact it trusts, because it hashes each function and resets whatever
+moved. That holds for a change to
 *source* and not to *tests*: mutmut hashes source functions, so a test-only
 commit leaves every hash identical and inherits every verdict. Measured on the
 branch that became #156, which added twenty-two tests and touched no source:
@@ -102,35 +101,36 @@ one-time question, and a leak found there stays found after the file is removed,
 which is an always-red gate rather than an actionable one.
 
 `image` is not gated to post-merge because `tests/test_image.py` is the only
-thing exercising the air-gap properties — the provider resolved from the baked
-mirror with no `direct` block, the RPM binding visible to the interpreter that
-actually runs, `init` not rewriting the committed lock. Validating a
+thing exercising the air-gap properties — every case run under `--network=none`,
+and the RPM binding and every pip-installed dependency importable by the
+interpreter that actually runs. Validating a
 `Containerfile` change only after review has passed on it is the wrong order.
 
 ## The smoke job, and what it is for
 
-`tofu` reads the module through `mock_provider "libvirt" {}`, which satisfies the
-pinned provider's schema with generated values. That reaches every expression in
-the module and reaches no hypervisor, so three things it stands in for have never
-run: `virStorageVolUpload`, libvirtd parsing the domain XML the module renders,
-and define/start/undefine of that domain. `smoke` runs those against a libvirtd
-installed on the runner and asserts against what libvirtd created, not what tofu
-planned.
+Everything else that reads `orchestrator/backends/libvirt/create.py` reads
+`tests/fake_libvirt.py`, which records what it was handed and answers with
+objects it invented rather than with anything a daemon parsed. So three things
+that fake stands in for have never otherwise run: `virStorageVolUpload`,
+libvirtd parsing the domain XML `create.domain_xml` renders, and
+define/start/undefine of that domain. `smoke` runs those against a libvirtd
+installed on the runner and asserts against what libvirtd created, not against
+what was sent. The teardown then goes through the shipped `destroy.destroy`
+rather than virsh, so the marker round trip is on the gate too.
 
-The job is two pieces. `scripts/smoke-libvirt.sh` builds the host and drives
-apply and destroy; `tests/test_libvirt_smoke.py` holds every assertion, behind
-`VCOWS_GATES=smoke`, and the script invokes it twice — once with the domain
-running and once after destroy. That split is `#122`, and it is why this job runs
-`just dev-env` where it used to skip it.
+The job is two pieces. `scripts/smoke-libvirt.sh` builds the host and drives the
+create and the teardown; `tests/test_libvirt_smoke.py` holds every assertion,
+behind `VCOWS_GATES=smoke`, and the script invokes it twice — once with the
+domain running and once after destroy. That split is `#122`, and it is why this
+job runs `just dev-env` where it used to skip it.
 
 The domain runs under TCG, so **no `/dev/kvm` is required** and the job behaves
 the same on a GitHub-hosted runner and a GitLab.com SaaS one. Getting there needs
-a two-attribute override — `type = "qemu"`, `cpu = null` — written into a *copy*
-of the module; the shipped tree is untouched. `scripts/smoke-libvirt.sh` carries
-the reasoning, including the measurement that
-`TF_PROVIDER_LIBVIRT_DOMAIN_TYPE`, which `docs/tooling-2026-08-30.md` §4.1
-credits with the same swap, does not exist in the 0.9.8 provider binary and could
-not win against a declared attribute if it did.
+a two-attribute override — `<domain type='qemu'>` and no `<cpu>` element —
+applied to a *copy* of `create.DOMAIN_XML` held by that one interpreter; the file
+on disk is untouched, and each substitution is checked against the text it names
+so an override that no longer matches `create.py` stops the gate rather than
+silently doing nothing. `scripts/smoke-libvirt.sh` carries the reasoning.
 
 **It boots no guest and observes no guest address.** The domain reaches firmware
 and stops. `docs/acceptance.md` defect 5 — guests healthy on the wrong addresses
@@ -144,9 +144,8 @@ It is also not in `just check`. It installs packages, writes `/etc/libvirt` and
 starts a system daemon, none of which belongs in a recipe a developer runs before
 pushing or in the hook that runs on every agent turn.
 
-Measured on `ubuntu-latest`: `Apply complete! Resources: 4 added` and `Destroy
-complete! Resources: 4 destroyed`, with the domain defining and starting as
-`<domain type='qemu'>` on a runner where nothing has touched `/dev/kvm`.
+Measured on `ubuntu-latest`: the domain defines and starts as `<domain
+type='qemu'>` on a runner where nothing has touched `/dev/kvm`.
 
 **35 assertions, in two pytest runs of 30 and 5** — measured green on run
 33439584490, 1m11s for the job. The count this file carried
@@ -157,12 +156,11 @@ out of 33 `check` lines, two of which looped.
 ## Which gates run, and which cannot
 
 `VCOWS_GATES` turns a named gate's skip into a failure. It is comma-separated
-with **no whitespace stripping** and is case-sensitive, so `tofu,image` is
-correct and `tofu, image` silently demands only `tofu`.
+with **no whitespace stripping** and is case-sensitive, so `rig,image` is
+correct and `rig, image` silently demands only `rig`.
 
 | Gate | In CI | Why |
 |---|---|---|
-| `tofu` | demanded | the mirror is rebuilt or restored first |
 | `image` | demanded, in the image job | needs a built image and podman |
 | `pycdlib` | satisfied | a runtime dependency, installed by `just dev-env` |
 | `smoke` | demanded, in the smoke job | exported by `scripts/smoke-libvirt.sh`, which builds the host it asserts about |
@@ -183,27 +181,14 @@ It did not used to be. `just test` now passes `--cov`, and `just test` is inside
 `just check`, so `pyproject.toml`'s `fail_under = 90` blocks every developer run
 and the `check` job with it.
 
-The old argument against this was that the figure depends on which gates ran —
-the `check` job has no provider mirror, so it legitimately covers less than the
-`tofu` job, and one threshold across both would either sit low enough to be
-vacuous or fail honest runs. That reasoning was sound and the measurement does
-not bear out the premise. Measured on 2026-09-01, same tree, same suite:
-
-| | total | tests |
-|---|---|---|
-| mirror present | 95.90% | 500 passed, 61 skipped |
-| mirror absent (the `check` job's shape) | 95.85% | 490 passed, 71 skipped |
-
-**0.05 points.** The mirror gate turns off `tests/test_tofu_module.py`, which
-drives `tofu` as a subprocess against HCL and executes almost no Python of ours,
-plus the rig and image gates, which were never going to run on a hosted runner.
-What actually covers `orchestrator/tofu.py` is `tests/test_tofu_driver.py`, and
-that file is ungated — it runs everywhere. So the spread the old threshold
-argument was sized against does not exist, and 90 clears both shapes by more
-than five points.
+The old argument against this was that the figure depends on which gates ran, so
+one threshold across every shape would either sit low enough to be vacuous or
+fail honest runs. That reasoning was sound and the measurement does not bear out
+the premise. Measured on 2026-09-03 on the ungated suite, which is the `check`
+job's shape: **98.33%**, 682 passed and 65 skipped, against a floor of 90.
 
 Two things the floor deliberately does not cover. `container/manifest.py` is
-omitted: it shells out to `rpm -qa` and `tofu version -json` and only runs inside
+omitted: it shells out to `rpm -qa` and only runs inside
 the image, where `test_image.test_the_build_manifest_records_what_shipped`
 asserts what it produced. And `VCOWS_GATES` is still never set in CI, so the floor
 is a floor on the ungated suite — it does not turn a skip into coverage.
@@ -219,8 +204,8 @@ GitHub: `ubuntu-latest`, which has podman.
 
 GitLab, once it exists:
 
-- `linux` — a Docker-executor runner that can reach the package mirrors and the
-  OpenTofu registry. Build-time network only; nothing in CI resembles what the
+- `linux` — a Docker-executor runner that can reach the package mirrors.
+  Build-time network only; nothing in CI resembles what the
   air-gapped site runs. The `smoke` job carries the same tag and one further
   requirement no tag expresses: it starts libvirtd and defines a domain, so the
   executor has to be privileged. `scripts/smoke-libvirt.sh` starts the daemons
@@ -237,22 +222,9 @@ runner hangs pending forever rather than failing, which is worse than either.
 
 ## Caching
 
-The provider mirror is keyed on `orchestrator/backends/libvirt/tofu/main.tf`,
-which declares the pin — **not** on `docs/provider-<v>.lock.hcl`, whose filename
-carries the version. A bump renames that file, both platforms substitute a
-placeholder for a file they cannot find, the key collapses to a constant, and the
-result is a stale-mirror hit on exactly the run where the mirror changed. There
-is no prefix fallback on the mirror for the same reason.
-
 The uv cache lives at `.cache/uv` rather than `~/.cache/uv`, because GitLab can
 only cache paths inside `$CI_PROJECT_DIR`. `scripts/lib.sh` sets `UV_CACHE_DIR`
 unconditionally so a developer box, GitHub and GitLab all use one path.
-
-A restored mirror is untrusted input — GitLab overwrites its cache key at the end
-of every job — so `just ensure-mirror` re-checks the zip against the
-`Containerfile`'s `PROVIDER_SHA256` on every run, not only when building. That
-digest is the only out-of-band pin; checking against the mirror's own index would
-be circular.
 
 ## Scanning, and what the baseline means
 
@@ -260,20 +232,17 @@ be circular.
 *new*. An absolute gate would be red from the first run and muted within a month,
 and this repository already has a name for a check that is green by neglect.
 
-The baseline carries a per-binary rationale, not a bare list. The load-bearing one:
-terraform-provider-libvirt 0.9.8 embeds `golang.org/x/crypto` v0.46.0 and no
-released version fixes it, so those nine HIGH findings are accepted on
-reachability — the provider is configured with `qemu+sshcmd`, whose dialer execs
-the OpenSSH binary and never enters `x/crypto/ssh`, and the CVEs are server-side
-or verifier-side flaws that a client never reaches.
+The baseline carries a per-group rationale, not a bare list. Every accepted id is
+in the Rocky base layer, and the reachability argument is the deciding one:
+`CVE-2026-11979` is reached only by running `xmlcatalog --shell`, and nothing in
+this tree invokes `xmlcatalog`.
 
-**The re-check trigger is a new provider release**, and nothing automates it:
-Dependabot watches `uv.lock` and the workflows, not a Go module pinned in a
-`Containerfile` ARG, and inventing a bespoke poller for one dependency is worse
-than a step in a runbook. So it is a step in a runbook — when the monthly
-rebuild-and-scan runs, check whether `dmacvicar/terraform-provider-libvirt` has
-released past 0.9.8, and if it has, walk the provider bump through
-`just verify-provider` and the schema diff.
+**The re-check trigger is a new `BASE_DIGEST`**, and nothing automates it:
+Dependabot watches `uv.lock` and the workflows, not a digest pinned in a
+`Containerfile` ARG, and inventing a bespoke poller for one pin is worse than a
+step in a runbook. So it is a step in a runbook, and the monthly rebuild-and-scan
+is deliberately *not* it: that rebuilds from the same digest and cannot see a
+base package change.
 
 ## The delivery bundle
 
@@ -343,8 +312,8 @@ Do not add `--offline`; it was deprecated as a no-op in v3.0.3.
 2. Create one pipeline schedule: monthly with `REBUILD_SCAN=1`. That is the
    only schedule variable any job reads.
 3. Replace Dependabot with self-hosted Renovate, or accept a manual
-   `uv lock --upgrade` on a rhythm. Neither can recompute the artifact digests in
-   the `Containerfile`; those go through the schema-diff runbook by hand.
+   `uv lock --upgrade` on a rhythm. Neither can recompute `BASE_DIGEST` or
+   `PROXMOXER_SHA256`; both are re-pinned by hand.
 4. `rm -rf .github/`.
 5. Run `just lint` — the thinness check now covers only `.gitlab-ci.yml`, and
    should still pass.

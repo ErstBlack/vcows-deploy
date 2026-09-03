@@ -29,7 +29,6 @@ import logging
 import os
 import shutil
 import stat
-import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import VERSION, tofu
+from . import VERSION
 from .backends import REGISTRY
 from .backends.base import (
     Action,
@@ -48,10 +47,10 @@ from .backends.base import (
 from .config import ConfigError, load, vm_names
 from .problems import Problem
 
-#: The R5 build manifest, baked into the image at build time: what OpenTofu, what
-#: provider, which RPMs and which git revision produced this container. Absent
-#: outside the image, where there is nothing to record -- a checkout is not a
-#: release, and inventing a manifest for one would make the two indistinguishable.
+#: The R5 build manifest, baked into the image at build time: which RPMs and
+#: which git revision produced this container. Absent outside the image, where
+#: there is nothing to record -- a checkout is not a release, and inventing a
+#: manifest for one would make the two indistinguishable.
 MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
 
 #: Every line vcows writes goes through here: prefixed, level-tagged, on stderr.
@@ -342,13 +341,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def _look(cfg: dict) -> tuple[Discovered, list[Decision], list[Problem]]:
-    """One connected pass. The session is closed before this returns.
-
-    The provider opens its own connection from ``var.uri``, so holding ours across
-    a multi-GB upload would add a second idle SSH session that buys the transfer
-    nothing -- and libvirt-python registers no keepalive here, so a socket that
-    hangs rather than resetting can wedge the CLI after a successful apply.
-    """
+    """One connected pass. The session is closed before this returns."""
     backend = REGISTRY[cfg["backend"]]
     with backend.connect(cfg) as session:
         discovered = backend.preflight(cfg, session)
@@ -478,13 +471,13 @@ def _destroy(
         for problem in advisory:
             _problem(problem)
         run.extra["problems"] = [str(p) for p in advisory]
-        # The same argument `Result.warnings` in `tofu.py` makes: the run
-        # directory is the copy that outlives the terminal. `findings.md`'s
-        # "reported as found and skipped, with their deployment names" rule
-        # mandates the report, and the `skip` row below satisfies it -- but a
-        # marked VM this teardown deliberately left alone appeared in no shipped
-        # artifact at all. The deployment name goes with it: a bare list of names
-        # drops the half of the row that explains why the VM was left.
+        # The run directory is the copy that outlives the terminal.
+        # `findings.md`'s "reported as found and skipped, with their deployment
+        # names" rule mandates the report, and the `skip` row below satisfies
+        # it -- but a marked VM this teardown deliberately left alone appeared in
+        # no shipped artifact at all. The deployment name goes with it: a bare
+        # list of names drops the half of the row that explains why the VM was
+        # left.
         run.extra["left_alone"] = {
             e.name: e.marker.deployment or "<unset>"
             for e in others
@@ -543,8 +536,8 @@ def _destroy(
             raise
 
     # What it did, not what it was asked to do. A teardown that undefines a domain
-    # and leaves both its volumes on disk is the failure findings.md §1 rejects
-    # `tofu destroy` for, and it is indistinguishable from success unless this
+    # and leaves both its volumes on disk is the silent partial success
+    # findings.md §1 names, and it is indistinguishable from success unless this
     # loop runs.
     for name in out.skipped:
         # Through `_row`, like every other report line. This site hand-cut the
@@ -565,7 +558,7 @@ def _destroy(
     if out.failed:
         # `Outcome`'s docstring says a backend that returns this "without its
         # consumer reading it reproduces that defect exactly" -- the silent
-        # partial success findings.md §1 rejects `tofu destroy` for. The libvirt
+        # partial success findings.md §1 names. The libvirt
         # backend raises on `out.failed`, so nothing reaches here through it; the
         # branch exists because `Backend.destroy` explicitly permits a backend to
         # return rather than raise, and until now such a backend got "ok" and
@@ -615,12 +608,7 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
 
 
 def _print_manifest() -> None:
-    """What this image is, printed before anything that can return early.
-
-    It used to sit below ``tofu.version()``, which bails on a missing or broken
-    binary -- so the one command that answers "which build is this" answered
-    nothing at all on exactly the image somebody would be asking about.
-    """
+    """What this image is, printed before anything that can return early."""
     try:
         build = manifest()
         if build is None:
@@ -628,9 +616,6 @@ def _print_manifest() -> None:
         log.info("image   %s built %s", build["git_sha"], build["built"])
         log.info(
             "base    %s@%s", build["base_image"]["name"], build["base_image"]["digest"]
-        )
-        log.info(
-            "provider %s %s", build["provider"]["source"], build["provider"]["version"]
         )
         packages, sources = len(build["packages"]), len(build["source_rpms"])
         log.info("packages %s from %s sources", packages, sources)
@@ -641,20 +626,6 @@ def _print_manifest() -> None:
 def cmd_version(args: argparse.Namespace) -> int:
     log.info("vcows-deploy %s", VERSION)
     _print_manifest()
-    try:
-        info = tofu.version()
-    # Four classes, because this command is run *because* something is wrong
-    # with the build. `subprocess.TimeoutExpired` and `json.JSONDecodeError` --
-    # a slow `tofu` and a `tofu` printing something unparseable, the two states
-    # this command is run to discover -- used to reach `main` and exit 1.
-    except (tofu.TofuError, subprocess.SubprocessError, ValueError, OSError) as exc:
-        log.info("tofu: unavailable (%s)", exc)
-        return 0
-    log.info(
-        "tofu %s on %s",
-        info.get("terraform_version", "?"),
-        info.get("platform", "?"),
-    )
     return 0
 
 

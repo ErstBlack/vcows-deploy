@@ -88,8 +88,8 @@ dev = [
     # Exact, not a bound. ty is 0.0.x and its own documentation says breaking
     # changes may occur between any two versions, so `~=0.0.75` would still admit
     # the releases this project has reason to fear. Everything else here is fixed
-    # the same way -- four Containerfile digests, six tool digests, the provider
-    # h1: hash -- and a bump is a deliberate edit CI exercises.
+    # the same way -- two Containerfile digests, five tool digests -- and a bump
+    # is a deliberate edit CI exercises.
     "ty==0.0.75",
     # PyYAML ships no inline types and jsonschema/pycdlib are both PEP 561, so
     # this is the one stub gap worth closing. `libvirt.py` is the permanent
@@ -108,9 +108,9 @@ source = ["orchestrator", "container"]
 exclude_also = ["if TYPE_CHECKING:"]
 # Nothing is omitted, and `container/manifest.py` is why this comment survives
 # the line it used to justify. It was omitted because `packages()` shells out to
-# `rpm -qa`, `tofu_version()` to `tofu version -json`, and `main()` is the
-# assembly of the two -- none of which can run outside the image. That was the
-# right reason to leave it unmeasured and the wrong place to leave it: mutation
+# `rpm -qa` and `main()` is the assembly around it -- neither of which can run
+# outside the image. That was the right reason to leave it unmeasured and the
+# wrong place to leave it: mutation
 # testing found 127 mutants in the file that no test reached at all, more than the
 # rest of both packages put together.
 #
@@ -125,12 +125,9 @@ exclude_also = ["if TYPE_CHECKING:"]
 # real gate on every developer run and on CI -- see docs/ci.md.
 #
 # The floor sits below the measured figure on purpose, because the figure depends
-# on which gates ran: CI's `check` job has no provider mirror, so the tests behind
-# `needs_tofu` skip there and legitimately cover less. A floor that assumed the
-# best case would fail honest runs, which is how a coverage gate gets turned off.
-# What makes 90 safe rather than vacuous is that the mirror-gated tests are the
-# HCL, rig and image ones: `tests/test_tofu_driver.py`, which is what actually
-# covers `tofu.py`, is ungated and runs everywhere.
+# on which gates ran: the rig and image tests skip on CI's `check` job and it
+# legitimately covers less. A floor that assumed the best case would fail honest
+# runs, which is how a coverage gate gets turned off.
 fail_under = 90
 
 [tool.mutmut]
@@ -143,16 +140,11 @@ fail_under = 90
 source_paths = ["orchestrator", "container"]
 # mutmut runs the suite from a copy of the tree at `mutants/`, and only what it
 # copies exists there. It appends `tests/`, `pyproject.toml` and the lock files to
-# this list itself, so none of those need naming. These two do: the manifest and
-# module tests read the committed provider lock and the pinned provider schema out
-# of `docs/`, and without them they fail inside every run, which mutmut reports as
-# "failed to collect stats" rather than as a missing file.
+# this list itself, so none of those need naming.
 #
-# Still not copied, and so still a trap: `scripts/`, `licenses/`, `justfile` and
-# `.tools/`. Nothing reads them unless a run sets `VCOWS_GATES`, which is why this
-# has never bitten -- `conftest.MIRROR` simply resolves under `mutants/`, is
-# absent, and `needs_tofu` degrades to a skip.
-# `licenses` joins them because tests/test_manifest.py reads
+# Still not copied, and so still a trap: `scripts/`, `justfile` and `.tools/`.
+# Nothing reads them unless a run sets `VCOWS_GATES`.
+# `licenses` is copied because tests/test_manifest.py reads
 # licenses/proxmoxer/PROVENANCE.md -- the second record of the wheel's pinned
 # version and digest. Without it that test raises FileNotFoundError under
 # mutmut and takes the whole run down before it reports anything.
@@ -233,8 +225,8 @@ select = [
 #
 # The four bandit rules are inherent to a test suite rather than deliberate
 # exceptions: S101 is how pytest works (606 of them), S314 parses fixture XML the
-# test itself just wrote, and S603/S607 are the image gate calling `podman` and
-# `tofu` by name on purpose. Ignoring them here keeps `S` meaningful in
+# test itself just wrote, and S603/S607 are the image gate calling `podman` by
+# name on purpose. Ignoring them here keeps `S` meaningful in
 # orchestrator/, which is the code that ships.
 "tests/*" = ["SIM300", "S101", "S314", "S603", "S607"]
 

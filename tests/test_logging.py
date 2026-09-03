@@ -1,23 +1,20 @@
 """The log, and the line it draws against the printout.
 
 #136's split: the printout carries the headline, the log carries the detail. The
-assertions here are about *what would otherwise be destroyed* -- a diagnostic's
-multi-line ``detail``, a libvirt error message, the argv actually executed. What
-they deliberately do not assert is any `Problem`, `Decision` or `Outcome` being
+assertions here are about *what would otherwise be destroyed* -- a libvirt error
+message, a damaged marker. What they deliberately do not assert is any
+`Problem`, `Decision` or `Outcome` being
 logged: each of those is already printed where it arrives and recorded in
 `run.json`, and repeating one here would make the logger the fifth result carrier
 findings.md §3 refuses.
 
-Nothing in this file needs a hypervisor, OpenTofu, or a gate. The one test that
-runs a tofu command uses `test_tofu_driver`'s fake binary, for the reason that
-file's docstring gives.
+Nothing in this file needs a hypervisor or a gate.
 """
 
 from __future__ import annotations
 
 import io
 import logging
-import os
 import re
 import sys
 import time
@@ -27,92 +24,10 @@ from xml.etree import ElementTree as ET
 import pytest
 
 import orchestrator
-from orchestrator import cli, limits, tofu
+from orchestrator import cli, limits
 from orchestrator.backends.libvirt import destroy, preflight
 
-from .test_tofu_driver import DIAGNOSTIC, FAKE
-
-
-@pytest.fixture
-def fake_tofu(tmp_path, monkeypatch):
-    """`test_tofu_driver`'s fake, without importing its fixture into this scope."""
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    binary = bindir / "tofu"
-    binary.write_text(FAKE)
-    binary.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_TOFU_LOG", str(tmp_path / "calls.jsonl"))
-    return tmp_path
-
-
-# -- #136: the detail that `__str__` drops ---------------------------------
-
-
-def test_a_diagnostics_detail_reaches_the_log(fake_tofu, tmp_path, monkeypatch, caplog):
-    """The filed case. `summary` is the headline; `detail` is the part that says
-    why, and until now it was populated on every run and read by nothing."""
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    monkeypatch.setenv("FAKE_TOFU_STREAM", DIAGNOSTIC)
-    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
-        tofu.plan(workdir, workdir / "plan.bin")
-
-    logged = "\n".join(r.getMessage() for r in caplog.records)
-    # The headline, which `str(Diagnostic)` already carried...
-    assert "Volume Creation Failed" in logged
-    # ...and the detail, which it did not.
-    assert "storage volume 'app01.qcow2' exists already" in logged
-
-
-def test_the_headline_stays_one_line_while_the_log_carries_the_detail():
-    """#89's RX-B6: a diagnostic's `detail` must not widen its headline.
-
-    `Diagnostic.__str__` stays one line and the detail goes to the log, which is
-    what makes the fix additive rather than a change of shape.
-    """
-    d = tofu.Diagnostic(
-        severity="warning",
-        summary="headline",
-        detail="line one\nline two",
-        address="libvirt_domain.vm",
-    )
-    assert str(d) == "warning [libvirt_domain.vm]: headline"
-    assert "\n" not in str(d)
-
-
-def test_the_argv_is_recorded(fake_tofu, tmp_path, caplog):
-    """What was actually executed. The -no-color decision and the resolved
-    -chdir are computed in `_run`, so the config does not say what tofu was given."""
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
-        tofu.init(workdir)
-    logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert f"-chdir={workdir}" in logged
-    assert "-input=false" in logged
-
-
 # -- the streams and markers that go missing quietly -----------------------
-
-
-def test_an_unreadable_stream_is_logged_and_still_not_fatal(tmp_path, caplog):
-    """The exit code stays the authority -- but "not fatal" and "not worth
-    saying" are different, and every diagnostic for the step is gone."""
-    missing = tmp_path / "never-written.json"
-    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
-        assert tofu._read_stream(missing) == ((), {})
-    assert "no diagnostics" in caplog.text
-    assert str(missing) in caplog.text
-
-
-def test_a_line_that_is_not_json_is_logged_at_debug(tmp_path, caplog):
-    stream = tmp_path / "plan.json"
-    stream.write_text("not json at all\n" + DIAGNOSTIC + "\n")
-    with caplog.at_level(logging.DEBUG, logger="orchestrator.tofu"):
-        diagnostics, _ = tofu._read_stream(stream)
-    assert len(diagnostics) == 1
-    assert "not JSON" in caplog.text
 
 
 def test_a_damaged_marker_is_logged_and_still_read_as_unmarked(caplog):
@@ -425,85 +340,6 @@ def test_a_problem_with_a_where_names_it_first(caplog):
         cli._problem(Problem(Severity.ERROR, "duplicate IP", "vms[0].nics[0]"))
     (record,) = caplog.records
     assert record.getMessage() == "[vms[0].nics[0]] duplicate IP"
-
-
-def test_a_tofu_error_diagnostic_is_logged_at_error(capsys):
-    """The errors from a failed `apply` are the most important lines in the log.
-    #136 put every diagnostic at INFO, so they sat at the same level as the
-    command line that produced them and said "error" in their text to say so."""
-    tofu._log_diagnostic(
-        "apply",
-        tofu.Diagnostic("error", "Volume Creation Failed", "", "libvirt_volume.x"),
-    )
-    err = capsys.readouterr().err
-    assert "ERROR" in err
-    assert "apply [libvirt_volume.x]: Volume Creation Failed" in err
-
-
-def test_an_unrecognised_diagnostic_severity_is_visible_not_dropped(capsys):
-    """A severity string OpenTofu has not used before should be visible without
-    being alarming -- a warning, rather than dropped or promoted to error."""
-    tofu._log_diagnostic("plan", tofu.Diagnostic("notice", "Something new", "", ""))
-    assert "WARNING" in capsys.readouterr().err
-
-
-def test_a_diagnostic_with_neither_an_address_nor_a_detail_is_one_bare_line(capsys):
-    """The two optional halves of the rendering, both of which fall back to the
-    empty string. A non-empty fallback is not a crash -- it is a line that reads
-    `plan: headlineNone`, which nothing was looking at closely enough to notice."""
-    tofu._log_diagnostic("plan", tofu.Diagnostic("warning", "just the headline"))
-    (line,) = capsys.readouterr().err.splitlines()
-    assert line.endswith("plan: just the headline")
-
-
-def test_a_logged_diagnostic_names_the_command_that_produced_it(
-    fake_tofu, tmp_path, monkeypatch, caplog
-):
-    """`_log_diagnostic` is asserted directly above, but nothing checked what
-    `_run` hands it. A whole `apply`'s worth of errors attributed to `None` is
-    the log saying which invocation failed and getting it wrong."""
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    monkeypatch.setenv("FAKE_TOFU_STREAM", DIAGNOSTIC)
-    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
-        tofu.plan(workdir, workdir / "plan.bin")
-    assert any(
-        r.getMessage().startswith("plan [libvirt_volume.overlay")
-        for r in caplog.records
-    ), [r.getMessage() for r in caplog.records]
-
-
-def test_a_multi_line_detail_reads_as_continuation(capsys):
-    """Unindented, the second line starts at column 0 and is indistinguishable
-    from the next record -- which is what makes a wall of these unreadable."""
-    tofu._log_diagnostic(
-        "apply", tofu.Diagnostic("error", "headline", "first line\nsecond line", "")
-    )
-    body = capsys.readouterr().err.splitlines()
-    assert body[0].endswith("headline")
-    assert body[1] == "    first line"
-    assert body[2] == "    second line"
-
-
-def test_an_invocation_logs_its_exit_code_and_duration(fake_tofu, tmp_path, caplog):
-    """OpenTofu's own output is inherited and unprefixed -- 200 lines to our 10
-    in a real deploy -- so the "running" line opens a block that nothing closed.
-    The exit code and elapsed time were also recorded nowhere."""
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    with caplog.at_level(logging.INFO, logger="orchestrator.tofu"):
-        tofu.init(workdir)
-    messages = [r.getMessage() for r in caplog.records]
-    assert any(m.startswith("running ") for m in messages)
-    elapsed = [
-        m.group(1)
-        for m in (re.fullmatch(r"init: exit 0 in (\d+\.\d)s", x) for x in messages)
-        if m
-    ]
-    # An upper bound as well as a shape. `time.monotonic()` counts from boot, so
-    # a duration computed as a sum rather than a difference is still a number
-    # with a decimal point in it -- six or seven digits of one.
-    assert elapsed and float(elapsed[0]) < 60, messages
 
 
 def test_a_report_row_carries_no_trailing_padding(caplog):

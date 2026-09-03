@@ -8,8 +8,8 @@ result has to look like. It is a gate rather than a test file for the same reaso
 that quietly passes because it did not run is worse than no gate.
 
 **Every needle here is still the one the shell matched, character for
-character**, with one exception and one narrowing, both forced by the move off
-the OpenTofu provider (`#204`) and both marked where they are: `create.py`
+character**, with one exception and one narrowing, both forced by the move to
+the SDK create path (`#204`) and both marked where they are: `create.py`
 declares `format='raw'` on the loader where the module passed null, and whether
 libvirt hands that attribute back depends on its version, so the loader needle
 accepts both measured echoes and the two absences are scoped to the `<nvram>`
@@ -379,9 +379,8 @@ class TestDestroyed:
     def test_destroy_left_the_base_volume_alone(self, volumes):
         """The golden image is shared, and nothing marks it as ours.
 
-        `tofu destroy` deleted it -- the provider had created it and held it in
-        state, and `libvirt_volume.base`'s `count` guard protects it in config
-        only. This is the same object and the opposite claim: `destroy` resolves
+        A state-driven teardown deleted it, because it had created the volume
+        and held it in state. This is the opposite claim: `destroy` resolves
         what to delete from the marker, `_deletable` allows only the two names
         the marker's own name derives, and volumes carry no marker at all. A
         teardown that took the base with it would take every other deployment's

@@ -26,7 +26,7 @@ TESTS = Path(__file__).resolve().parent
 #: Every gate name the suite is allowed to use. Adding one here is deliberate;
 #: `demanded()` matches on these strings and silently ignores anything else, so
 #: a typo in a `require()` call would otherwise create a gate nobody can demand.
-KNOWN = {"tofu", "image", "rig", "pycdlib", "libvirt", "smoke", "proxmox"}
+KNOWN = {"image", "rig", "pycdlib", "libvirt", "smoke", "proxmox"}
 
 #: `conftest.py` is where the mechanism is implemented, so it is the one file
 #: allowed to call pytest's skip machinery directly.
@@ -52,7 +52,8 @@ def _references(tree: ast.AST) -> list[tuple[str, int]]:
     found = [(_dotted(c.func), c.lineno) for c in _calls(tree)]
     # Outermost only: `pytest.skip.Exception` is a legitimate reference to the
     # exception type, and its inner `pytest.skip` is not a call to it. Collecting
-    # every Attribute flags this file's own :230 and :238 and nothing else.
+    # every Attribute flags this file's own two `pytest.skip.Exception`
+    # references and nothing else.
     inner = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and id(node) not in inner:
@@ -147,7 +148,7 @@ def test_every_known_gate_is_demandable(name: str, monkeypatch):
 
 def test_gates_is_parsed_without_whitespace_stripping():
     """Documented rather than fixed: `VCOWS_GATES` splits on `,` and does not
-    strip, so `tofu, image` demands `tofu` and a gate named " image" that does
+    strip, so `rig, image` demands `rig` and a gate named " image" that does
     not exist. Both CI files are written without spaces because of this.
 
     This performs the parse rather than monkeypatching `GATES` past it. Every
@@ -156,12 +157,12 @@ def test_gates_is_parsed_without_whitespace_stripping():
     executed by nothing, and a `GATES = set()` that stops reading the
     environment silenced all five names at once with the whole suite green.
     """
-    assert conftest._parse("tofu, image") == {"tofu", " image"}
+    assert conftest._parse("rig, image") == {"rig", " image"}
     assert conftest._parse("") == set()
     # The tie between the constant and the function that builds it. `GATES` is
     # read at import, so this is only load-bearing where VCOWS_GATES is actually
-    # set -- `just test-tofu` and CI's `all` job -- and that is exactly where a
-    # decoupled GATES does harm. With nothing demanded there is nothing to see.
+    # set -- CI's `all` job -- and that is exactly where a decoupled GATES does
+    # harm. With nothing demanded there is nothing to see.
     assert conftest.GATES == conftest._parse(os.environ.get("VCOWS_GATES", ""))
 
 
@@ -169,10 +170,9 @@ def test_gates_is_parsed_without_whitespace_stripping():
 # Everything above scans the suite for skips that bypass the mechanism. These
 # check the mechanism, which is a different thing and was the untested half:
 # `gate()` and `require()` each have two branches and a green run only ever takes
-# the "available" one, because `just test-tofu` sets VCOWS_GATES=tofu on a runner
-# that has tofu. Mutating both to always skip left `369 passed, exit 0` under
-# default, VCOWS_GATES=tofu and VCOWS_GATES=all alike -- `all` had silently
-# stopped meaning anything, and nothing here noticed.
+# the "available" one. Mutating both to always skip left `369 passed, exit 0`
+# under default and VCOWS_GATES=all alike -- `all` had silently stopped meaning
+# anything, and nothing here noticed.
 #
 # `GATES` is read at import time and `gate()` calls `demanded()` when it builds
 # the mark, so monkeypatching it reaches these direct calls and not the marks the
@@ -192,29 +192,29 @@ class _Item:
 
 
 def test_an_available_gate_is_a_skipif_that_does_not_skip():
-    mark = gate("tofu", True, REASON).mark
+    mark = gate("rig", True, REASON).mark
     assert mark.name == "skipif"
     assert mark.args == (False,)
 
 
 def test_a_demanded_gate_that_is_missing_carries_its_reason_to_the_hook(monkeypatch):
     """This is the branch VCOWS_GATES exists for, and the one nothing took."""
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
-    mark = gate("tofu", False, REASON).mark
+    monkeypatch.setattr("tests.conftest.GATES", {"rig"})
+    mark = gate("rig", False, REASON).mark
     assert mark.name == "gate_missing"
     assert mark.args == (REASON,)
 
 
 def test_an_undemanded_gate_that_is_missing_is_an_ordinary_skip(monkeypatch):
     monkeypatch.setattr("tests.conftest.GATES", set())
-    mark = gate("tofu", False, REASON).mark
+    mark = gate("rig", False, REASON).mark
     assert mark.name == "skip"
     assert mark.kwargs["reason"] == REASON
 
 
 def test_require_returns_when_the_dependency_is_there(monkeypatch):
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
-    assert require("tofu", True, REASON) is None
+    monkeypatch.setattr("tests.conftest.GATES", {"rig"})
+    assert require("rig", True, REASON) is None
 
 
 def test_a_demanded_require_that_is_missing_fails(monkeypatch):
@@ -224,10 +224,10 @@ def test_a_demanded_require_that_is_missing_fails(monkeypatch):
     from a failure into a skip and the run stayed exit 0. That is the shape
     conftest.py's module docstring exists to prevent, in the file that enforces
     it."""
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
+    monkeypatch.setattr("tests.conftest.GATES", {"rig"})
     try:
         with pytest.raises(pytest.fail.Exception, match=REASON):
-            require("tofu", False, REASON)
+            require("rig", False, REASON)
     except pytest.skip.Exception:  # pragma: no cover -- this is the assertion
         raise AssertionError(
             "require() skipped where it was demanded to fail"
@@ -237,14 +237,14 @@ def test_a_demanded_require_that_is_missing_fails(monkeypatch):
 def test_an_undemanded_require_that_is_missing_skips(monkeypatch):
     monkeypatch.setattr("tests.conftest.GATES", set())
     with pytest.raises(pytest.skip.Exception, match=REASON):
-        require("tofu", False, REASON)
+        require("rig", False, REASON)
 
 
 def test_the_hook_turns_a_gate_missing_mark_into_a_failure(monkeypatch):
     """`gate()` can only return a mark; this is the half that acts on it."""
-    monkeypatch.setattr("tests.conftest.GATES", {"tofu"})
+    monkeypatch.setattr("tests.conftest.GATES", {"rig"})
     with pytest.raises(pytest.fail.Exception, match=REASON):
-        pytest_runtest_setup(_Item(gate("tofu", False, REASON).mark))
+        pytest_runtest_setup(_Item(gate("rig", False, REASON).mark))
 
 
 def test_the_hook_leaves_every_other_test_alone():

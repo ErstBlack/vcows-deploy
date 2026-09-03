@@ -11,11 +11,10 @@
 | | |
 |---|---|
 | Backend | **KVM/libvirt only.** Second backend undecided. Leave seams (§3), build nothing. |
-| Provisioning | **OpenTofu for create.** Not reimplemented. |
-| Destroy | **`python3-libvirt` directly**, via marker discovery. Works with or without state. |
-| State file | Persisted best-effort to a per-deployment run dir. **Disposable, not authoritative.** Third parties will lose it. |
+| Provisioning | **`python3-libvirt` directly**, the same client destroy uses. |
+| Destroy | **`python3-libvirt` directly**, via marker discovery. |
 | Identity | **The marker, never the name.** Renaming a VM is a plausible accident; editing a marker is deliberate. |
-| Convergence | **Never.** OpenTofu creates and destroys. It does not modify. |
+| Convergence | **Never.** vcows creates and destroys. It does not modify. |
 | Version format | **Four-digit `Major.Minor.Patch.Hotfix`** — e.g. `0.1.0.0`. Non-negotiable; matches other delivered products. |
 | Base image | Rocky 10 only. All hypervisors confirmed Haswell+, so no `:9` tag. |
 | Connection | **Rootless, `qemu+ssh://` only.** Direct socket access is later work. |
@@ -31,41 +30,24 @@
 | Stage | Tool | Role |
 |---|---|---|
 | **Preflight** | `python3-libvirt` | Enumerate by marker. What exists, what is ours, what conflicts. |
-| **Create** | OpenTofu | `apply` against a static libvirt module. Stamps the marker at define time. |
-| **State** | file | Written to the run directory. Treated as a convenience, not a source of truth. |
+| **Create** | `python3-libvirt` | Upload, overlay, define. Stamps the marker at define time. |
 | **Destroy** | `python3-libvirt` | Discover by marker, tear down directly. |
 
-### Why destroy is Python, not `tofu destroy`
+### Silent partial success, and the base volume that must not be deleted
 
-The alternative — discover, `tofu import`, `tofu destroy` — **is technically valid**, and an earlier review that called it unworkable was evaluating import-then-*converge*, which is a different and genuinely broken thing. Verified against OpenTofu v1.12.6:
+Two defects any teardown here has to avoid, named once because the code cites this section for them.
 
-- `tofu destroy` does not plan against config. `walkPlanDestroy`'s `ConfigTransformer` excludes every non-ephemeral resource block, and `planDestroy` passes `Config: nullVal`. Resources reach the destroy graph only through `StateTransformer`. **A lossy import cannot affect destroy correctness.**
-- `Delete()` reads exactly `uuid` (domain) and `key` (volume). Discovery produces both by construction.
-- CLI `tofu import` is correct over `import {}` blocks — import blocks are realized by `apply`, which imports *and applies the diff*, and with `name`/`type` being `RequiresReplace` that can destroy and recreate a live VM.
+**Silent partial success.** If 3 of 5 domains are torn down and two are not, an exit code alone reports nothing about the incomplete set. So `destroy` returns an `Outcome` naming every object it removed and every object it did not, and a consumer that does not read it reproduces the defect exactly.
 
-It is not built because discovery is mandatory either way, and once it has run you already hold the UUID and disk paths. The import path replaces three libvirt calls with N+M subprocess invocations, `for_each` key coupling, and three problems Python does not have:
+**The shared base volume.** The golden image is created once per host and every deployment's overlays back onto it, so deleting it breaks VMs no run of this deployment created. Python cannot make that mistake structurally: volumes carry no marker, and destroy tears down only what marker discovery found. **Delete only a disk's own `source`, never a `<backingStore>` path.**
 
-- **Non-idempotent retry** — re-running errors with "Resource already managed by OpenTofu."
-- **Silent partial success.** If 3 of 5 domains import, `tofu destroy` destroys those three, leaves two, and **exits 0.** Nothing reports the set was incomplete.
-- **Less capability than raw libvirt.** `domainUndefineFlagsForDelete` passes at most `NVRAM|TPM`, and `stopDomainIfRunning` returns early for any non-`RUNNING` state, so a managed-saved or `pmsuspended` domain fails to undefine. Python can pass `MANAGED_SAVE|SNAPSHOTS_METADATA|CHECKPOINTS_METADATA|NVRAM|TPM`.
-
-Also note: `undefine` has **no storage-deletion flag** — `virsh undefine --remove-all-storage` is client-side iteration. Whichever path is used, disks must be deleted explicitly or every qcow2 orphans.
-
-**A third variant, missed above and re-examined in Stage 3: reconstruct the state file directly and skip `import` entirely.** OpenTofu's state decoder is lenient about *missing* attributes and strict about extra ones, so a `libvirt_domain` instance carrying only `uuid` decodes cleanly against a schema with 62 attributes, as does a `libvirt_volume` carrying only `key`. Since `Delete()` reads exactly those, Python could emit ~20 lines of state per VM and make one `tofu destroy -refresh=false -auto-approve` call. **That dissolves two of the three objections above** — no N+M subprocesses, and no non-idempotent retry, because state is written whole rather than accumulated. The conclusion stands anyway, on three other grounds:
-
-- **The base image.** `main.tf` gives `libvirt_volume.base` a `count` guard, and on the first deploy to a host that count is 1 — so the shared golden image is written into that run's state. Destroy ignores config entirely, so the guard protects nothing at teardown: what is destroyed is whatever is in state. The obvious implementation, keeping the apply's state and running `tofu destroy`, **deletes the base image and breaks every other deployment's overlays on that host.** Python cannot make this mistake structurally, because volumes carry no marker and destroy never sees it.
-- **Ordering becomes generated data.** Destroy edges come from the `dependencies` array *in the state*, verified with `tofu graph -plan` against an empty config. Teardown order is load-bearing (below), so the emitter would have to get every domain's dependencies right or risk deleting an overlay out from under a running guest. In Python the ordering is three consecutive lines that cannot be reordered by accident.
-- **It is additive, not alternative.** Import IDs are the domain UUID and the volume key, and only marker discovery produces either.
-
-**Sizing, corrected.** The Python path is ~250–300 lines in this project's style, not the "fifteen more lines" an earlier revision of this section claimed — that counted the three libvirt calls and none of the flag gating, error classification, pool refresh or per-object accounting around them. The comparison is unaffected: every tofu variant needs all of that *plus* its own machinery.
-
-If a uniform `tofu destroy` across backends later becomes a hard requirement, it works with these non-negotiables: `tofu destroy -refresh=false -auto-approve`; no `data` blocks in the module; import both domain and volume; emit `for_each` keys from the discovered set; treat any non-zero import exit as fatal; reconcile discovered against destroyed afterward; and — the one this list was missing — **exclude the base volume from any state handed to `tofu destroy`**, since `count` guards config and destroy does not read config. `-refresh=false` is required, not optional — the default pre-destroy refresh runs a **full NormalMode plan** and aborts the entire destroy on any error. It is safe to skip because both `Delete()` implementations return cleanly when the object is already gone.
+Also note: `undefine` has **no storage-deletion flag** — `virsh undefine --remove-all-storage` is client-side iteration, so disks must be deleted explicitly or every qcow2 orphans. The undefine itself passes `MANAGED_SAVE|SNAPSHOTS_METADATA|NVRAM` always and `CHECKPOINTS_METADATA|TPM` where the daemon is new enough, so a managed-saved or `pmsuspended` domain still undefines.
 
 ---
 
 ## 2. The ownership marker
 
-The durable record of what was created. The state file is a convenience; this is the truth.
+The durable record of what was created, and the only one. vcows writes nothing a site could lose and still expect a teardown from.
 
 ### Payload
 
@@ -80,13 +62,13 @@ One canonical JSON object, so there is a single serializer and parser regardless
 | `v` | vcows version that created it, four-digit semver. Provenance only — nothing branches on it. `MARKER_XMLNS` is the discriminator. |
 | `deployment` | Which deployment stamped this VM. Empty when parsed from a marker written before the field existed, never `None`, so callers need no null check. Destroy is scoped by it. |
 | `name` | Logical name from the config, not the hypervisor name. Survives a rename. |
-| `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, "{deployment}/{name}")` — so it regenerates identically with no state file. A random UUID would only be useful when state exists, which defeats the purpose. The deployment is in the input because this is also the seed ISO's `instance-id`; see *Accepted gaps*. |
+| `id` | Stable machine identity. **Derive deterministically** — `uuid5(VCOWS_NS, "{deployment}/{name}")` — so it regenerates identically from the config alone. A random UUID would have to be recorded somewhere to be useful, which defeats the purpose. The deployment is in the input because this is also the seed ISO's `instance-id`; see *Accepted gaps*. |
 
 `deployment` was written down as deliberately absent while destroy was host-wide. It is **present from 0.1.0.0** (D4): stamping it costs nothing, and adding it later would have meant a marker migration on every VM already deployed. Destroy is now scoped by it — see the rules below.
 
 **Deliberately absent, and staying that way:** disk paths. They are read from the live domain XML (`devices/disk/source/@file`, plus `cdrom` for the seed ISO), which is correct even for a VM whose disks changed after creation. Preflight reads them to report; destroy re-reads the same domain immediately before undefining, so what is deleted is what the domain names *now* rather than what it named while the operator was still being asked. That window is unbounded — `cmd_destroy` waits on a human — and it is also where the marker is re-checked. A target whose domain has already gone leaves no document to re-read, so its recorded paths are instead checked against every path the host's other domains claim, and against the two names that VM is entitled to own.
 
-**Write the parser to ignore unknown keys from day one**, or the extensibility is theoretical. This is the same forward-compatibility promise the original document praises OpenTofu's JSON formats for, applied to your own artifact.
+**Write the parser to ignore unknown keys from day one**, or the extensibility is theoretical.
 
 ### Placement
 
@@ -104,9 +86,9 @@ vcows-managed: {"v":"0.1.0.0","deployment":"lab-a","name":"app01","id":"3f2b8c1e
 </metadata>
 ```
 
-### It survives the OpenTofu create path — verified
+### It survives define — verified
 
-`libvirt_domain` exposes `metadata = { xml = "..." }`, mapping to `libvirtxml.Domain.Metadata`, a `,innerxml` field that Go's `encoding/xml` writes verbatim rather than marshalling. It lands inside `<metadata>` in the XML handed to `DomainDefineXML`. libvirt deep-copies the subtree (`xmlCopyNode(node, 1)`) and persists it to `/etc/libvirt/qemu/<name>.xml`, surviving libvirtd restart and host reboot. No perpetual diff: v0.9.8's `Read()` pins the prior value rather than trusting readback (`domain_resource.go` L858, L929-931). Malformed marker XML fails loudly at define time, which is the right failure mode. **The restart half of that is now observed rather than reasoned** (2026-08-29): `systemctl restart virtqemud` on the rig, and `vcows-probe02`'s payload came back byte-identical, un-reindented, and still found by marker rather than by name. Host reboot rests on the same persistence and is still inferred.
+`create.domain_xml` writes the `<vcows>` element inside `<metadata>` in the document handed to `DomainDefineXML`. libvirt deep-copies the subtree (`xmlCopyNode(node, 1)`) and persists it to `/etc/libvirt/qemu/<name>.xml`, surviving libvirtd restart and host reboot. Malformed marker XML fails loudly at define time, which is the right failure mode. **The restart half of that is now observed rather than reasoned** (2026-08-29): `systemctl restart virtqemud` on the rig, and `vcows-probe02`'s payload came back byte-identical, un-reindented, and still found by marker rather than by name. Host reboot rests on the same persistence and is still inferred.
 
 Use `metadata`, not `description`/`title` — those are user-visible in virt-manager and Cockpit and third parties will edit them. Setting `description` additionally as a human-readable hint is fine.
 
@@ -128,7 +110,7 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 
 **Teardown order is load-bearing.** `undefine` on a running domain leaves it running as a *transient* domain with its persistent config, and therefore its marker, deleted — orphaning a VM nobody owns. Destroy first, undefine second, with an explicit NVRAM flag or UEFI domains fail. Report and skip anything that will not resolve through a pool lookup, and **never add an `os.unlink` fallback**.
 
-**That skip rule has a precondition, and without it the rule inverts.** `storageVolLookupByPath` and `listAllVolumes` read libvirt's *in-memory pool cache*, not the filesystem, so "will not resolve" means "libvirt has not looked" at least as often as it means "gone". Measured on the rig: three of four running domains' disks — real files inside an active pool's own target directory — return `VIR_ERR_NO_STORAGE_VOL` because they were written out of band and the pool has not been refreshed since. So **`pool.refresh(0)` before any volume is enumerated or resolved, in preflight and in destroy alike**. Without it, "report and skip" silently leaks every overlay, which is the opposite of what the rule is for; and preflight would report an out-of-band-seeded golden image as absent, set `create = true`, and the apply would die on "storage volume exists already" for a reason nobody could diagnose. A refresh is a directory rescan, not a configuration change, so it does not conflict with vcows never creating a pool.
+**That skip rule has a precondition, and without it the rule inverts.** `storageVolLookupByPath` and `listAllVolumes` read libvirt's *in-memory pool cache*, not the filesystem, so "will not resolve" means "libvirt has not looked" at least as often as it means "gone". Measured on the rig: three of four running domains' disks — real files inside an active pool's own target directory — return `VIR_ERR_NO_STORAGE_VOL` because they were written out of band and the pool has not been refreshed since. So **`pool.refresh(0)` before any volume is enumerated or resolved, in preflight and in destroy alike**. Without it, "report and skip" silently leaks every overlay, which is the opposite of what the rule is for; and preflight would report an out-of-band-seeded golden image as absent, set `create = true`, and `create` would die on "storage volume exists already" for a reason nobody could diagnose. A refresh is a directory rescan, not a configuration change, so it does not conflict with vcows never creating a pool.
 
 **Delete only a disk's own `source`, never a `<backingStore>` path.** Per-VM disks are overlays on the shared golden image. Following the backing chain would destroy the base volume that every other deployment's overlays depend on.
 
@@ -142,9 +124,9 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 
 **A split-daemon host cannot present a live storage driver with a dead domain driver — measured, 2026-08-29.** The review asked whether it could, because if it could then a `lookupByUUIDString` failure mid-teardown would mean something worse than a race. It cannot, on this transport. With `virtqemud` and its sockets stopped and `virtstoraged` left running, `virtstoraged-sock` is still present and still listening, and nothing can reach it: every client enters through `virtqemud-sock`, so the connection never opens at all. `virsh` on the rig itself gets the same refusal vcows does — `virt-ssh-helper: cannot connect to '/var/run/libvirt/virtqemud-sock'`, `VIR_ERR_SYSTEM_ERROR` from `VIR_FROM_REMOTE`, before any driver call. So there is no state in which vcows holds a working connection whose domain driver is absent, and the stale-target window `_reverify` closes stays what it was: a race against another operator, not a driver asymmetry. `ERR_NO_DOMAIN` earns its keep on the race; it does not need to cover this.
 
-**Preflight-then-create is TOCTOU.** Two operators running against the same hypervisor concurrently will race. libvirt's own name uniqueness catches it, so the loser gets a hard error mid-apply rather than corruption — acceptable for v0.1, but named here so it is not a surprise.
+**Preflight-then-create is TOCTOU.** Two operators running against the same hypervisor concurrently will race. libvirt's own name uniqueness catches it, so the loser gets a hard error mid-create rather than corruption — acceptable for v0.1, but named here so it is not a surprise.
 
-**The base image is never cleaned up.** It is created as an OpenTofu resource and so lives in Tofu's state, but destroy runs through Python by marker and volumes are unmarked, so neither path removes it. This is intended — it is shared across deployments on that host and re-pushing multi-GB images over the SSH tunnel is the cost being avoided. Sweeping stale base images is a `prune` concern.
+**The base image is never cleaned up.** Destroy runs by marker and volumes are unmarked, so nothing removes it. This is intended — it is shared across deployments on that host and re-pushing multi-GB images over the SSH tunnel is the cost being avoided. Sweeping stale base images is a `prune` concern.
 
 **Cross-deployment identity is in the derivations.** `derive_id` is `uuid5(VCOWS_NS, f"{deployment}/{name}")` and `derive_mac` is the same with `#nic{index}` appended, so two deployments each containing `app01` no longer derive one MAC and one cloud-init `instance-id`. Without it, on two hosts bridged to one L2 both guests boot, both apply their static address, and both report `cloud-init status: done` — `address_conflicts` only ever looks at one host, so nothing else catches it. Settled before first ship because `derive_mac`'s permanence is real: changing it renames the interface every running VM's guest configuration is keyed to.
 
@@ -160,7 +142,7 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 
 **An object that cannot be read is reported and skipped, never silently dropped.** A domain, a volume or a DHCP lease list that will not answer is a WARNING naming it and what the skip cost — not an error, because one broken foreign object on a shared hypervisor is not this deployment's to fix and refusing every run on that host over it is worse. The reason it cannot be silent is that every check in `preflight` decides on what it found: an absent domain is no MAC collision and no name clash, an absent volume is no orphan, and an unreadable lease list is a free address. The two exceptions are both about *what may be deleted*: a pool that will not describe itself and a target whose live document disagrees with the snapshot are errors, because there the unknown is on the destructive side.
 
-**Verify in the spike:** libvirt re-serializes metadata with pretty-printing. Confirm the JSON text content survives a define → dumpxml round trip without re-indentation. It should not matter, since the provider pins the prior value and you never converge, but it is cheap to check now and annoying to discover later.
+**Verify in the spike:** libvirt re-serializes metadata with pretty-printing. Confirm the JSON text content survives a define → dumpxml round trip without re-indentation. It should not matter, since nothing ever converges, but it is cheap to check now and annoying to discover later.
 
 ---
 
@@ -181,16 +163,15 @@ orchestrator/
       __init__.py        # the Backend implementation
       schema.py          # the target.libvirt sub-schema
       preflight.py       # marker read + collision detection
-      render.py          # pure: -> tfvars dict
+      render.py          # pure: config -> the values create consumes
+      create.py          # python3-libvirt upload, overlay, define
       destroy.py         # python3-libvirt teardown
-      tofu/              # main.tf variables.tf outputs.tf
   cloudinit.py           # seed ISO, MAC derivation, the NIC addressing checks
   config.py              # core schema; composes `target` from the registry
   imagecheck.py          # digest and capacity checks on the golden image
   limits.py              # the VM size ceilings and their environment overrides
   marker.py              # payload serialize/parse; shared by every backend
   problems.py            # Severity/Problem; core and every backend produce them
-  tofu.py                # subprocess driver, backend-agnostic
   cli.py
 tests/
   fake_backend.py        # in-memory, ~100 lines, test-only
@@ -211,16 +192,12 @@ class Backend(ABC):
     @abstractmethod
     def preflight(self, cfg, session) -> Discovered: ...
     @abstractmethod
-    def prepare(self, cfg, workdir, discovered) -> ContextManager[Prepared]: ...
+    def prepare(self, cfg, workdir, discovered) -> Prepared: ...
     @abstractmethod
-    def render(self, cfg, prepared) -> dict: ...  # pure -> tfvars
-    @abstractmethod
-    def parse_outputs(self, raw) -> Inventory: ...
+    def create(self, cfg, session, prepared) -> dict: ...  # the inventory map
     @abstractmethod
     def destroy(self, cfg, session, targets) -> Outcome: ...
 ```
-
-Convention, not a method: the module lives at `backends/<name>/tofu/`.
 
 **ABC with `@abstractmethod`, and no default implementations.** The thing to avoid is *noop defaults*, not ABCs — a backend that forgets `destroy` and inherits a no-op deletes nothing and exits successfully; one that forgets `preflight` skips the safety check entirely. An ABC fails loudly at instantiation, which beats a `Protocol` that only complains if someone remembers to run mypy.
 
@@ -247,11 +224,11 @@ live domain XML at discovery time rather than stored, so it cannot go stale. Nev
 
 Core parses the marker, applies the rules from §2, and decides skip/create/refuse. **The dangerous logic is written once** — a backend author cannot implement the refusal incorrectly because they never implement it. Core also owns the marker's content and serialization (`marker.py`); the backend owns only where it is stored and how it is read back.
 
-**`prepare` — a context manager, and this is the non-obvious choice.** Both shipped backends yield immediately after building the seed ISOs, which `orchestrator/cloudinit.py` builds because nothing in it is hypervisor-specific. Proxmox's additionally carries `discovered.artifacts["image"]` through to `render`, because the module has no data source that lists a storage's `import` content and the apply runs against an empty state — `ProxmoxBackend.prepare` says so beside the line. Neither holds anything open for the apply's duration. The reason the shape is still a context manager is vSphere: a qcow2→VMDK→OVA conversion needs the `workdir` plus a cache path, and a conversion product that must exist for the apply and can be cleaned after it is what `with backend.prepare(...) as prepared:` expresses. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring, whereas it costs nothing today.
+**`prepare` builds what `create` consumes, and reaches nothing.** Both shipped backends write the seed ISOs and return; `orchestrator/cloudinit.py` builds them, because nothing in that is hypervisor-specific. Proxmox's additionally carries `discovered.artifacts["image"]` through to `render`, because the pure half has no way to ask a storage what `import` content it already holds — `ProxmoxBackend.prepare` says so beside the line. The `workdir` parameter is sized for vSphere: a qcow2→VMDK→OVA conversion needs it plus a cache path, and a conversion product that must exist for the create has to live somewhere. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring, whereas it costs nothing today.
 
-**The reason this section originally gave was wrong, and is corrected here by name.** It said Proxmox might need the orchestrator to serve the qcow2 over HTTP on the local network so PVE could pull it through the download-url API, holding a listening socket open for the apply. The backend that shipped in #149 does not do that and cannot want to: `proxmox_virtual_environment_file` takes a local `source_file.path` and uploads the `import`, `iso` and `vztmpl` content types through PVE's own HTTP API, so the provider pushes and vcows serves nothing. The decision survives; that justification does not.
+**The reason this section originally gave was wrong, and is corrected here by name.** It said Proxmox might need the orchestrator to serve the qcow2 over HTTP on the local network so PVE could pull it through the download-url API, holding a listening socket open. The backend that shipped in #149 does not do that and cannot want to: `create.upload` posts a local file to PVE's own upload endpoint for the `import` and `iso` content types, so vcows pushes and serves nothing. The decision survives; that justification does not.
 
-**`prepare` takes what `preflight` found, and `preflight` is the only method that reads the target.** Each apply runs against a fresh, empty state — state is disposable, so the module only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be declared as a resource, and the overlay needs its path on the host. That question cannot be answered from HCL: the pinned provider registers four data sources — `libvirt_domain_interface_addresses`, `libvirt_node_device_info`, `libvirt_node_devices`, `libvirt_node_info` — and no provider functions and no ephemeral resources, so nothing can read a pool. It cannot be answered from the config either, because the pool is someone else's and its target path is a property of the pool. And it cannot be answered by `tofu import` as an existence probe: 0.9.8's importer is a passthrough on the volume **key**, which for a file pool is the path we are trying to discover.
+**`prepare` takes what `preflight` found, and `preflight` is the only method that reads the target.** `create` only ever creates. The shared base image is created once per hypervisor and reused by every deployment's overlays, so from the second deploy onward it must not be created again, and the overlay needs its path on the host. That cannot be answered from the config, because the pool is someone else's and its target path is a property of the pool.
 
 So a live connection has to ask — but `preflight` is **already** asking. The orphan-volume refusal below requires it to enumerate the pool and resolve every volume's path, so the base image's presence, path and size are a lookup on data it is holding. Handing the session to `prepare` would buy a second round trip, not a first, and would let `prepare` reach the hypervisor for anything else besides. Instead `preflight` returns everything one walk found:
 
@@ -267,15 +244,15 @@ class Discovered:
 
 Core reads `vms` and `problems`, applies §2's rules, and forwards the record to `prepare` without ever reading `artifacts` — so **core still never learns what a storage volume is**, and `prepare` cannot reach the target at all, which is a guarantee rather than a rule someone has to remember. It also makes "prepare runs after preflight" a type dependency instead of a convention. Do not replace this by caching the fact on the backend instance: `REGISTRY` holds a singleton, so that is process-global mutable state that silently reports "not present" if `prepare` ever runs without `preflight`.
 
-**The session therefore closes before the apply.** The provider opens its own connection from `var.uri`, so holding ours across a multi-GB upload would add a second idle SSH session that buys the transfer nothing. libvirt-python registers no event loop here, so there is no keepalive and no RPC timeout: a socket that hangs rather than resetting can block the closing RPC and wedge the CLI *after* a successful apply. A backend that genuinely needed something held open for the apply's duration would hold a socket it opened itself; neither shipped backend does.
+**The session `preflight` used closes before anything is created.** `cli._look` opens one, runs `preflight` inside it and closes it before `decide` sees the result; `_deploy` then hands `prepare` that data rather than a connection, and opens a second session for `create`. Holding the first one open would mean threading it through the pure half of the pipeline to reach the one call that needs it. It also costs nothing to drop: libvirt-python registers no event loop here, so there is no keepalive and no RPC timeout, and a socket that hangs rather than resetting can block the closing RPC and wedge the CLI *after* every object has been made.
 
 **The base image is verified, not merely found.** A partial upload leaves a file whose qcow2 header is intact, so `capacity` reports the full virtual size and the next run trusts it — every overlay then backs onto a truncated image and the VMs fail at random points in boot, on a host where the tool reported success. Compare the volume's `<physical>` against the local golden image's size; they match byte for byte, and `<physical>` arrives in the same `XMLDesc` the orphan-volume check already needs. A mismatch refuses, which covers a *different* image under that name as well as a truncated one. `<physical>` is optional in libvirt's schema and meaningless for non-file pools, so its absence warns rather than refuses. **Settled in the acceptance run:** the uploaded volume's `<physical>` equals the local file's `st_size`, so `create.content.url` streams the source bytes verbatim rather than re-encoding, and the check needs no sentinel-volume fallback.
 
 **`render` stays pure** — config plus the record `prepare` produced, out to a dict. This was the original document's seam and it is right; it was wrong only as the *sole* seam, since it cannot express the I/O that `preflight` and `prepare` now own.
 
-**`parse_outputs`** converts raw `tofu output -json` into the inventory contract. It is per-backend because each backend's `.tf` module declares its own `output` blocks, so the raw shape differs. Without this step your module's output block *is* your public API — rename an output and every consumer of `inventory.json` breaks. With it, the module can be refactored freely. About ten lines for libvirt.
+**`create`** takes what `render` produced and makes the objects it describes, returning the inventory map keyed by logical name. That map is the public contract, not whatever the backend's client hands back, so the per-VM record can be reshaped without breaking a consumer of `inventory.json`.
 
-**`destroy`** takes the set `preflight` discovered and tears it down. libvirt does it directly through `python3-libvirt` (§1). Another backend could use `tofu import` + `tofu destroy -refresh=false`, or its own SDK. The seam exists precisely so that choice is per-backend.
+**`destroy`** takes the set `preflight` discovered and tears it down. libvirt does it directly through `python3-libvirt` (§1); another backend uses its own SDK. The seam exists precisely so that choice is per-backend.
 
 ### Config composition
 
@@ -287,43 +264,40 @@ Keep the `target.<backend>` nesting. An earlier note suggested flattening it to 
 
 `tests/fake_backend.py`, ~100 lines, shipped in nothing. It earns its place by proving three things interface design alone cannot:
 
-1. Core runs the full pipeline — validate → preflight → prepare → render → apply → outputs → destroy — **with no libvirt import anywhere in the call path.** That is the actual test of whether the seam is real.
+1. Core runs the full pipeline — validate → preflight → prepare → create → destroy — **with no libvirt import anywhere in the call path.** That is the actual test of whether the seam is real.
 2. The ownership policy is exercised against a backend with no libvirt semantics: absent → create, ours → skip, unmarked → refuse.
 3. Two backends register simultaneously and the config schema composes.
 
-### Four result carriers, and why they stay four
+### Three result carriers, and why they stay three
 
-`Outcome`, `Discovered.problems`, `Result.diagnostics` and `ConfigError.problems`
-are four independently-invented ways of saying what went wrong. They are not
-unified, and that is a decision rather than an oversight.
+`Outcome`, `Discovered.problems` and `ConfigError.problems` are three
+independently-invented ways of saying what went wrong. They are not unified, and
+that is a decision rather than an oversight.
 
 They answer different questions at different times: what is wrong with the config
-(before anything connects), what is wrong with the target (while connected), what
-OpenTofu said about a plan it has already printed to the terminal, and what a
-teardown did to each of twenty objects. A single carrier would have to be the
-union of four shapes, and every consumer would filter it back down to the one it
-started with.
+(before anything connects), what is wrong with the target (while connected), and
+what a teardown did to each of twenty objects. A single carrier would have to be
+the union of three shapes, and every consumer would filter it back down to the
+one it started with.
 
-What was actually wrong is that three of them lost their contents at the consumer.
-The rule instead is **each is printed where it arrives**: `load` returns its
-warnings to every verb rather than only `validate` re-deriving them,
-`Discovered.problems` reaches stderr on all three connected verbs, `Outcome` is
-returned and reported by `cmd_destroy`, and `Result.warnings` is recorded into
-`run.json` — not re-printed, because `tofu` inherits stdout and has already
-rendered them live.
+What was actually wrong is that they lost their contents at the consumer. The
+rule instead is **each is printed where it arrives**: `load` returns its warnings
+to every verb rather than only `validate` re-deriving them,
+`Discovered.problems` reaches stderr on all three connected verbs, and `Outcome`
+is returned and reported by `cmd_destroy`.
 
 ### The log is the only carrier of output
 
 **Reversed, deliberately, one day after #136 shipped the opposite.** The earlier
 version of this section is worth stating so the change reads as a decision rather
 than a drift: #136 drew the line as *the printout carries the headline, the log
-carries the detail*, and argued the log must not become a fifth carrier beside
-the four above. That framing is gone. Every line vcows writes is now a log line —
+carries the detail*, and argued the log must not become another carrier beside
+those above. That framing is gone. Every line vcows writes is now a log line —
 timestamped, level-tagged, on stderr — and `print` is absent from `orchestrator/`
 and `container/` entirely, gated by `test_logging.test_nothing_prints`.
 
-**What is preserved is the distinction, not the mechanism.** The four result
-carriers above are still four, and each is still reported once where it arrives;
+**What is preserved is the distinction, not the mechanism.** The result carriers
+above are still separate, and each is still reported once where it arrives;
 `_problem` logs a `Problem` at the level its own `Severity` names and nothing
 re-reports it. What changed is that the *level* now does the work the *stream*
 used to: `INFO` is the report, `WARNING` is degraded-but-continuing, `ERROR` ends
@@ -331,8 +305,8 @@ the run, `DEBUG` is the recovery detail #136 added. A reader who wants the old
 stdout/stderr split reads levels instead.
 
 **The convention was weighed, not assumed.** The POSIX CLI convention — stdout is
-the result, stderr is diagnostics — is what `git`, `kubectl` and OpenTofu itself
-follow, and it is what vcows had. The twelve-factor/container convention treats
+the result, stderr is diagnostics — is what `git` and `kubectl` follow, and it is
+what vcows had. The twelve-factor/container convention treats
 all output as one event stream. The second was chosen on the maintainer's call,
 with the trade understood: a single stream is materially simpler to maintain (one
 logger, one handler, one format, no `propagate` or handler-clearing traps), and

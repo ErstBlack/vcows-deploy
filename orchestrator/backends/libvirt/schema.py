@@ -297,9 +297,7 @@ def _check_target(target: dict) -> list[Problem]:
         # The query string is not the only way credentials reach the URI, and
         # this one survives further: `connection_uri` replaces the scheme and
         # clears the query but leaves the netloc alone, so a password reaches
-        # `preflight.connect`'s "connecting to %s" line whole. It used to reach
-        # the rendered tfvars too, and sit in the run directory in plaintext;
-        # `render` no longer emits a URI, so the log is where it lands now.
+        # `preflight.connect`'s "connecting to %s" line whole.
         problems.append(
             Problem.error(
                 "URI must carry no password. Neither client would use it -- both "

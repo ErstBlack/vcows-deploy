@@ -10,9 +10,8 @@ reported `cloud-init status: done` on an address nobody asked for), `#161` (the
 device name the guest ends up with), and `#164`.
 
 Under the `rig` gate alone, which already names the hypervisor. The deploy runs
-in this process through `python3-libvirt`, so nothing here needs a binary on
-PATH or a provider mirror. No new gate name: `KNOWN` in `tests/test_gates.py`
-stays a closed set of seven.
+in this process through `python3-libvirt`. No new gate name: `KNOWN` in
+`tests/test_gates.py` stays a closed set of six.
 
 Two facts about the rig it depends on, both of them checked by
 `tests/test_libvirt_rig.py` in its own right:

@@ -1,6 +1,5 @@
-# The build context. `.tools/` is excluded and then re-admitted for the provider
-# mirror, which is the one thing under it the image genuinely needs; everything
-# else there is a rebuildable dev convenience.
+# The build context. Nothing under `.tools/` reaches the image; it is a
+# rebuildable dev convenience.
 .git/
 .venv/
 .pytest_cache/
@@ -8,10 +7,9 @@ __pycache__/
 *.pyc
 runs/
 .cache/
-.tools/*
-!.tools/tofu-mirror
+.tools/
 
-# A git worktree checked out inside the tree. .gitignore:38 already excludes it,
+# A git worktree checked out inside the tree. `.gitignore` already excludes it,
 # for `ty` and the static-gate signature; the build context needs its own rule
 # because .containerignore is a separate matcher that never saw that one.
 #

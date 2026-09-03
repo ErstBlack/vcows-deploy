@@ -129,7 +129,7 @@ def test_a_duplicate_marker_is_an_error_even_when_nobody_wants_the_name():
 
 def test_a_marked_vm_holding_the_hypervisor_name_we_want_refuses():
     """The clash check covered unmarked VMs only, so this fell through to CREATE
-    and collided inside `tofu apply` at define time -- after that VM's overlay
+    and collided inside `create` at define time -- after that VM's overlay
     volume and seed ISO were written, which is the orphan-volume path."""
     other = Existing(name="app01", id="i1", marker=Marker.for_vm("web01", "lab-b"))
     decisions, problems = decide(["app01"], [other], "lab-a")

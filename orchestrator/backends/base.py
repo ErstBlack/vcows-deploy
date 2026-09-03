@@ -132,8 +132,8 @@ class Outcome:
     Five domains with three objects each is twenty things that can fail
     independently, so both lists hold *objects* -- domain names and volume paths
     together -- rather than VMs. Silent partial success is the specific defect
-    findings.md §1 rejects ``tofu destroy`` for, and a backend that returns this
-    without its consumer reading it reproduces that defect exactly.
+    findings.md §1 names, and a backend that returns this without its consumer
+    reading it reproduces that defect exactly.
 
     The one mutable record here, and deliberately: it is accumulated across a
     teardown that is expected to fail in places. Its consumer treats it as
@@ -230,7 +230,7 @@ def decide(
     # Every existing VM, not only the unmarked ones. A marked domain whose
     # *hypervisor* name is one we want, under some other logical name, is in
     # neither lookup otherwise and falls through to CREATE; the collision then
-    # surfaces inside `tofu apply` at define time, after that VM's overlay volume
+    # surfaces inside `create` at define time, after that VM's overlay volume
     # and seed ISO have been written -- findings.md §2's orphan-volume path. A
     # hypervisor that allows two VMs to share a name would collapse here, and
     # libvirt is not one.

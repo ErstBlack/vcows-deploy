@@ -50,11 +50,11 @@ dev-env:
 os-deps:
     ./scripts/os-deps.sh
 
-# Download the pinned tool binaries (uv, tofu, just, hadolint, trivy, syft).
+# Download the pinned tool binaries (uv, just, hadolint, trivy, syft).
 tools:
     ./scripts/install-tools.sh
 
-# Seven static gates: ruff, ruff format, hadolint, tofu fmt, shellcheck, workflows,
+# Six static gates: ruff, ruff format, hadolint, shellcheck, workflows,
 # gitleaks.
 
 # Every static gate, in one pass.
@@ -66,7 +66,7 @@ fix:
     ./scripts/lint.sh --fix
 
 # The secret scan on its own, for when that is the question. `just lint` runs the
-# same command as its seventh gate, so this adds no coverage -- it is the short
+# same command as its sixth gate, so this adds no coverage -- it is the short
 # way to re-check after touching something that looks like a credential, without
 # waiting on ruff, hadolint, shellcheck and the workflow parser.
 #
@@ -74,7 +74,7 @@ fix:
 # question this deliberately does not ask on every run:
 #   .tools/bin/gitleaks git . --no-banner --redact
 
-# Scan the working tree for secrets (the seventh `just lint` gate, on its own).
+# Scan the working tree for secrets (the sixth `just lint` gate, on its own).
 secrets:
     .tools/bin/gitleaks dir . -c .gitleaks.toml --no-banner --redact
 
@@ -89,30 +89,9 @@ test *ARGS:
 # What a developer runs before pushing, and what CI's `check` job runs.
 check: lint typecheck test
 
-# Build or refresh .tools/tofu-mirror from the registry.
-mirror:
-    ./scripts/mirror.sh
-
-# Check an existing or cache-restored mirror without downloading.
-verify-mirror:
-    ./scripts/mirror.sh --verify-only
-
-# Verify the mirror if it is there, build it if it is not. What CI calls.
-ensure-mirror:
-    ./scripts/mirror.sh --ensure
-
-# Prove the provider version and hashes agree in all four places.
-verify-provider:
-    ./scripts/verify-provider.sh
-
-# The OpenTofu module gates, demanded rather than skipped.
-test-tofu:
-    VCOWS_GATES=tofu .venv/bin/python -m pytest -q -rs
-
-# Apply the module against a real libvirtd under TCG, assert against what
-# libvirtd created, and destroy it. Deliberately not in `check`: it installs
-# packages, writes /etc/libvirt and starts a system daemon. Needs the provider
-# mirror, so `just ensure-mirror` comes first.
+# Deploy against a real libvirtd under TCG, assert against what libvirtd created,
+# and destroy it. Deliberately not in `check`: it installs packages, writes
+# /etc/libvirt and starts a system daemon.
 smoke-libvirt:
     ./scripts/smoke-libvirt.sh
 
@@ -142,14 +121,6 @@ bundle:
 # Measured on 16 cores: 3835 mutants in 156s. A hosted runner has 4, so budget
 # roughly four times that on a cold cache; mutmut re-tests only the mutants whose
 # function changed, so a warm one is far less.
-#
-# No `VCOWS_GATES` here, deliberately. It used to demand `tofu`, which cannot hold
-# inside mutmut's copied tree: the gate wants `.tools/tofu-mirror`, mutmut copies
-# only `source_paths`, `tests/` and `also_copy`, and a 441 MB mirror is not
-# something to copy per run. The tests it would turn on are the HCL module tests,
-# which drive `tofu` as a subprocess and kill no Python mutant anyway.
-# `tests/test_tofu_driver.py`, which is what actually covers `orchestrator/tofu.py`,
-# is ungated and runs regardless.
 
 # Mutation testing, failing only on a regression against the baseline.
 mutants:

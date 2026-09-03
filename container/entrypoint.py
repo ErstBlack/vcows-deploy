@@ -9,16 +9,13 @@ against a real hypervisor, in this image:
   `known_hosts=`**, which is a libssh/libssh2 parameter. Without it, `ssh` falls
   back to the default path and the connection dies with "Host key verification
   failed" and no hint as to why.
-* The provider's `qemu+ssh` spells it `knownhosts`, with no underscore, and its
-  `qemu+sshcmd` -- the only transport that reaches a modern split-daemon host --
-  fails on either spelling.
-* `HOME` is not a lever either: OpenSSH and Go's `os/user` both resolve `~` from
-  the passwd entry, so exporting it changes nothing.
+* `HOME` is not a lever either: OpenSSH resolves `~` from the passwd entry, so
+  exporting it changes nothing.
 
-What both clients *do* share is that they run `ssh`, so they both read
-`~/.ssh/config`. Writing that file is the one mechanism that reaches both, and it
-leaves the key and the known_hosts file exactly where they were mounted, read
-only. Nothing here copies key material.
+What the client *does* do is run `ssh`, so it reads `~/.ssh/config`. Writing that
+file is the one mechanism that reaches it, and it leaves the key and the
+known_hosts file exactly where they were mounted, read only. Nothing here copies
+key material.
 
 This is container glue, deliberately, and it is why `cli.py` contains none of it:
 outside the image an operator's own `~/.ssh` is already correct, and a tool that
@@ -164,14 +161,14 @@ def ssh_config(keyfile: str | None, known_hosts: str | None) -> str:
     known_hosts = _path(known_hosts, "known_hosts")
     lines = [
         "# Written by the vcows container entrypoint from target.libvirt.",
-        "# Both libvirt and the OpenTofu provider run ssh, so this is the one",
-        "# place that reaches both. Delete or override by mounting your own.",
+        "# libvirt's client runs ssh, so this is the one place that reaches it.",
+        "# Delete or override by mounting your own.",
         "Host *",
         "  BatchMode yes",
         # A tunnel that stops answering otherwise hangs the run forever. D42
-        # gives `plan` and `apply` no timeout on purpose -- a multi-GB
-        # `vol-upload` has no resume, so any clock long enough to be safe is too
-        # long to be useful -- and this is the other half of that: it bounds a
+        # gives `create` no timeout on purpose -- a multi-GB `vol-upload` has
+        # no resume, so any clock long enough to be safe is too long to be
+        # useful -- and this is the other half of that: it bounds a
         # *dead* connection at three minutes without putting a clock on a live
         # transfer, because keepalives only fire when nothing is moving.
         "  ServerAliveInterval 30",

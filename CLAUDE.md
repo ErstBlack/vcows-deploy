@@ -2,9 +2,9 @@
 
 Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`,
 or to Proxmox VE over its HTTPS API with a token, shipped as a container that
-runs air-gapped apart from that one connection. OpenTofu creates; Python
-destroys -- through the `libvirt` binding on one backend and `proxmoxer` on the
-other.
+runs air-gapped apart from that one connection. Python creates and destroys
+through the hypervisor's own SDK -- the `libvirt` binding on one backend and
+`proxmoxer` on the other.
 
 Most of this project's operating rules are counterintuitive, and the obvious
 helpful action breaks several of them. Each section below is one rule, an anchor,
@@ -69,15 +69,14 @@ trailing attribute path rather than a literal. Introducing one is a test
 failure, not a style note.
 
 `VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure.
-Seven names, a closed set: `tofu`, `image`, `rig`, `pycdlib`, `libvirt`, `smoke`,
-`proxmox`, plus `all`. It is case-sensitive and does not strip whitespace, so
-`VCOWS_GATES="tofu, image"` silently demands only `tofu`. The list is `KNOWN` in
+Six names, a closed set: `image`, `rig`, `pycdlib`, `libvirt`, `smoke`, `proxmox`,
+plus `all`. It is case-sensitive and does not strip whitespace, so
+`VCOWS_GATES="rig, image"` silently demands only `rig`. The list is `KNOWN` in
 `tests/test_gates.py`, not this sentence: a name absent from it is a test
-failure. `smoke` was the sixth, added when `#122` moved
-`scripts/smoke-libvirt.sh`'s assertions into `tests/test_libvirt_smoke.py`;
-`proxmox` was the seventh, and it needs `VCOWS_PVE_ENDPOINT` **and**
-`PROXMOX_VE_API_TOKEN`, because a gate that can name a cluster it cannot
-authenticate to answers nothing.
+failure. `smoke` arrived when `#122` moved `scripts/smoke-libvirt.sh`'s
+assertions into `tests/test_libvirt_smoke.py`; `proxmox` needs
+`VCOWS_PVE_ENDPOINT` **and** `PROXMOX_VE_API_TOKEN`, because a gate that can
+name a cluster it cannot authenticate to answers nothing.
 
 ## Do not cite line numbers
 
@@ -110,9 +109,9 @@ to review and cannot close an issue from a commit body.
 ## `docs/cve-baseline.json` is a differential gate, not a list to append to
 
 Each group carries `why` and `recheck`, and every accept or reject turns on
-**reachability**, not severity. The x/crypto acceptance rests on
-`orchestrator/backends/libvirt/render.py` passing `sshcmd` to
-`connection_uri`: that dialer execs OpenSSH and never enters `x/crypto/ssh`.
+**reachability**, not severity. The `CVE-2026-11979` acceptance rests on
+`xmlcatalog --shell` being the only way into the overflow: `/usr/bin/xmlcatalog`
+ships in the base layer, and nothing in this tree invokes it.
 
 **`scripts/image-scan.sh`'s `--write-baseline` destroys that rationale.** It
 regenerates a fresh object carrying only `image`, `generated`, `note` and
@@ -126,38 +125,19 @@ used from the repo root and nothing else. An absolute path, or a new `just`
 recipe wrapping the flag, routes around it silently. It is a guardrail against
 the obvious helpful action, not a boundary.
 
-## Seven pins nothing can automate
+## Two pins nothing can automate
 
 * `BASE_DIGEST` — `Containerfile`
-* `TOFU_RPM_SHA256` — `Containerfile`
-* `PROVIDER_SHA256` — `Containerfile` (libvirt provider)
-* `PVE_PROVIDER_SHA256` — `Containerfile` (Proxmox provider)
 * `PROXMOXER_SHA256` — `Containerfile` (the one pip-installed dependency)
-* the `h1:` hash — `docs/provider-0.9.8.lock.hcl` (libvirt)
-* the `h1:` hash — `docs/provider-0.111.1.lock.hcl` (Proxmox)
 
-No update bot can recompute any of them, which is why `dependabot.yml` is
-deliberately not pointed at the `Containerfile`. `just verify-provider` is the
-gate that catches a bump left half-finished.
-
-**The lock filename carries the version and not the provider**, so two providers
-that ever pin the same version string collide. 0.9.8 and 0.111.1 do not, and
-renaming the scheme is filed rather than done. `verify-provider.sh` asserts every
-backend module has a committed lock, so the collision would surface as a diff
-rather than as a silently shared file.
-
-**A mirror is built one provider at a time and merged, never mirrored into a
-shared directory.** Measured against tofu 1.12.6: pointing `providers mirror` at
-a directory that already holds another provider rewrites that provider's index
-and drops its `zh:` hash, which is the only cross-check that the artifact in the
-mirror is the one `PROVIDER_SHA256` asserts. `scripts/mirror.sh` says so where it
-matters.
+No update bot can recompute either of them, which is why `dependabot.yml` is
+deliberately not pointed at the `Containerfile`.
 
 ## Already evaluated and rejected
 
-grype, tflint, checkov, terraform-docs, bandit, and making `VCOWS_GATES=all` the
-default were each investigated and rejected with measurements, as were several
-plausible-looking simplifications. Proposing one again is re-deriving settled
+grype, bandit, and making `VCOWS_GATES=all` the default were each investigated
+and rejected with measurements, as were several plausible-looking
+simplifications. Proposing one again is re-deriving settled
 work. The reasoning lives in `docs/tooling-*.md`, `docs/review-*/` and
 `docs/findings.md` — read the rejection before reopening it.
 
@@ -171,8 +151,7 @@ surface than the defect warrants is itself a problem.
 | | |
 |---|---|
 | `just dev-env` | The only correct venv |
-| `just lint` | Seven gates: ruff check, ruff format, hadolint, tofu fmt, shellcheck, workflows, gitleaks |
+| `just lint` | Six gates: ruff check, ruff format, hadolint, shellcheck, workflows, gitleaks |
 | `just typecheck` | `ty check` |
 | `just check` | lint, typecheck, test |
-| `just verify-provider` | Catches a half-finished provider bump |
 | `just image`, `just scan`, `just bundle` | Build, scan against the baseline, assemble the delivery bundle |

@@ -254,9 +254,9 @@ prepare() {
 }
 JSON
 
-    # What `tofu validate` used to buy, and the reason this function runs first:
-    # the values are read and every domain XML is rendered from them, so a key
-    # this fixture spells wrong fails here rather than after apt.
+    # The reason this function runs first: the values are read and every domain
+    # XML is rendered from them, so a key this fixture spells wrong fails here
+    # rather than after apt.
     "$PY" - "$WORK/tfvars.json" <<'PY'
 import json
 import sys
@@ -273,7 +273,7 @@ PY
 
 # -- the host ---------------------------------------------------------------
 
-# The recipe is terraform-provider-libvirt's own CI, which runs its acceptance
+# The recipe is the libvirt provider project's own CI, which runs its acceptance
 # suite on unmodified ubuntu-latest. `libvirt-dev` is in that list and not in
 # this one: nothing here compiles against the headers -- os-deps.sh installs the
 # distro's python3-libvirt and `just dev-env` is what makes it visible. `ovmf` is
@@ -288,7 +288,7 @@ packages() {
 }
 
 # user/group root, no dynamic ownership and no security driver, which is what
-# terraform-provider-libvirt's own CI sets. The pool, the uploaded volumes and
+# that project's CI sets. The pool, the uploaded volumes and
 # the domain all belong to root here; letting libvirt relabel and confine them
 # buys nothing on a runner that is deleted at the end of the job, and costs a
 # class of AppArmor denial that reads like a bug in the XML vcows rendered.

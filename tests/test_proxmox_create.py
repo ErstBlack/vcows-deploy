@@ -165,7 +165,7 @@ def test_the_created_vm_is_the_body_the_cluster_accepted(
     pve_cfg, session, world, prepared
 ):
     """The whole body, not one key at a time. This is the shape PVE 8.4.0 took in
-    the #198 dry run (`docs/tofu-eval-2026-09-02.md` section 4) with this
+    the #198 dry run (M4) with this
     config's names and MAC substituted, so a key renamed or a value flipped here
     is a parameter no cluster was ever measured accepting -- and PVE ignores what
     it does not recognise rather than refusing it.
