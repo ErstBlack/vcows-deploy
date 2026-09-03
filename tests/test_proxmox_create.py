@@ -26,11 +26,8 @@ IMAGE_BYTES = b"QFI\xfb" + b"\x00" * 508 + b"golden image body"
 SEED_BYTES = {"app01": b"app01 seed iso" * 40, "app02": b"app02 seed iso" * 40}
 
 
-@pytest.fixture(autouse=True)
-def _no_polling_delay(monkeypatch):
-    """proxmoxer's task poller sleeps once per wait. Fine against a cluster,
-    pure latency here."""
-    monkeypatch.setattr(api, "POLL_INTERVAL", 0)
+#: Every test here waits on a fake task. See `conftest._no_polling_delay`.
+pytestmark = pytest.mark.usefixtures("_no_polling_delay")
 
 
 @pytest.fixture

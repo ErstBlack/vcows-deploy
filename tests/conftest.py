@@ -18,6 +18,7 @@ confirmed free on the rig.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import re
@@ -25,6 +26,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from orchestrator.backends.proxmox import api
+from tests.fake_proxmox import FakeProxmox
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -126,6 +130,41 @@ def wheres(problems) -> list[str]:
 
 def messages(problems) -> str:
     return "\n".join(str(p) for p in problems)
+
+
+def errors(problems) -> list:
+    """The fatal half of a problem list.
+
+    `Problem.fatal` is `severity is Severity.ERROR`, which is what the two schema
+    suites spelled two different ways for the same set.
+    """
+    return [p for p in problems if p.fatal]
+
+
+def dumped(tfvars: dict) -> str:
+    """A rendered values dict as its golden file holds it."""
+    return json.dumps(tfvars, indent=2, sort_keys=True) + "\n"
+
+
+def session(w: FakeProxmox) -> api.Session:
+    """A `Session` onto a `FakeProxmox`, with `PROXMOX_CONFIG`'s node and stores."""
+    return api.Session(
+        prox=w, node="pve1", datastore="local-lvm", import_datastore="local"
+    )
+
+
+@pytest.fixture
+def _no_polling_delay(monkeypatch):
+    """proxmoxer's task poller sleeps once per wait. Fine against a cluster,
+    pure latency here.
+
+    Opt-in rather than autouse: `POLL_INTERVAL` is what
+    `test_proxmox_backend.py` reads to assert `wait` passes it through, so
+    zeroing it for the whole suite would make that gate agree with itself
+    whatever the value is. The two modules that wait on fake tasks name it in
+    their `pytestmark`.
+    """
+    monkeypatch.setattr(api, "POLL_INTERVAL", 0)
 
 
 def pytest_configure(config) -> None:

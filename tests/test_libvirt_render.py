@@ -7,7 +7,6 @@ show up as a diff instead of as a passing test.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ import pytest
 from orchestrator.backends.libvirt import render as render_mod
 from orchestrator.backends.libvirt.render import render
 from orchestrator.marker import Marker
+from tests.conftest import dumped
 
 GOLDEN = Path(__file__).parent / "golden" / "libvirt.tfvars.json"
 
@@ -30,10 +30,6 @@ def prepared():
         },
         "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
     }
-
-
-def dumped(tfvars: dict) -> str:
-    return json.dumps(tfvars, indent=2, sort_keys=True) + "\n"
 
 
 def test_matches_the_golden_file(cfg, prepared):

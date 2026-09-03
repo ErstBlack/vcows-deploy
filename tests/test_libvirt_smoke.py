@@ -182,9 +182,9 @@ def qemu_img(path: str) -> str:
 #: line from `assert_domain`, and pytest reports one result per pair, which is
 #: what the hand-rolled ok/FAIL accumulator existed to provide.
 PRESENT = [
-    ("the domain runs under TCG, not KVM", "<domain type='qemu'"),
-    ("the marker survived DomainDefineXML", "urn:vcows:1"),
-    ("the marker carries the id destroy discovers by", MARKER_ID),
+    pytest.param("<domain type='qemu'", id="the domain runs under TCG, not KVM"),
+    pytest.param("urn:vcows:1", id="the marker survived DomainDefineXML"),
+    pytest.param(MARKER_ID, id="the marker carries the id destroy discovers by"),
     # The firmware pin, read off what libvirtd stored rather than off the plan.
     # The second needle is the whole varstore element -- template attribute,
     # directory and .fd suffix -- so it is also what proves the element is there
@@ -198,42 +198,51 @@ PRESENT = [
     # fills `firmware='efi'` back) stores the element without it. Both are the
     # pinned loader reaching the domain verbatim, so either form passes; a
     # needle is a string or a tuple of acceptable strings.
-    (
-        "the pinned raw loader reached the domain verbatim",
+    pytest.param(
         (
             f"<loader readonly='yes' type='pflash'>{LOADER}</loader>",
             f"<loader readonly='yes' type='pflash' format='raw'>{LOADER}</loader>",
         ),
+        id="the pinned raw loader reached the domain verbatim",
     ),
-    (
-        "the varstore path follows the raw template's suffix",
+    pytest.param(
         f"template='{NVRAM_TEMPLATE}'>{NVRAM_DIR}/{DOMAIN}_VARS.fd<",
+        id="the varstore path follows the raw template's suffix",
     ),
-    ("acpi reached the domain", "<acpi/>"),
-    ("apic reached the domain", "<apic/>"),
-    (
-        "the hpet timer is off, as this host's own guests have it",
+    pytest.param("<acpi/>", id="acpi reached the domain"),
+    pytest.param("<apic/>", id="apic reached the domain"),
+    pytest.param(
         "<timer name='hpet' present='no'/>",
+        id="the hpet timer is off, as this host's own guests have it",
     ),
-    ("the guest clock follows the host in UTC", "<clock offset='utc'>"),
-    ("the overlay disk passes discard=unmap", "discard='unmap'"),
+    pytest.param("<clock offset='utc'>", id="the guest clock follows the host in UTC"),
+    pytest.param("discard='unmap'", id="the overlay disk passes discard=unmap"),
     # No trailing `/>` on these two. libvirt writes `<source file='...'
     # index='2'/>` for a running domain, so matching the self-closing form
     # asserted the index rather than the path -- measured, and the only two
     # assertions the fifth CI run failed. The path is the claim: destroy parses
     # `<source file=>`, and a create emitting a volume name rather than the path
     # the pool gave it is what this is guarding against.
-    (
-        "the root disk is the overlay's path, not its name",
+    pytest.param(
         f"<source file='{POOL_DIR}/{OVERLAY_VOL}'",
+        id="the root disk is the overlay's path, not its name",
     ),
-    ("the cdrom is the seed volume's path", f"<source file='{POOL_DIR}/{SEED_VOL}'"),
-    ("the root disk is vda on virtio", "<target dev='vda' bus='virtio'/>"),
-    ("the seed is sda on sata", "<target dev='sda' bus='sata'/>"),
-    ("the seed is read-only", "<readonly/>"),
-    ("the domain carries a virtio-rng reading /dev/urandom", "/dev/urandom"),
-    ("the NIC carries the derived MAC", f"<mac address='{MAC}'/>"),
-    (f"the NIC is on the {NETWORK} network", f"<source network='{NETWORK}'"),
+    pytest.param(
+        f"<source file='{POOL_DIR}/{SEED_VOL}'",
+        id="the cdrom is the seed volume's path",
+    ),
+    pytest.param(
+        "<target dev='vda' bus='virtio'/>", id="the root disk is vda on virtio"
+    ),
+    pytest.param("<target dev='sda' bus='sata'/>", id="the seed is sda on sata"),
+    pytest.param("<readonly/>", id="the seed is read-only"),
+    pytest.param(
+        "/dev/urandom", id="the domain carries a virtio-rng reading /dev/urandom"
+    ),
+    pytest.param(f"<mac address='{MAC}'/>", id="the NIC carries the derived MAC"),
+    pytest.param(
+        f"<source network='{NETWORK}'", id=f"the NIC is on the {NETWORK} network"
+    ),
 ]
 
 #: The absences, and both are matched against the `<nvram>` line rather than the
@@ -267,14 +276,14 @@ ABSENT = [
     # `tests/fake_libvirt.py` records the XML it is handed and never reads
     # anything back, so it can only pin that vcows does not declare these two --
     # never what libvirtd does with the varstore afterwards.
-    (
-        "libvirt omits format='raw' from the varstore, which is why "
-        "firmware_xml must not declare it",
+    pytest.param(
         "format='raw'",
+        id="libvirt omits format='raw' from the varstore, which is why "
+        "firmware_xml must not declare it",
     ),
-    (
-        "libvirt omits templateFormat from the varstore, for every value",
+    pytest.param(
         "templateFormat",
+        id="libvirt omits templateFormat from the varstore, for every value",
     ),
 ]
 
@@ -317,16 +326,12 @@ class TestApplied:
 
     # -- the domain ----------------------------------------------------------
 
-    @pytest.mark.parametrize(
-        "needle", [needle for _, needle in PRESENT], ids=[what for what, _ in PRESENT]
-    )
+    @pytest.mark.parametrize("needle", PRESENT)
     def test_the_domain_xml_carries(self, domain_xml, needle):
         forms = (needle,) if isinstance(needle, str) else needle
         assert any(form in domain_xml for form in forms), forms
 
-    @pytest.mark.parametrize(
-        "needle", [needle for _, needle in ABSENT], ids=[what for what, _ in ABSENT]
-    )
+    @pytest.mark.parametrize("needle", ABSENT)
     def test_the_varstore_omits(self, varstore, needle):
         assert needle not in varstore
 

@@ -13,13 +13,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.backends.proxmox import schema
-from orchestrator.problems import Severity
-from tests.conftest import messages, wheres
-
-
-def errors(problems):
-    return [p for p in problems if p.severity is Severity.ERROR]
-
+from tests.conftest import errors, messages, wheres
 
 # -- the credential ----------------------------------------------------------
 
