@@ -205,7 +205,7 @@ def _root_logger():
     `configure_logging()` before the ones that assert on a line, repairing it by
     luck. Under a shuffled suite it surfaces as
     `test_every_line_carries_a_level_and_a_logger` failing because the line
-    carries the entrypoint's `orchestrator.cli:` rather than `_Short`'s `cli`.
+    carries the entrypoint's `orchestrator.cli:` rather than `%(module)s`'s `cli`.
 
     Same argument as `_umask` below, and the same remedy: global process state a
     test mutates has to be handed back.

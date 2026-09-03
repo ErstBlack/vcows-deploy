@@ -124,16 +124,24 @@ def test_quiet_mode_drops_the_report_and_keeps_the_problems(monkeypatch, capsys)
 # -- the shape of a line ---------------------------------------------------
 
 
-def test_every_line_carries_a_level_and_a_logger(capsys):
+def test_every_line_carries_a_level_and_a_logger(capsys, monkeypatch):
     """The whole point of the migration: one channel, and the level is what
-    tells the operator which kind of line they are looking at."""
-    logging.getLogger("orchestrator.cli").warning("something degraded")
+    tells the operator which kind of line they are looking at.
+
+    Emitted from `limits._ceiling` rather than from this file, because
+    `%(module)s` names the file the call came from: a line this module logged
+    through a package logger would read `test_logging`, which is true and tells
+    nothing about the shape a real run writes.
+    """
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", "0")
+    limits._ceiling("VCOWS_MAX_VCPUS", 512)
     line = capsys.readouterr().err.strip()
     assert "WARNING" in line
-    # The module, not the dotted path: 38 characters of shared prefix on every
-    # line is what `_Short` exists to remove.
-    assert "cli" in line and "orchestrator.cli" not in line
-    assert line.endswith("something degraded")
+    # The module, not the dotted path: `orchestrator.` on every line is shared
+    # prefix that says nothing, and being variable width it moves the message
+    # column around and defeats the padding.
+    assert "limits" in line and "orchestrator.limits" not in line
+    assert line.endswith("Using 512.")
     # ISO-8601 UTC with milliseconds -- a preflight puts four lines in one second.
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z ", line), line
 
@@ -183,41 +191,26 @@ def test_configuring_twice_does_not_double_a_line(capsys):
     assert capsys.readouterr().err.count("once") == 1
 
 
-def test_configure_logging_installs_the_format_rather_than_inheriting_one(capsys):
+def test_configure_logging_installs_the_format_rather_than_inheriting_one(
+    capsys, monkeypatch
+):
     """The whole line shape, asserted after an explicit call.
 
     Every other assertion in this file reads a line produced by the handler the
     *package import* installed, so nothing covered `configure_logging` putting the
     formatter on. Replace it with the default one and the timestamp, the level and
-    the `short` column all vanish while the rest of the file still passes.
+    the module column all vanish while the rest of the file still passes.
     """
     orchestrator.configure_logging()
     capsys.readouterr()
-    logging.getLogger("orchestrator.cli").warning("a line")
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", "0")
+    limits._ceiling("VCOWS_MAX_VCPUS", 512)
     line = capsys.readouterr().err.strip()
     assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z WARNING\s+cli\s+a line", line
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z WARNING\s+limits\s+"
+        r"ignoring VCOWS_MAX_VCPUS='0': not a positive integer\. Using 512\.",
+        line,
     ), line
-
-
-@pytest.mark.parametrize(
-    "name, short",
-    [
-        ("orchestrator.backends.libvirt.preflight", "preflight"),
-        ("orchestrator.cli", "cli"),
-        # The `vcows` logger in `orchestrator/__init__.py` has no dot in it at
-        # all, so an index of 1 into the split is an IndexError rather than a
-        # differently-wrong name.
-        ("vcows", "vcows"),
-    ],
-)
-def test_short_is_the_last_segment_however_deep_the_name(name, short):
-    """`rsplit(".", 1)[-1]`, and both halves of it matter. Every other assertion
-    here uses `orchestrator.cli`, whose two segments make `split` and `rsplit`,
-    and `[-1]` and `[1]`, agree."""
-    record = logging.LogRecord(name, logging.INFO, __file__, 0, "m", (), None)
-    assert orchestrator._Short().filter(record) is True
-    assert vars(record)["short"] == short
 
 
 # -- the one thing that is not a log line ----------------------------------
