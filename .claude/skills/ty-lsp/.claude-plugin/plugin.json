@@ -1,0 +1,6 @@
+{
+  "name": "ty-lsp",
+  "description": "Runs `ty server` from the checkout's own .venv as the Python language server, so per-edit diagnostics come from the same `ty` that `just typecheck` and CI run. Resolved through ${CLAUDE_PROJECT_DIR}, so a session started inside a worktree uses that worktree's venv; a mid-session worktree switch keeps the launch checkout's binary, because CLAUDE_PROJECT_DIR does not follow the switch.",
+  "version": "0.1.0",
+  "author": { "name": "ssullivan" }
+}
