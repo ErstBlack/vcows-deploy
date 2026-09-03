@@ -67,6 +67,7 @@ def test_a_user_without_a_password_is_refused_at_the_password(pve_cfg):
     problems = errors(schema.validate(pve_cfg))
     assert len(problems) == 1
     assert problems[0].where == "target.proxmox.password"
+    assert "password" in problems[0].message
 
 
 def test_a_password_without_a_user_is_refused_at_the_user_without_echoing_it(pve_cfg):
@@ -75,6 +76,7 @@ def test_a_password_without_a_user_is_refused_at_the_user_without_echoing_it(pve
     problems = errors(schema.validate(pve_cfg))
     assert len(problems) == 1
     assert problems[0].where == "target.proxmox.user"
+    assert "user" in problems[0].message
     assert "SUPERSECRETVALUE" not in messages(problems)
 
 
