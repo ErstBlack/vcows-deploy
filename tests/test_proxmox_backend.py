@@ -204,49 +204,6 @@ def test_an_api_failure_is_re_raised_as_our_own_error(pve_cfg, monkeypatch, pve_
         api.cluster_vms(session)
 
 
-def test_the_session_is_closed_even_when_the_body_raises(
-    pve_cfg, monkeypatch, pve_token
-):
-    closed = {"n": 0}
-
-    class Closable(FakeProxmox):
-        @property
-        def _backend(self):
-            class B:
-                @staticmethod
-                def get_session():
-                    class S:
-                        @staticmethod
-                        def close():
-                            closed["n"] += 1
-
-                    return S()
-
-            return B()
-
-    import proxmoxer
-
-    monkeypatch.setattr(proxmoxer, "ProxmoxAPI", lambda host, **kw: Closable())
-    with pytest.raises(RuntimeError), api.connect(pve_cfg):
-        raise RuntimeError("something in the body")
-    assert closed["n"] == 1
-
-
-def test_a_client_with_no_closable_session_is_not_fatal(
-    pve_cfg, fake_proxmoxer, pve_token
-):
-    """`_close` reaches through a private attribute, so it is guarded: proxmoxer
-    is free to move it and a failed close must never fail a run.
-
-    `FakeProxmox` has no `_backend`, so the guarded call raises inside `_close`
-    on the way out of the block below -- the session still has to arrive, and
-    leaving the block still has to be uneventful.
-    """
-    with api.connect(pve_cfg) as session:
-        assert isinstance(session, api.Session)
-    assert fake_proxmoxer["verify_ssl"] is True
-
-
 def test_the_task_wait_carries_our_ceiling_rather_than_proxmoxers(
     pve_cfg, pve_token, monkeypatch
 ):

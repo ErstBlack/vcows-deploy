@@ -126,22 +126,6 @@ def connect(cfg: dict):
         raise ProxmoxApiError(f"{host} rejected the {TOKEN_ENV} token: {exc}") from exc
     except ResourceException as exc:
         raise ProxmoxApiError(f"{host}: {exc}") from exc
-    finally:
-        _close(prox)
-
-
-def _close(prox: Any) -> None:
-    """Best effort. proxmoxer exposes no ``close``, and this is a short-lived CLI.
-
-    Reached through the backend's private session rather than left undone,
-    because a run that opens a connection and never releases its socket is the
-    kind of thing that only shows up under a supervisor that reuses the process.
-    Guarded, because it is private and may move.
-    """
-    try:
-        prox._backend.get_session().close()
-    except Exception as exc:
-        log.debug("could not close the API session: %s", exc)
 
 
 def wait(session: Session, upid: str, what: str) -> None:
