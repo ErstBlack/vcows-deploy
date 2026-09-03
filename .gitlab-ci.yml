@@ -72,8 +72,14 @@ check:
 # docs/mutation-baseline.json and fails only when a number rose.
 mutation:
   stage: check
-  # Measured on 16 cores: 3835 mutants in 156s. A shared runner has fewer, so
-  # this is several times that; the ceiling is sized against a wedge.
+  # Five shards of one run, summed by `mutation-verdict` below. `parallel: 5`
+  # sets CI_NODE_INDEX to 1..5 and CI_NODE_TOTAL to 5 -- GitLab's index is
+  # 1-based, which is why scripts/mutants.sh's `k` is. Measured over 5008 mutants
+  # on a 16-core box: 944/1060/1033/999/972 per shard. Never executed here, so
+  # the parallel and needs behaviour is from GitLab's documentation.
+  #
+  # Measured unsharded on a hosted GitHub runner: 8m31s, of which the mutant loop
+  # is 7m53s. The ceiling is sized against a wedge, not a slow run.
   #
   # **No `mutants/` cache**, deliberately, and the reason is in
   # .github/workflows/ci.yml rather than repeated here: mutmut hashes source
@@ -81,10 +87,44 @@ mutation:
   # -- silently green in the direction that matters. `cache:key:files` takes at
   # most two files, so keying on `tests/` is not available here in any case.
   timeout: 30m
+  parallel: 5
   cache: [*tools_cache, *uv_cache]
+  variables:
+    VCOWS_MUTANTS_SHARD: "$CI_NODE_INDEX/$CI_NODE_TOTAL"
   script:
     - *bootstrap
     - just mutants
+  # What makes the shard worth running: its numbers mean something only summed
+  # with the other four. scripts/mutants.sh names the file after the shard, so
+  # five parallel jobs writing one artifact path do not overwrite each other.
+  artifacts:
+    paths:
+      - .cache/mutation-stats/
+    expire_in: 1 day
+
+# Where a sharded run becomes a verdict, and a job rather than a step because
+# the shards share nothing but their artifacts: each holds part of the count and
+# none can apply the gate. `just mutants-verdict` sums the five stats files and
+# asserts the sum accounts for every mutant mutmut generated -- generation_floor's
+# argument in sharded form, which is what catches a shard that checked nothing or
+# an artifact that never arrived.
+#
+# `needs: [mutation]` pulls every parallel job's artifacts. Never executed, so
+# that is from GitLab's documentation rather than from a run.
+mutation-verdict:
+  stage: check
+  needs: [mutation]
+  timeout: 15m
+  cache: [*tools_cache]
+  # Not *bootstrap: that anchor's third line is `just dev-env`, and the verdict
+  # is jq over five small files -- no venv, no mutants/ tree. The same job in
+  # .github/workflows/ci.yml differs in one respect: it receives those files as
+  # job outputs, because that account's artifact storage quota refused the
+  # uploads. Here the artifacts above are the seam.
+  script:
+    - ./scripts/os-deps.sh
+    - ./scripts/install-tools.sh
+    - just mutants-verdict
 
 # The end-to-end gate. It deploys against a libvirtd installed on the runner and
 # asserts against `virsh dumpxml`. The domain runs under TCG, so no /dev/kvm is

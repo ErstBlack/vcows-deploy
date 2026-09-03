@@ -95,9 +95,14 @@ bundle:
 # survivors, exit 0), so a recipe that only called it would be green forever.
 # See pyproject.toml for what used to stop it completing and what fixed it.
 #
-# Measured on 16 cores: 3835 mutants in 156s. A hosted runner has 4, so budget
-# roughly four times that on a cold cache; mutmut re-tests only the mutants whose
-# function changed, so a warm one is far less.
+# Measured on 16 cores: 5008 mutants in 2m07s. A hosted runner has fewer and took
+# 8m31s for the same work, of which the mutant loop was 7m53s. mutmut re-tests
+# only the mutants whose function changed, so a warm tree is far less.
+#
+# CI does not run this recipe whole any more: five parallel jobs each set
+# VCOWS_MUTANTS_SHARD to their k/5 and `just mutants-verdict` sums what they
+# leave behind. A local run sets nothing and stays one full run. The sharding
+# note in scripts/mutants.sh has the reasoning.
 
 # `just mutants --write-baseline` records the current numbers in
 # docs/mutation-baseline.json: a deliberate act with a reason in the commit
@@ -106,6 +111,12 @@ bundle:
 # Mutation testing, failing only on a regression against the baseline.
 mutants *ARGS:
     ./scripts/mutants.sh {{ARGS}}
+
+# Needs jq and the files the shard jobs left in .cache/mutation-stats/, and
+# neither a venv nor a mutants/ tree.
+# The verdict over a sharded CI run: the shard stats summed, then the baseline gate.
+mutants-verdict:
+    ./scripts/mutants.sh --verdict .cache/mutation-stats
 
 # Machine-local recipes, if this box has any. `import?` is silent when the file
 # is absent, which is every CI runner; what a box keeps there is its own

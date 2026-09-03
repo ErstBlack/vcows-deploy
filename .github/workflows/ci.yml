@@ -62,11 +62,57 @@ jobs:
   # rose. Red means this change made the suite blinder, which is a question about
   # the change and belongs on the pull request rather than in a monthly job
   # nobody opens.
+  #
+  # Five shards of one run, summed by `mutation-verdict` below. Measured on run
+  # 33800120376, before sharding: `just mutants` took 8m31s, of which generation
+  # was 16s, the stats and clean and forced-fail runs 20s, and the mutant loop
+  # 7m53s over 4983 mutants. The loop is 93% of the job, per-mutant fixed cost is
+  # ~65 ms of warm pytest, and the only lever left is cores -- which on the Free
+  # plan means more runners rather than a bigger one.
+  #
+  # Measured sharded, on the same runners: the `just mutants` step is 1m54s and
+  # the whole job 2m13s. Generation is 14s and the stats phase ~18s of that, so
+  # the loop is about 80s for shard 1's 944 mutants, at 11.7 mutants/second
+  # against 58.97 on a 16-core box. The fixed ~35s each shard repeats is the
+  # price of the split. Measured whole (run 33809956735): shard jobs 1m59s to
+  # 2m44s, the slowest of them queued 37s late, the verdict 19s, and the run
+  # green in 3m45s where the unsharded job alone took 8m31s.
   mutation:
     runs-on: ubuntu-latest
-    # Measured on 16 cores: 3835 mutants in 156s. A hosted runner has 4, so a cold
-    # cache is roughly four times that plus the bootstrap. The ceiling is sized
-    # against a wedge rather than a slow run, like `check`'s.
+    # `VCOWS_MUTANTS_SHARD=k/5` takes the mutants whose ordinal ends in a digit
+    # `d` with `d % 5 == k-1`: one glob, no listing step, and the reasoning is in
+    # the header of scripts/mutants.sh. Measured over 5008 mutants on a 16-core
+    # box: 944/1060/1033/999/972 per shard, so the largest shard carries 21% of
+    # the work rather than 20%.
+    #
+    # `fail-fast: false` because a red shard must not cancel the other four. The
+    # verdict needs every shard's numbers, and a cancelled shard reaches it as a
+    # smaller set of numbers, which is to say a better-looking one.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    # The shards' numbers, carried to the verdict as job outputs rather than as
+    # artifacts: every upload-artifact step here failed with "Artifact storage
+    # quota has been hit" (job 100822624337), because the 500 MB is shared across
+    # the account and recalculated every 6 to 12 hours, so bundles deleted hours
+    # ago still occupy it. Outputs have their own 1 MB per job, and five stats
+    # objects are a few hundred bytes.
+    #
+    # Each matrix job sets only its own key; the other four evaluate to empty in
+    # it, and GitHub keeps the non-empty value across the matrix. That last claim
+    # is the one this shape rests on and it is measured by this run, not by the
+    # documentation. A cancelled or failed shard leaves its key empty, which the
+    # verdict's sum check fails on -- the same check that catches a shard that
+    # ran nothing.
+    outputs:
+      stats-1: ${{ steps.mutants.outputs.stats-1 }}
+      stats-2: ${{ steps.mutants.outputs.stats-2 }}
+      stats-3: ${{ steps.mutants.outputs.stats-3 }}
+      stats-4: ${{ steps.mutants.outputs.stats-4 }}
+      stats-5: ${{ steps.mutants.outputs.stats-5 }}
+    # Still 30, and still sized against a wedge rather than a slow run, like
+    # `check`'s: a shard is now a fifth of the work, not a fifth of the ceiling.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -100,7 +146,51 @@ jobs:
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
+      # A shard judges nothing: its numbers mean something only summed with the
+      # other four. `id:` is what lets the job's `outputs:` above read the
+      # `stats-<k>` line scripts/mutants.sh appends to $GITHUB_OUTPUT.
       - run: just mutants
+        id: mutants
+        env:
+          VCOWS_MUTANTS_SHARD: ${{ matrix.shard }}/5
+
+  # Where a sharded run becomes a verdict. A job rather than a step because
+  # matrix jobs share nothing: each shard holds part of the count and none of
+  # them can apply the gate.
+  #
+  # `just mutants-verdict` sums the five stats files and asserts the sum accounts
+  # for every mutant mutmut generated. That equality is `generation_floor`'s
+  # argument in sharded form -- it is what catches a shard that checked nothing
+  # and one whose numbers never arrived, neither of which any single shard sees.
+  #
+  # The five numbers arrive as `needs.mutation.outputs`, not as artifacts, for
+  # the quota reason the `outputs:` block above records (job 100822624337).
+  # scripts/mutants.sh writes each non-empty one back into a shard file, so the
+  # summing code is the same one GitLab's artifacts feed.
+  #
+  # No `just dev-env` and no uv cache: the verdict is jq over five small files,
+  # and it needs neither the venv nor a mutants/ tree.
+  mutation-verdict:
+    runs-on: ubuntu-latest
+    needs: mutation
+    # Nothing here runs a test -- it is the bootstrap plus jq -- so the ceiling
+    # is sized against a wedge rather than a slow run, like `check`'s.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - run: just mutants-verdict
+        env:
+          VCOWS_MUTANTS_STATS_1: ${{ needs.mutation.outputs.stats-1 }}
+          VCOWS_MUTANTS_STATS_2: ${{ needs.mutation.outputs.stats-2 }}
+          VCOWS_MUTANTS_STATS_3: ${{ needs.mutation.outputs.stats-3 }}
+          VCOWS_MUTANTS_STATS_4: ${{ needs.mutation.outputs.stats-4 }}
+          VCOWS_MUTANTS_STATS_5: ${{ needs.mutation.outputs.stats-5 }}
 
   # The end-to-end gate. It deploys against a libvirtd installed on the runner
   # and asserts against `virsh dumpxml` and `qemu-img info` rather than against
