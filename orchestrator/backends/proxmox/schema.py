@@ -33,7 +33,6 @@ from ...cloudinit import (
     check_addressing,
     check_vm_structure,
     nic_checks_are_safe,
-    seed_name,
 )
 from ...imagecheck import check_disk_capacity, check_image_digest
 from ...limits import MAX_DISK_GB, MAX_MEMORY_MIB, MAX_VCPUS
@@ -286,12 +285,10 @@ def _check_nics(
 
 
 def _check_image_name(cfg: dict) -> list[Problem]:
-    """The uploaded image's filename, and the one name a seed ISO must not have.
+    """The uploaded image's filename.
 
-    Both are warnings. The first is a claim about how a remote PVE validates an
-    upload, which has not been measured against a live one; the second cannot
-    currently fire, and says so, because it is the check that would catch it if
-    `cloudinit.seed_name` ever changed.
+    A warning, because it is a claim about how a remote PVE validates an upload,
+    which has not been measured against a live one.
     """
     problems: list[Problem] = []
     name = cfg["image"]["base_volume_name"]
@@ -305,17 +302,4 @@ def _check_image_name(cfg: dict) -> list[Problem]:
                 where="image.base_volume_name",
             )
         )
-    for i, vm in enumerate(cfg["vms"]):
-        if not isinstance(vm, dict) or not isinstance(vm.get("name"), str):
-            continue
-        if re.match(r"^vm-\d+-cloudinit\.iso\Z", seed_name(vm["name"])):
-            problems.append(
-                Problem.warning(
-                    f"{vm['name']!r} derives a seed ISO named "
-                    f"{seed_name(vm['name'])!r}. Proxmox pattern-matches that "
-                    f"name, assumes it owns the file, and fails the VM's start "
-                    f"task trying to regenerate it.",
-                    where=f"vms[{i}].name",
-                )
-            )
     return problems
