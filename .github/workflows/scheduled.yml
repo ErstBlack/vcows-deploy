@@ -76,7 +76,10 @@ jobs:
       #
       # A `uses:`, so `workflows_carry_no_logic` in scripts/lint.sh still passes:
       # it inspects run/script/before_script/after_script and not uses.
+      # Disabled until release: each upload is a full delivery bundle and the
+      # repository's artifact storage quota filled. Drop the `if` to re-enable.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: false
         with:
           name: delivery-${{ github.sha }}
           path: .cache/delivery/
