@@ -1,9 +1,8 @@
 # The image gate, on master and on any PR that touches the image's inputs.
 #
-# tests/test_image.py is the only thing exercising the air-gap properties -- the
-# provider resolved from the baked mirror with no `direct` block, the RPM binding
-# visible to the interpreter that actually runs, `init` not rewriting the
-# committed lock, the plugin cache keeping .terraform out of every run directory.
+# tests/test_image.py is the only thing exercising the air-gap properties -- both
+# create paths importing with the network off, the RPM binding visible to the
+# interpreter that actually runs.
 # Gating it to post-merge would validate a Containerfile change only after review
 # had already passed on it.
 #
@@ -22,8 +21,6 @@ on:
       - 'Containerfile'
       - '.containerignore'
       - 'container/**'
-      - 'orchestrator/backends/libvirt/tofu/**'
-      - 'docs/provider-*.lock.hcl'
       - 'licenses/**'
       - 'scripts/image-*.sh'
       # The gate's own machinery and the file it reads, both of which decide
@@ -71,7 +68,6 @@ jobs:
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
-      - run: just mirror
       - run: just image
       # podman is present on ubuntu-latest, and the gate needs a runtime rather
       # than a builder: buildah builds this Containerfile fine, but `buildah run`

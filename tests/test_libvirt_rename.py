@@ -25,7 +25,7 @@ import yaml
 
 from orchestrator import cli
 from orchestrator.backends.libvirt import preflight
-from tests.conftest import CONFIG, MIRROR, NEEDS_TOFU, TOFU, require, tofu_env
+from tests.conftest import CONFIG
 from tests.test_libvirt_boot import _stand_in
 from tests.test_libvirt_rig import RIG, needs_rig
 
@@ -85,7 +85,6 @@ def outcome(tmp_path_factory):
     two still tears down, and it is asserted on so a leftover is a failure here
     and not something the next run trips over.
     """
-    require("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
     assert RIG is not None  # every test here is behind needs_rig
     tmp = tmp_path_factory.mktemp("rename")
 
@@ -103,23 +102,17 @@ def outcome(tmp_path_factory):
     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     before = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
-    env = tofu_env(tmp)
-    with pytest.MonkeyPatch.context() as patch:
-        for name in ("TF_CLI_CONFIG_FILE", "no_proxy"):
-            patch.setenv(name, env[name])
-        assert cli.main(["deploy", str(path), "--run-dir", str(tmp / "deploy")]) == 0
-        try:
-            deployed = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
-            hv_name = _hv_name(deployed["domains"] - before["domains"])
-            _rename(cfg, hv_name, RENAMED)
-            renamed = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
-        finally:
-            assert (
-                cli.main(
-                    ["destroy", str(path), "--yes", "--run-dir", str(tmp / "destroy")]
-                )
-                == 0
-            )
+    assert cli.main(["deploy", str(path), "--run-dir", str(tmp / "deploy")]) == 0
+    try:
+        deployed = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
+        hv_name = _hv_name(deployed["domains"] - before["domains"])
+        _rename(cfg, hv_name, RENAMED)
+        renamed = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
+    finally:
+        assert (
+            cli.main(["destroy", str(path), "--yes", "--run-dir", str(tmp / "destroy")])
+            == 0
+        )
     after = {"volumes": _volumes(cfg), "domains": _domains(cfg)}
     yield {
         "before": before,

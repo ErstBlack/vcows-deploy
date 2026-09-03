@@ -1,4 +1,4 @@
-"""Teardown, through the API rather than through OpenTofu.
+"""Teardown, through the API.
 
 Same shape and the same guarantees as the libvirt backend's: every object is
 accounted for in an ``Outcome`` whether the run succeeds or not, the marker is

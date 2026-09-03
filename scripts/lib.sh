@@ -1,12 +1,9 @@
 # Sourced by every script in here. Not executable, and deliberately holds no
 # commands of its own -- sourcing something that acts is how a `--help` ends up
-# rebuilding a mirror.
+# rebuilding an image.
 #
 # **Versions are read out of the Containerfile, never redeclared.** The image is
-# the deliverable, so it owns the pin; a script that repeated `1.12.6` would let
-# CI test a different OpenTofu than the one that ships, silently, for as long as
-# it took someone to notice. `tests/test_image.py` asserts the image's own tofu
-# version, so the two halves of that claim now come from one place.
+# the deliverable, so it owns the pin.
 
 # Every variable here is consumed by a *caller*, which shellcheck cannot see when
 # it lints this file alone. The callers are checked with `shellcheck -x`, which
@@ -24,8 +21,8 @@ IFS=$'\n\t'
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO
 
-# Tool binaries this repo installs for itself. `.tools/` is already gitignored as
-# the provider mirror's home, so the bin directory needs no new rule.
+# Tool binaries this repo installs for itself. `.tools/` is already gitignored,
+# so the bin directory needs no new rule.
 TOOLS_BIN="$REPO/.tools/bin"
 readonly TOOLS_BIN
 PATH="$TOOLS_BIN:$PATH"
@@ -39,21 +36,6 @@ export UV_CACHE_DIR="$REPO/.cache/uv"
 PY="$REPO/.venv/bin/python"
 readonly PY
 
-# The libvirt module. Still named `MODULE` and still the libvirt one, because
-# every caller that wants *the* module -- smoke-libvirt.sh, verify-provider.sh --
-# means that one. Callers that want all of them use `backend_modules`.
-MODULE="$REPO/orchestrator/backends/libvirt/tofu"
-MIRROR="$REPO/.tools/tofu-mirror"
-readonly MODULE
-
-# Every backend's OpenTofu module, one path per line. Discovered rather than
-# listed: the layout is `backends/<name>/tofu` by convention, so a list here
-# would be a second place to forget when a backend is added.
-backend_modules() {
-    find "$REPO/orchestrator/backends" -mindepth 2 -maxdepth 2 -type d -name tofu \
-        | sort
-}
-
 log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -61,7 +43,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Which installer provides which tool, for `need`'s message. Data rather than
 # case arms: an entry nothing has asked for yet costs a line of a table, where an
 # arm nothing reaches is a dead branch, and adding a tool is one entry instead of
-# editing control flow. Seven of the twelve below are not passed to `need` from
+# editing control flow. Six of the twelve below are not passed to `need` from
 # anywhere in the tree today.
 #
 # **Keyed by command, not by package, and it cannot be generated from either
@@ -74,7 +56,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 declare -rA TOOL_INSTALLER=(
     [jq]=os-deps             [curl]=os-deps        [unzip]=os-deps
     [git]=os-deps            [xorriso]=os-deps     [shellcheck]=os-deps
-    [uv]=install-tools       [just]=install-tools  [tofu]=install-tools
+    [uv]=install-tools       [just]=install-tools
     [hadolint]=install-tools [trivy]=install-tools [syft]=install-tools
     [gitleaks]=install-tools
 )
@@ -144,9 +126,8 @@ worktree_tag() {
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # One `ARG NAME=value` out of the Containerfile. Fails loudly rather than
-# returning empty: an unset version silently becomes a URL like
-# `.../download/v/tofu__amd64.rpm`, which 404s in a way that reads like a
-# network problem rather than a parsing one.
+# returning empty: an unset value reads downstream like a network or runtime
+# problem rather than a parsing one.
 containerfile_arg() {
     local name="$1" value
     value="$(sed -n "s/^ARG ${name}=//p" "$REPO/Containerfile" | head -1)"
@@ -180,38 +161,14 @@ image_tag() {
     printf '%s\n' "localhost/vcows-deploy:$version${suffix:+-$suffix}"
 }
 
-# The provider version a module pins. Derived rather than hardcoded: a bump
-# renames docs/provider-<version>.lock.hcl, and a literal 0.9.8 here would
-# quietly stop watching the file that ships.
-#
-# Takes a module directory, defaulting to the libvirt one so every existing
-# caller keeps its meaning -- which is why SC2120 is silenced rather than fixed:
-# most callers correctly pass nothing.
-# shellcheck disable=SC2120
-provider_version() {
-    local module="${1:-$MODULE}" version
-    version="$(sed -n 's/.*version *= *"= *\([0-9.]*\)".*/\1/p' "$module/main.tf" | head -1)"
-    [ -n "$version" ] || die "no pinned provider version in $module/main.tf"
-    printf '%s\n' "$version"
-}
-
-# The provider a module pins, as `namespace/name`.
-# shellcheck disable=SC2120
-provider_source() {
-    local module="${1:-$MODULE}" src
-    src="$(sed -n 's/.*source *= *"\([^"]*\)".*/\1/p' "$module/main.tf" | head -1)"
-    [ -n "$src" ] || die "no provider source in $module/main.tf"
-    printf '%s\n' "$src"
-}
-
 # The commit the shipped tree is at, with a `-dirty` suffix when anything the
 # image actually carries is modified. One definition, so the manifest the image
 # records and the name of the delivery bundle cannot claim different commits.
 #
 # The set is every path that reaches the image. That is the Containerfile's COPY
 # sources, plus the Containerfile and .containerignore themselves: those two
-# decide the base digest, the OpenTofu RPM and its checksum, the provider digest,
-# the whole dnf install list and every OCI label. Leaving them out let a build
+# decide the base digest, the whole dnf install list and every OCI label.
+# Leaving them out let a build
 # from an edited Containerfile record a clean 40-hex SHA for a commit that did
 # not describe the image, which is the exact failure the suffix exists to catch.
 # Both path filters already treat them as image inputs, so this also stops the
@@ -220,14 +177,12 @@ provider_source() {
 # Paths that cannot reach the image -- docs/, tests/ -- stay out on purpose. A
 # suffix that fires for everything means nothing.
 source_revision() {
-    local provider ship sha dirt
+    local ship sha dirt
     # The two git calls below are the reason: the comment on `dirt` explains that
     # a *failing* git has to reach `set -e` rather than read as a clean tree. A
     # missing git takes that same path and names nothing, so name it here.
     need git
-    provider="$(provider_version)"
-    ship=(orchestrator container licenses Containerfile .containerignore
-          "docs/provider-${provider}.lock.hcl")
+    ship=(orchestrator container licenses Containerfile .containerignore)
     sha="$(git -C "$REPO" rev-parse HEAD)"
     # Assigned on its own line, then tested. Inside `[ -n "$(git ...)" ]` a git
     # that fails is indistinguishable from a clean tree: the substitution comes

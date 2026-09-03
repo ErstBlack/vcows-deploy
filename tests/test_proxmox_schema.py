@@ -106,8 +106,7 @@ def test_http_is_refused_because_the_token_is_a_bearer_credential(pve_cfg):
     ],
 )
 def test_credentials_in_the_endpoint_are_refused(pve_cfg, endpoint):
-    """The netloc travels verbatim into the tfvars, which sit in the run
-    directory. Same refusal, and the same reason, as the libvirt backend's."""
+    """Same refusal, and the same reason, as the libvirt backend's."""
     pve_cfg["target"]["proxmox"]["endpoint"] = endpoint
     problems = errors(schema.validate(pve_cfg))
     assert "no credentials" in messages(problems)

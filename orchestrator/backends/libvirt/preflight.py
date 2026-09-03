@@ -348,10 +348,9 @@ def walk(pool: Any) -> tuple[dict[str, dict[str, Any]], list[Problem]]:
 def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem]]:
     """Resolve the shared golden image: present or not, and where.
 
-    This is the fact ``prepare`` and ``render`` cannot discover for themselves --
-    nothing in HCL can read a pool, ``tofu import`` probes by the path we are
-    looking for, and the pool's target directory is a property of somebody else's
-    pool. It travels in ``Discovered.artifacts`` and lands in ``var.base_volume``.
+    This is the fact ``prepare`` and ``render`` cannot discover for themselves:
+    the pool's target directory is a property of somebody else's pool. It travels
+    in ``Discovered.artifacts`` and lands in ``render``'s ``base_volume``.
 
     **D30: a present base volume is verified, not trusted.** An interrupted upload
     leaves a truncated qcow2 whose header still declares the full virtual size, so

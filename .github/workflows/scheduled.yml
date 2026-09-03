@@ -64,7 +64,6 @@ jobs:
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
-      - run: just mirror
       - run: just image
       - run: just scan
       - run: just bundle

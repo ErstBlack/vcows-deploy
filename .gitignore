@@ -9,17 +9,10 @@ __pycache__/
 # build here is pinned.
 *.egg-info/
 
-# Run directories: state, inventory, seed ISOs, tofu JSON streams.
+# Run directories: inventory, seed ISOs, run records.
 runs/
 
-# OpenTofu working state. The lock file is committed deliberately
-# (docs/provider-0.9.8.lock.hcl); this is the initialised tree.
-.terraform/
-*.tfstate
-*.tfstate.backup
-
-# Dev-box provider mirror. Rebuildable from docs/provider-0.9.8.lock.hcl;
-# the real one is baked into the image at /opt/tofu-mirror.
+# Pinned tool binaries, rebuildable with scripts/install-tools.sh.
 .tools/
 
 # Mutation-testing scratch tree, rebuilt by every `mutmut run`.
@@ -37,10 +30,6 @@ mutants/
 # removed -- git marks these worktrees locked, so they are in use.
 .claude/worktrees/
 
-# `tofu providers lock` writes this into whichever directory it runs in. The
-# module's real lock ships from docs/provider-0.9.8.lock.hcl, and a stray one
-# here would make every later image build compute a `-dirty` SHA.
-.terraform.lock.hcl
 
 # Hypothesis's example database, rebuilt as the property tests run.
 .hypothesis/

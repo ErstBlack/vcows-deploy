@@ -83,10 +83,6 @@ No recipe produces this. It is not in `just bundle` and nothing fails if it is
 missing. It is the licence obligation, so a delivery without it is incomplete
 even though every gate is green.
 
-The provider's licence and provenance are already vendored in the image at
-`/opt/vcows/licenses/dmacvicar-libvirt/`; upstream ships no `LICENSE` in 0.9.x
-and the note there explains why that is a gap rather than a revocation.
-
 ## Checklist
 
 1. `just image`

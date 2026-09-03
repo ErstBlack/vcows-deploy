@@ -5,10 +5,9 @@
 #   scripts/image-scan.sh --write-baseline   record what is there now as accepted
 #
 # **Differential, not absolute.** A gate that fails on HIGH would be red from the
-# first run and stay red: the pinned tofu and provider binaries carry HIGH CVEs
-# in the golang.org/x/crypto/ssh they statically link, and no pipeline can fix
-# that -- only a version bump can. An always-red gate gets muted within a month,
-# and then it is green by neglect, which is the failure this repo already has a
+# first run and stay red on findings no pipeline can fix -- only a version bump
+# can. An always-red gate gets muted within a month, and then it is green by
+# neglect, which is the failure this repo already has a
 # name for. So docs/cve-baseline.json holds what has been looked at and accepted,
 # and this fails only on what is new. Red means new.
 #
@@ -17,9 +16,8 @@
 # until it doesn't. The archive is written once and read by trivy, syft, and
 # whatever signs it later.
 #
-# syft is here because it is the only tool that sees inside the two Go binaries:
-# manifest.py runs `rpm -qa`, which cannot reach a statically linked module list,
-# and the provider is not an RPM at all.
+# syft is here because manifest.py runs `rpm -qa`, which sees only what dnf
+# installed.
 
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -52,7 +50,8 @@ save_archive() {
 # The floors are structural, not vulnerability counts: an image with genuinely
 # zero CVEs must still pass. What cannot legitimately happen is a report with no
 # results section at all, or an SBOM with no packages for an image that carries
-# several hundred. Measured at the current pins: 3 Results, 456 packages.
+# several hundred. Measured at the pins that shipped the Go binaries: 3 Results,
+# 456 packages.
 scan_floor() {
     local report="$1" sbom="$2" results packages
     results="$(jq '(.Results // []) | length' "$report")"
@@ -110,7 +109,7 @@ main() {
               --arg generated "$(now_utc || true)" \
               --argjson accepted "$found" \
               '{image: $image, generated: $generated,
-                note: "Findings reviewed and accepted at this image. Most live in the statically linked golang.org/x/crypto/ssh inside /usr/bin/tofu and the vendored terraform-provider-libvirt, and can only be cleared by bumping those pins. Anything not listed here fails scripts/image-scan.sh.",
+                note: "Findings reviewed and accepted at this image. Anything not listed here fails scripts/image-scan.sh.",
                 accepted: $accepted}' > "$BASELINE"
         log "wrote $(basename "$BASELINE") with $(jq 'length' <<<"$found" || true) accepted findings"
         return
@@ -145,18 +144,16 @@ main() {
     # report is well-formed and simply about something else.
     #
     # **A proportion, and the proportion is measured.** trivy emits one Results
-    # entry per analyser x target. This image has three, in two disjoint
-    # families: os-pkgs over the rocky layer, and lang-pkgs over the two Go
-    # binaries. Measured against the real report, rocky shares no id with either
-    # binary, so an analyser that stops running takes 45 or 56 of the 100 with
-    # it -- a large slice, and never the whole set. Equality needs *both*
-    # families to fail at once, and a report with no Results at all is
-    # scan_floor's job already, so the equality this used to test sat where
-    # nothing realistic lands. `* 3` first fires at 34 of 100: below the 45 an
-    # emptied gobinary analyser costs, and 33 clear of the 1 a real scan reports
-    # today. Halving was measured and rejected -- it first fires at 51, above
-    # the 45 it exists to catch. Multiplication rather than `accepted / 3` so
-    # the firing point does not depend on how integer division rounds.
+    # entry per analyser x target. The measurement below was taken while the
+    # image still carried the Go binaries: three entries in two disjoint
+    # families, os-pkgs over the rocky layer and lang-pkgs over the binaries.
+    # rocky shared no id with either binary, so an analyser that stopped running
+    # took 45 or 56 of the 100 with it -- a large slice, and never the whole
+    # set. `* 3` first fires at 34 of 100: below the 45 an emptied gobinary
+    # analyser cost, and 33 clear of the 1 a real scan reported. Halving was
+    # measured and rejected -- it first fires at 51, above the 45 it exists to
+    # catch. Multiplication rather than `accepted / 3` so the firing point does
+    # not depend on how integer division rounds.
     #
     # Proportional rather than a constant, so trimming the baseline is not also
     # a threshold edit. Those numbers were measured at 100 accepted ids. At the

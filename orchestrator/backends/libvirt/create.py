@@ -1,23 +1,23 @@
-"""The apply, through python3-libvirt. Not `tofu apply`.
+"""The apply, through python3-libvirt.
 
-One function per resource the OpenTofu module declared, in the order its
-dependency edges imposed: the base volume when the host does not already have
-it, then per VM a seed ISO, an overlay and a domain. Ported from the #198 spike,
-which created a VM on the rig, booted it, and had it torn down by the shipped
-``vcows destroy`` -- so the XML here is the XML that was measured, and it mirrors
+One function per resource, in dependency order: the base volume when the host
+does not already have it, then per VM a seed ISO, an overlay and a domain.
+Ported from the #198 spike, which created a VM on the rig, booted it, and had it
+torn down by the shipped ``vcows destroy`` -- so the XML here is the XML that
+was measured, and it mirrors
 ``libvirt_domain.vm`` block by block, including the firmware exclusivity that
 resource's ``os`` block was commented for.
 
 **The upload is dense, and there is no second path.** On the golden image
 ``vol.upload`` plus ``stream.sendAll`` and
 ``VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM`` plus ``sparseSendAll`` both took 2.5 s
-(tofu-eval M3): 617 MiB is allocated of 646 MB, so there are no holes for the
-sparse stream to skip, and it would be a second code path earning nothing.
+(``docs/tofu-eval-2026-09-02.md`` M3): 617 MiB is allocated of 646 MB, so there
+are no holes for the sparse stream to skip, and it would be a second code path
+earning nothing.
 
 **Nothing is rolled back.** A ``libvirtError`` is re-raised with the resource
-it failed on named in its message, which is what the provider did too -- state is
-what let tofu resume, and here the marker plus ``preflight.orphan_volumes`` is
-what lets a later run see the leftovers.
+it failed on named in its message, and the marker plus
+``preflight.orphan_volumes`` is what lets a later run see the leftovers.
 
 ``import libvirt`` stays inside the functions that need it, for the reason
 ``__init__`` gives: importing the registry must not drag the binding in.
@@ -219,9 +219,7 @@ def _made(what: str) -> Iterator[None]:
 def create(conn: Any, tfvars: dict) -> dict:
     """Create everything ``render`` described, and report it as the inventory.
 
-    Keyed by the logical name, with the same four fields the module's
-    ``outputs.tf`` emitted, so ``inventory.json`` is unchanged by the move off
-    OpenTofu.
+    Keyed by the logical name, with the four fields ``inventory.json`` carries.
     """
     pool = conn.storagePoolLookupByName(tfvars["pool"])
     base = tfvars["base_volume"]

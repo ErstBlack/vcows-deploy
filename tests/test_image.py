@@ -1,11 +1,9 @@
 """The image, with the network switched off.
 
 Gated on ``VCOWS_IMAGE``, skipped with an explicit reason -- never silently,
-following ``needs_rig`` and ``needs_tofu``. A gate that quietly passes because it
-did not run is worse than no gate, and this one covers the failures that only ever
-appear at a site: a provider that is not really in the mirror, a CLI config the
-container never reads, and an RPM binding invisible to the interpreter that
-actually runs.
+following ``needs_rig``. A gate that quietly passes because it did not run is
+worse than no gate, and this one covers the failure that only ever appears at a
+site: an RPM binding invisible to the interpreter that actually runs.
 
 Everything here runs ``--network=none``. That is the point: the build host is
 connected and the site is not, so any dependency the build left dangling has to
@@ -19,9 +17,6 @@ import os
 import re
 import shutil
 import subprocess
-import textwrap
-
-import pytest
 
 from orchestrator import VERSION
 from tests.conftest import REPO, WORKTREE, gate
@@ -44,8 +39,6 @@ pytestmark = gate(
     "buildah cannot substitute: this gate asserts ENTRYPOINT, WORKDIR and "
     "per-run isolation, and `buildah run` provides none of the three",
 )
-
-GOLDEN = REPO / "tests" / "golden" / "libvirt.tfvars.json"
 
 CONFIG = """\
 schema_version: 1
@@ -98,7 +91,6 @@ def test_the_image_runs_with_no_network():
     # Every vcows line is a log line on stderr now; stdout carries only
     # `_confirm`'s interactive prompt, which no verb here reaches.
     assert VERSION in result.stderr
-    assert "tofu 1.12.6" in result.stderr
 
 
 def test_the_rpm_binding_is_visible_to_the_interpreter_that_runs():
@@ -108,7 +100,8 @@ def test_the_rpm_binding_is_visible_to_the_interpreter_that_runs():
     `python3 -c 'import libvirt'` kept working elsewhere on the same box."""
     result = run(
         "-c",
-        "import libvirt, yaml, jsonschema, pycdlib; print(libvirt.getVersion())",
+        "import libvirt, yaml, jsonschema, pycdlib, proxmoxer, requests_toolbelt; "
+        "print(libvirt.getVersion())",
         entrypoint="python3",
     )
     assert result.returncode == 0, result.stderr
@@ -122,85 +115,6 @@ def test_validate_runs_offline(tmp_path):
     result = run("validate", "/config.yaml", mounts=[(config, "/config.yaml")])
     assert result.returncode == 0, result.stdout + result.stderr
     assert "valid" in result.stderr
-
-
-# -- the R2 gate ------------------------------------------------------------
-
-GATE = textwrap.dedent("""\
-    set -e
-    mod=/opt/vcows/orchestrator/backends/libvirt/tofu
-    mkdir -p /tmp/mod && cd /tmp/mod
-    cp $mod/*.tf $mod/.terraform.lock.hcl .
-    cp /vars.json ./main.auto.tfvars.json
-    tofu init -input=false -no-color
-    tofu validate -no-color
-    python3 -c "
-import pathlib, sys
-a = pathlib.Path('/tmp/mod/.terraform.lock.hcl').read_text()
-b = pathlib.Path('$mod/.terraform.lock.hcl').read_text()
-sys.exit(0 if a == b else 'init rewrote the committed lock')
-"
-    echo GATE-INIT-OK
-    tofu plan -input=false -no-color
-""")
-
-
-@pytest.fixture(scope="module")
-def gate():
-    """One offline init -> validate -> plan against the real libvirt module.
-
-    The plugin cache is disabled for this run *on purpose*. The image ships a warm
-    one, and with it `init` is satisfied before it ever consults the mirror -- so
-    leaving it on would quietly turn the air-gap assertion below into a test of the
-    cache. Disabling it puts the mirror back on the only path.
-    """
-    return run(
-        "-c",
-        GATE,
-        entrypoint="sh",
-        mounts=[(GOLDEN, "/vars.json")],
-        env={"TF_PLUGIN_CACHE_DIR": ""},
-    )
-
-
-def test_the_provider_installs_from_the_baked_mirror_offline(gate):
-    """The whole air-gap story in one assertion. There is no `direct` block in
-    the CLI config, so if the mirror were incomplete this could not fall back --
-    which is the intent: fail here, loudly, rather than resolve DNS at a site."""
-    output = gate.stdout + gate.stderr
-    assert "GATE-INIT-OK" in output, output
-    assert "Installed dmacvicar/libvirt v0.9.8" in output
-    assert "Success! The configuration is valid." in output
-
-
-def test_init_did_not_rewrite_the_committed_lock(gate):
-    """A lock produced against a registry records different hashes than one
-    produced against a mirror, and the mismatch reads like corruption (R6)."""
-    assert "init rewrote the committed lock" not in gate.stdout + gate.stderr
-
-
-CACHE_GATE = textwrap.dedent("""\
-    set -e
-    mod=/opt/vcows/orchestrator/backends/libvirt/tofu
-    mkdir -p /tmp/run && cd /tmp/run
-    cp $mod/*.tf $mod/.terraform.lock.hcl .
-    tofu init -input=false -no-color > /dev/null
-    du -sk .terraform | cut -f1
-""")
-
-
-def test_the_plugin_cache_keeps_the_provider_out_of_every_run_directory():
-    """Without it, `init` copies a 26 MB provider into the working directory --
-    and D40 makes that a brand new directory on every single deploy, so the cost
-    recurs for the life of the deployment. With the cache warmed at build time,
-    `.terraform` is symlinks and the run directory carries only its own artifacts.
-    """
-    result = run("-c", CACHE_GATE, entrypoint="sh")
-    assert result.returncode == 0, result.stderr
-    kilobytes = int(result.stdout.strip().splitlines()[-1])
-    assert kilobytes < 1024, (
-        f".terraform is {kilobytes} KiB; the cache is not being used"
-    )
 
 
 # -- what the image says about itself ---------------------------------------
@@ -245,8 +159,7 @@ def built_revision() -> str:
     image the Containerfile no longer described (#63).
 
     ``scripts/lib.sh`` is sourceable by design -- its own header says it holds
-    no commands of its own -- so ``source_revision`` can be asked directly. It
-    also interpolates the pinned provider version, which the copy hardcoded.
+    no commands of its own -- so ``source_revision`` can be asked directly.
 
     Returns the ``-dirty`` form on a modified tree, which is exactly what the
     build writes, so there is no case where this cannot be compared.
@@ -281,17 +194,13 @@ def test_the_build_manifest_records_what_shipped():
         f"the image was built from {manifest['git_sha']}, this tree is {revision}; "
         f"rebuild before trusting the gate"
     )
-    assert manifest["tofu"]["terraform_version"] == "1.12.6"
-    assert manifest["provider"]["version"] == "0.9.8"
-    assert manifest["provider"]["lock_hash"].startswith("h1:")
     assert manifest["base_image"]["digest"].startswith("sha256:")
 
     packages = {p["name"] for p in manifest["packages"]}
-    assert {"python3-libvirt", "python3-pycdlib", "tofu", "openssh-clients"} <= packages
+    assert {"python3-libvirt", "python3-pycdlib", "openssh-clients"} <= packages
     # The vendor field exists to make the EPEL entries findable: the sidecar is a
     # reposync, and pycdlib comes from a different repository than everything
-    # else in the closure. (`tofu` carries no vendor at all -- it is a GitHub
-    # release RPM, not a distribution package -- so this names the two that do.)
+    # else in the closure.
     vendors = {p["name"]: p["vendor"] for p in manifest["packages"]}
     assert vendors["python3-pycdlib"] == "Fedora Project"
     assert vendors["python3-libvirt"] == "Rocky Enterprise Software Foundation"
@@ -307,22 +216,6 @@ def test_the_build_manifest_records_what_shipped():
         "not source RPM filenames: "
         f"{sorted(s for s in manifest['source_rpms'] if not s.endswith('.src.rpm'))}"
     )
-
-
-def test_the_provider_licence_travels_with_the_provider():
-    """R3: 0.9.x ships no LICENSE file, and Apache-2.0 §4(a) puts the obligation
-    on the redistributor regardless."""
-    result = run(
-        "-c",
-        "import pathlib;"
-        "d = pathlib.Path('/opt/vcows/licenses/dmacvicar-libvirt');"
-        "print((d / 'LICENSE').read_text()[:200]);"
-        "print((d / 'PROVENANCE.md').read_text()[:400])",
-        entrypoint="python3",
-    )
-    assert result.returncode == 0, result.stderr
-    assert "Apache License" in result.stdout
-    assert "no `LICENSE` file" in result.stdout
 
 
 def test_containerignore_keeps_a_nested_worktree_out_of_the_build_context(tmp_path):

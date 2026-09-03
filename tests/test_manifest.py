@@ -1,16 +1,14 @@
-"""Every claim the build manifest makes, and the two that were once wrong.
+"""Every claim the build manifest makes, and the one that was once wrong.
 
-`packages()` and `tofu_version()` shell out to `rpm` and `tofu`, so only the
-image can run them for real -- `test_image.test_the_build_manifest_records_what_shipped`
-is what checks the shipped file, behind the image gate. What is checked here is
-the shape either one is asked for and what `main()` does with the answer, against
-a faked `subprocess.run`: the `(none)` sentinel filter and the `source_rpms`
+`packages()` shells out to `rpm`, so only the image can run it for real --
+`test_image.test_the_build_manifest_records_what_shipped` is what checks the
+shipped file, behind the image gate. What is checked here is the shape it is
+asked for and what `main()` does with the answer, against a faked
+`subprocess.run`: the `(none)` sentinel filter and the `source_rpms`
 deduplication are both measured behaviours that nothing asserted until now.
 
-`git_sha` and `provider` need no faking and are the two that were wrong: the git
-SHA the image built at `e5d5a2c` recorded for a tree it did not match, and the
-provider block that came from build args rather than from the lock the deploy
-installs from.
+`git_sha` needs no faking and is the one that was wrong: the git SHA the image
+built at `e5d5a2c` recorded for a tree it did not match.
 
 Ungated and offline. `container/manifest.py` imports nothing but the standard
 library, on purpose -- it runs before the application exists.
@@ -26,9 +24,6 @@ import pytest
 
 from container import manifest
 from tests.conftest import REPO
-
-LOCK = REPO / "docs" / "provider-0.9.8.lock.hcl"
-PVE_LOCK = REPO / "docs" / "provider-0.111.1.lock.hcl"
 
 CLEAN = "15e8dcfe0139e134093cb35f4e5c66760bb0d086"
 
@@ -69,73 +64,6 @@ def test_an_unset_git_sha_is_unknown_rather_than_a_crash(monkeypatch):
     assert manifest.git_sha() == "unknown"
 
 
-# -- the provider ------------------------------------------------------------
-
-
-def test_the_provider_is_read_from_the_lock_the_deploy_installs_from(monkeypatch):
-    """Not from the ARGs. They are two records of one fact, and only one of them
-    reaches `tofu init` -- so a manifest reading the other can name a provider the
-    image does not contain."""
-    monkeypatch.setenv("PROVIDER_LOCK", str(LOCK))
-    monkeypatch.setenv("PROVIDER_SHA256", "0" * 64)
-
-    found = manifest.provider()
-    assert found["version"] == "0.9.8"
-    assert found["lock_hash"] == "h1:yqZeKoJ+EZc3687/+ZBqBmtwzvBPLNwaEHW74+bSc6Y="
-    assert found["artifact_sha256"] == "0" * 64
-
-
-def test_the_remaining_arg_still_agrees_with_the_lock():
-    """`PROVIDER_VERSION` survives only because the build's `sha256sum -c` names
-    the mirrored zip by version. It is the last place the two can drift."""
-    declared = re.search(
-        r"^ARG PROVIDER_VERSION=(\S+)$", (REPO / "Containerfile").read_text(), re.M
-    )
-    assert declared is not None
-    assert declared.group(1) == "0.9.8"
-
-
-def test_the_containerfile_states_the_provider_version_once():
-    """What makes the docstring above true. The lock `COPY` used to spell the
-    version out, and `just verify-provider` reads neither that line nor the
-    header comment -- so a bump that satisfied all four of its checks could still
-    bake the previous lock, which `container/manifest.py` would then report as
-    the provider (#118). Interpolating the `COPY` source removed the record; this
-    stops it coming back."""
-    text = (REPO / "Containerfile").read_text()
-    declared = re.search(r"^ARG PROVIDER_VERSION=(\S+)$", text, re.M)
-    assert declared is not None
-    version = declared.group(1)
-
-    stated = [line for line in text.splitlines() if version in line]
-    assert stated == [f"ARG PROVIDER_VERSION={version}"], (
-        f"the Containerfile states {version} in more than one place: {stated}"
-    )
-    assert re.findall(r"provider-\d+\.\d+\.\d+\.lock\.hcl", text) == [], (
-        "the lock filename carries a literal version again; interpolate "
-        "${PROVIDER_VERSION} instead"
-    )
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        'provider "x" {\n  version = "0.9.8"\n}\n',  # no hash
-        'provider "x" {\n  hashes = ["h1:abc="]\n}\n',  # no version
-        "",
-    ],
-)
-def test_a_lock_that_does_not_say_fails_the_build(tmp_path, monkeypatch, text):
-    """A build that cannot describe its provider must not produce an image that
-    describes it wrongly. `SystemExit` out of a `RUN` step is a failed build."""
-    lock = tmp_path / ".terraform.lock.hcl"
-    lock.write_text(text)
-    monkeypatch.setenv("PROVIDER_LOCK", str(lock))
-
-    with pytest.raises(SystemExit):
-        manifest.provider()
-
-
 # -- the two shellouts -------------------------------------------------------
 
 
@@ -162,8 +90,8 @@ def row(name, source, version="1.0-1.el10", license_="MIT", vendor="Fedora Proje
 
 @pytest.fixture
 def run(monkeypatch):
-    def _install(rpm_rows=(), tofu='{"terraform_version": "1.10.6"}'):
-        fake = _Run({"rpm": "".join(f"{r}\n" for r in rpm_rows), "tofu": tofu})
+    def _install(rpm_rows=()):
+        fake = _Run({"rpm": "".join(f"{r}\n" for r in rpm_rows)})
         monkeypatch.setattr(manifest.subprocess, "run", fake)
         return fake
 
@@ -202,18 +130,6 @@ def test_a_package_rpm_gives_no_source_for_is_still_recorded(run):
     assert manifest.packages()[0]["source_rpm"] == manifest.NO_TAG
 
 
-def test_the_tofu_version_is_the_json_tofu_printed(run):
-    fake = run(tofu='{"terraform_version": "1.10.6", "platform": "linux_amd64"}')
-
-    assert manifest.tofu_version() == {
-        "terraform_version": "1.10.6",
-        "platform": "linux_amd64",
-    }
-    argv, kwargs = fake.calls[0]
-    assert argv == ["tofu", "version", "-json"]
-    assert kwargs == {"capture_output": True, "text": True, "check": True}
-
-
 # -- the assembled manifest --------------------------------------------------
 
 
@@ -223,8 +139,6 @@ BUILT = {
     "BUILD_DATE": "2026-09-01T00:00:00Z",
     "BASE_IMAGE": "quay.io/centos/centos:stream10",
     "BASE_DIGEST": "sha256:" + "0" * 64,
-    "PROVIDER_SHA256": "1" * 64,
-    "PROVIDER_LOCK": str(LOCK),
 }
 
 
@@ -252,8 +166,6 @@ def test_the_manifest_records_the_build_it_was_run_by(built, run, capsys):
         "name": "quay.io/centos/centos:stream10",
         "digest": "sha256:" + "0" * 64,
     }
-    assert found["provider"]["artifact_sha256"] == "1" * 64
-    assert found["tofu"] == {"terraform_version": "1.10.6"}
     assert [p["name"] for p in found["packages"]] == ["zlib"]
 
 
@@ -263,7 +175,6 @@ def test_the_manifest_records_the_build_it_was_run_by(built, run, capsys):
         ("BUILD_DATE", "built"),
         ("BASE_IMAGE", "base_image.name"),
         ("BASE_DIGEST", "base_image.digest"),
-        ("PROVIDER_SHA256", "provider.artifact_sha256"),
     ],
 )
 def test_a_build_arg_the_build_did_not_pass_reads_unknown(
@@ -329,34 +240,7 @@ def test_the_manifest_is_written_to_be_diffed(built, run, capsys):
     assert raw == json.dumps(found, indent=2, sort_keys=True) + "\n"
 
 
-# -- every provider, and the one package rpm cannot see ----------------------
-
-
-def test_providers_names_both_backends_from_their_own_locks(monkeypatch):
-    """`provider()` can only ever describe one, and the image now installs two.
-    Both are read from the lock the deploy installs from rather than from build
-    args, for the reason the single-provider test above records."""
-    monkeypatch.setenv("PROVIDER_LOCK", str(LOCK))
-    monkeypatch.setenv("PROVIDER_SHA256", "0" * 64)
-    monkeypatch.setenv("PVE_PROVIDER_LOCK", str(PVE_LOCK))
-    monkeypatch.setenv("PVE_PROVIDER_SHA256", "1" * 64)
-
-    found = manifest.providers()
-    assert [p["source"] for p in found] == [
-        "registry.opentofu.org/dmacvicar/libvirt",
-        "registry.opentofu.org/bpg/proxmox",
-    ]
-    assert [p["version"] for p in found] == ["0.9.8", "0.111.1"]
-    assert found[1]["lock_hash"].startswith("h1:")
-    assert found[1]["artifact_sha256"] == "1" * 64
-
-
-def test_a_build_without_the_proxmox_lock_reports_only_libvirt(monkeypatch):
-    """The list is what the *image* carries. A build that shipped one provider
-    must not claim two -- that is the same untruth as the git SHA."""
-    monkeypatch.setenv("PROVIDER_LOCK", str(LOCK))
-    monkeypatch.delenv("PVE_PROVIDER_LOCK", raising=False)
-    assert len(manifest.providers()) == 1
+# -- the one package rpm cannot see -----------------------------------------
 
 
 def test_the_vendored_wheel_is_reported_because_rpm_cannot_see_it(monkeypatch):
@@ -381,9 +265,8 @@ def test_a_build_that_vendored_nothing_reports_nothing(monkeypatch):
 
 
 def test_the_containerfile_and_the_provenance_note_agree_on_the_wheel():
-    """Two records of one fact, which is how one of them goes stale.
-    `just verify-provider` checks the same pair; this is the half that runs in
-    the default suite, with no mirror and no image."""
+    """Two records of one fact, which is how one of them goes stale. Runs in
+    the default suite, with no image."""
     text = (REPO / "Containerfile").read_text()
     version = re.search(r"^ARG PROXMOXER_VERSION=(\S+)$", text, re.M)
     digest = re.search(r"^ARG PROXMOXER_SHA256=(\S+)$", text, re.M)
@@ -395,18 +278,3 @@ def test_the_containerfile_and_the_provenance_note_agree_on_the_wheel():
     # The URL must name the version the ARG pins, or the build downloads one
     # wheel while every record describes another.
     assert f"proxmoxer-{version.group(1)}-py3-none-any.whl" in text
-
-
-def test_the_containerfile_states_the_proxmox_provider_version_once():
-    """Same rule as the libvirt provider's: a literal survives a bump that
-    updated every other place, and the manifest would then truthfully report a
-    provider nobody meant to ship."""
-    text = (REPO / "Containerfile").read_text()
-    declared = re.search(r"^ARG PVE_PROVIDER_VERSION=(\S+)$", text, re.M)
-    assert declared is not None
-    version = declared.group(1)
-    stated = [ln for ln in text.splitlines() if version in ln and "ARG " in ln]
-    assert stated == [f"ARG PVE_PROVIDER_VERSION={version}"], (
-        f"the Containerfile spells {version} somewhere beyond its ARG: {stated}. "
-        f"Use ${{PVE_PROVIDER_VERSION}} instead"
-    )

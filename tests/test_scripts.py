@@ -31,7 +31,7 @@ CVE gate had just rejected.
 
 No `conftest.gate()`. `bash` is not an optional dependency -- `test_image.py` and
 `test_seed_iso.py` already shell out -- and `test_gates.py`'s `KNOWN` is a
-closed set of five names, so a gate here would be a skip nothing could ever
+closed set of six names, so a gate here would be a skip nothing could ever
 demand. Unconditional is what gives these teeth.
 """
 
@@ -160,14 +160,11 @@ def _bundle_tree(tmp_path: Path, stamp: str | None) -> Path:
     """A tree `bundle.sh` runs to completion in, `stamp` becoming `.cache/scan/PASSED`.
 
     `None` writes no stamp at all. Past the precondition the script reaches
-    `source_revision` (`lib.sh`), which parses the module's `main.tf` for the
-    pinned provider version and calls `git rev-parse HEAD`; neither is what these
-    tests are about, and both stand between the precondition and the delivery.
+    `source_revision` (`lib.sh`), which calls `git rev-parse HEAD`; that is not
+    what these tests are about, and it stands between the precondition and the
+    delivery.
     """
     tree = _tree(tmp_path, "bundle.sh")
-    module = tree / "orchestrator" / "backends" / "libvirt" / "tofu"
-    module.mkdir(parents=True)
-    (module / "main.tf").write_text('      version = "= 0.9.8"\n')
     scan = tree / ".cache" / "scan"
     scan.mkdir(parents=True)
     _fake_archive(scan / "image.tar", ARCHIVE_REVISION)
@@ -479,7 +476,11 @@ def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
 #: not install is worse than the bare message.
 NEED_ROWS = [
     ("os-deps", "curl", "curl not on PATH -- run scripts/os-deps.sh"),
-    ("install-tools", "tofu", "tofu not on PATH -- run scripts/install-tools.sh"),
+    (
+        "install-tools",
+        "hadolint",
+        "hadolint not on PATH -- run scripts/install-tools.sh",
+    ),
     ("assumed-present", "gzip", "gzip not on PATH"),
     ("neither-installer", "qemu-img", "qemu-img not on PATH"),
     ("unheard-of", "nosuchtool", "nosuchtool not on PATH"),
@@ -496,7 +497,7 @@ def test_need_names_the_installer_that_provides_the_missing_tool(
 ):
     """`need` against an empty PATH, which is how a tool is made absent here.
 
-    Seven of `TOOL_INSTALLER`'s twelve entries are not passed to `need` from
+    Six of `TOOL_INSTALLER`'s twelve entries are not passed to `need` from
     anywhere in the tree, so this is the only thing that reaches them. An entry
     whose hint is wrong is worse than no entry, and nothing else would say.
     """
@@ -511,17 +512,13 @@ def test_need_names_the_installer_that_provides_the_missing_tool(
         assert "run scripts/" not in done.stderr, done.stderr
 
 
-#: The six `install-tools.sh` walks, in `main`'s order. `syft` is last, which is
+#: The five `install-tools.sh` walks, in `main`'s order. `syft` is last, which is
 #: what makes it the marker for "the run got past the tool under test".
-PINNED_TOOLS = ("uv", "just", "tofu", "hadolint", "trivy", "syft")
-
-#: `install-tools.sh`'s `main` reads TOFU_VERSION out of the Containerfile rather
-#: than pinning it, so the fixture has to carry one.
-TOOLS_CONTAINERFILE = CONTAINERFILE + "ARG TOFU_VERSION=1.12.6\n"
+PINNED_TOOLS = ("uv", "just", "hadolint", "trivy", "syft")
 
 
 def _tools_tree(tmp_path: Path, **bodies: str) -> Path:
-    """A scratch root where all six pinned tools are already on PATH.
+    """A scratch root where all five pinned tools are already on PATH.
 
     On PATH but *not* in `.tools/bin`: `installed` is tested before `have`, so a
     fake in `.tools/bin` returns at "already in .tools/bin" and never reaches
@@ -529,9 +526,9 @@ def _tools_tree(tmp_path: Path, **bodies: str) -> Path:
     nothing, so nothing here touches /usr/local/bin or reaches for sudo.
 
     Every tool prints a dotted version unless `bodies` overrides it, so one test
-    can make one tool misbehave and read the other five as the control.
+    can make one tool misbehave and read the other four as the control.
     """
-    tree = _tree(tmp_path, "install-tools.sh", containerfile=TOOLS_CONTAINERFILE)
+    tree = _tree(tmp_path, "install-tools.sh")
     fakebin = tree / "fakebin"
     fakebin.mkdir()
     for tool in PINNED_TOOLS:

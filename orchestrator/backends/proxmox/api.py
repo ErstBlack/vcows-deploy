@@ -97,10 +97,8 @@ def connect(cfg: dict):
             f"{TOKEN_ENV} is unset or malformed; expected 'user@realm!tokenid=<secret>'"
         )
 
-    # A bool, not a path. There is no `ca_file` in the schema, because the
-    # provider has no equivalent and half a solution is worse than none -- see
-    # schema.py. `requests` honours REQUESTS_CA_BUNDLE by itself when this is
-    # True, which is the mechanism that covers both halves of a run.
+    # A bool, not a path. There is no `ca_file` in the schema -- see schema.py.
+    # `requests` honours REQUESTS_CA_BUNDLE by itself when this is True.
     verify = not target.get("insecure", False)
 
     host = _endpoint_host(target["endpoint"])

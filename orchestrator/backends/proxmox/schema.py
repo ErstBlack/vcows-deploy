@@ -17,9 +17,9 @@ differ because Proxmox differs, and each one is the seam earning its keep:
 
 **Credentials are not in this file's schema and never in the config.** The API
 token arrives in ``PROXMOX_VE_API_TOKEN`` and nothing writes it anywhere: not the
-config, not the rendered tfvars, not ``run.json``, not the log. ``validate``
-checks that it is *present and well formed* and reports neither its value nor any
-part of it -- the shape of a token is enough to say what is wrong with it.
+config, not ``run.json``, not the log. ``validate`` checks that it is *present
+and well formed* and reports neither its value nor any part of it -- the shape
+of a token is enough to say what is wrong with it.
 """
 
 from __future__ import annotations
@@ -43,23 +43,11 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
-#: **There is deliberately no ``ca_file``.** Measured against bpg/proxmox
-#: 0.111.1 with ``tofu providers schema -json``: the provider takes ``insecure``
-#: and ``min_tls`` and has no CA-bundle option at all. A ``ca_file`` field could
-#: therefore only be honoured by vcows' own API calls, so preflight would trust a
-#: private CA and the apply would then fail -- the worst available shape, because
-#: the run gets far enough to look configured.
-#:
-#: A private CA goes in the environment instead, where both halves already look:
-#: ``SSL_CERT_FILE`` for the provider (Go's crypto/x509) and
-#: ``REQUESTS_CA_BUNDLE`` for proxmoxer (requests). One mechanism, both stacks,
-#: and the container can set it once.
+#: **There is deliberately no ``ca_file``.** A private CA goes in the environment
+#: instead, where proxmoxer already looks: ``REQUESTS_CA_BUNDLE`` (requests). One
+#: mechanism, and the container can set it once.
 
-#: **The one place the token's variable name is written.** Hardcoded rather than
-#: configurable because `tofu._env()` passes `os.environ` to the provider
-#: untouched, and `bpg/proxmox` reads exactly this name. A configurable name
-#: would have to be copied into the child environment by vcows, which means vcows
-#: handling the secret's value to move it -- the thing this design avoids.
+#: **The one place the token's variable name is written.**
 #: S105 is a false positive here: this is the *name* of an environment
 #: variable, not a credential. The value it names is never assigned in this repo.
 TOKEN_ENV = "PROXMOX_VE_API_TOKEN"  # noqa: S105
@@ -275,9 +263,8 @@ def _check_target(target: dict) -> list[Problem]:
             )
         )
     if parts.username is not None or parts.password is not None:
-        # The netloc travels verbatim into the rendered tfvars, which sit in the
-        # run directory. Same refusal, and the same reason, as the libvirt
-        # backend's password check.
+        # Same refusal, and the same reason, as the libvirt backend's password
+        # check.
         problems.append(
             Problem.error(
                 f"endpoint must carry no credentials. Authentication is the "

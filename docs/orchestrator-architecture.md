@@ -1,6 +1,8 @@
 # Portable, Air-Gapped Orchestrator Container
 ## Golden VM Deployment to vSphere, KVM/libvirt, and Proxmox VE
 
+> **2026-09-03:** OpenTofu's role here ended with #204 — both backends create through the hypervisor's own SDK — so every statement below naming OpenTofu, a provider or a `.tf` module is superseded. `docs/tofu-eval-2026-09-02.md` records the measurements behind that.
+
 **Revision 2** — adds Proxmox VE as a third backend, moves the base image to Rocky Linux 10, demotes `govc` from the critical path, formalises the four-stage architecture, and adds observability and Python-integration sections.
 
 ---

@@ -22,8 +22,6 @@ main() {
     local tag builder sha built
     tag="$(image_tag)"
 
-    [ -d "$MIRROR" ] || die "no .tools/tofu-mirror -- run 'just mirror' first"
-
     # podman preferred. buildah takes the same Containerfile and the same flags
     # (podman build is buildah underneath), so it is a fine substitute *for
     # building* -- but `just test-image` still needs podman, because the gate

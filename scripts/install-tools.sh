@@ -4,7 +4,7 @@
 # `just` on a runner that has none.
 #
 # **Pinned tarballs with hardcoded digests, not CI marketplace actions.** The
-# Containerfile already downloads OpenTofu from a pinned URL and runs
+# Containerfile already downloads its one wheel from a pinned URL and runs
 # `sha256sum -c -` before installing it; `astral-sh/setup-uv@v3` is a mutable tag
 # running somebody else's code on the runner with the job's token. Matching the
 # Containerfile's standard is the stronger of the two, and it is the reason
@@ -13,11 +13,6 @@
 # Digests below were taken from each project's own published checksums file at
 # the pinned tag. Refreshing one means fetching that file again, not trusting a
 # download.
-#
-# The tofu version is read out of the Containerfile rather than pinned here, so
-# CI cannot end up testing a different OpenTofu than the image ships. Bumping the
-# Containerfile without adding a digest below is a hard failure, which is the
-# intended way to find out.
 
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -38,7 +33,6 @@ digest() {
         trivy:0.74.0)     echo 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a ;;
         syft:1.51.1)      echo 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3 ;;
         gitleaks:8.30.1)  echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
-        tofu:1.12.6)      echo 5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8 ;;
         *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
     esac
 }
@@ -54,10 +48,6 @@ url() {
         # spells it that way, and the wrong spelling 404s rather than failing the
         # digest check, which reads as a network problem.
         gitleaks)   echo "https://github.com/gitleaks/gitleaks/releases/download/v${2}/gitleaks_${2}_linux_x64.tar.gz" ;;
-        # The .zip rather than the .rpm the image installs: one artifact that
-        # works on any runner, with no package manager and no second digest to
-        # keep in step with TOFU_RPM_SHA256.
-        tofu)       echo "https://github.com/opentofu/opentofu/releases/download/v${2}/tofu_${2}_linux_amd64.zip" ;;
     esac
 }
 
@@ -86,9 +76,9 @@ installed() {
 
 # The version a binary on PATH reports, or empty when it will not say. All six
 # put a dotted version in the first line of `--version` -- measured: `just
-# 1.46.0`, `OpenTofu v1.12.6`, `Haskell Dockerfile Linter 2.15.1`,
-# `Version: 0.74.0`, `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves all
-# six and there is no per-tool case arm to keep in step with the pins above.
+# 1.46.0`, `Haskell Dockerfile Linter 2.15.1`, `Version: 0.74.0`,
+# `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves all six and there is no
+# per-tool case arm to keep in step with the pins above.
 #
 # Two failures, and they must not read the same. A tool that prints no dotted
 # triple is the empty return this function is documented to make, and install_one
@@ -114,10 +104,10 @@ install_one() {
         return
     fi
     # A system copy is fine and is what the maintainer's Rocky box has for
-    # `just` (EPEL) and `tofu`. Only install what is genuinely missing.
+    # `just` (EPEL). Only install what is genuinely missing.
     #
     # `have` is `command -v` and says nothing about version, and this arm covers
-    # all six tools rather than the two the sentence above names -- so on any
+    # all six tools rather than the one the sentence above names -- so on any
     # box with a distro copy, the pins and digests at the top of this file are
     # advisory and the fetch machinery never runs. That is the intended
     # behaviour; being silent about it was not. Report the version beside the
@@ -193,8 +183,7 @@ expose_on_path() {
 main() {
     mkdir -p "$TOOLS_BIN"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local tofu_version entry name file listed=""
-    tofu_version="$(containerfile_arg TOFU_VERSION)"
+    local entry name file listed=""
     # One list, read twice: once to install and once to decide what does not
     # belong. `tool:version` is the same key `digest()` takes, so the two spell
     # a pair the same way. IFS here is $'\n\t' (lib.sh), so a space-separated
@@ -202,7 +191,6 @@ main() {
     local -a tools=(
         "uv:$UV_VERSION"
         "just:$JUST_VERSION"
-        "tofu:$tofu_version"
         "hadolint:$HADOLINT_VERSION"
         "trivy:$TRIVY_VERSION"
         "syft:$SYFT_VERSION"
@@ -219,8 +207,8 @@ main() {
     # notices. Measured 2026-09-02: the main checkout's .tools/bin carried
     # `cosign`, 141 MB, on no list in this repo and installed by nothing in this
     # tree -- and a copied or symlinked .tools/bin hands it to every worktree.
-    # Only regular files, so the tofu mirror's sibling directories are out of
-    # scope by construction.
+    # Only regular files, so any directory under .tools/bin is out of scope by
+    # construction.
     for file in "$TOOLS_BIN"/*; do
         [ -f "$file" ] || continue
         name="${file##*/}"

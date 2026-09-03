@@ -1,21 +1,18 @@
-"""The apply, through proxmoxer. Not `tofu apply`.
+"""The apply, through proxmoxer.
 
-One function per resource the OpenTofu module declared, in the order its
-dependency edges imposed: the golden image when preflight found the cluster
-without it, then per VM a seed ISO and a VM. Ported from the #198 spike, whose
-sequence PVE 8.4.0 accepted and whose VM the shipped ``vcows destroy`` removed
-(``docs/tofu-eval-2026-09-02.md`` M4) -- so the parameters here are the
-parameters that were measured, and they mirror
-``proxmox_virtual_environment_vm`` block by block.
+One function per resource, in dependency order: the golden image when preflight
+found the cluster without it, then per VM a seed ISO and a VM. Ported from the
+#198 spike, whose sequence PVE 8.4.0 accepted and whose VM the shipped
+``vcows destroy`` removed (``docs/tofu-eval-2026-09-02.md`` M4) -- so the
+parameters here are the parameters that were measured.
 
 **Every task goes through ``api.wait``**, the same function ``stop_vm`` and
 ``delete_vm`` use, so a task that stops badly is a failure here too rather than
 a create that reports success and leaves a VM that never started.
 
 **Nothing is rolled back.** ``_made`` names the resource on the exception and
-re-raises, which is what the provider did too -- state is what let tofu resume,
-and here the marker plus ``preflight._orphan_seeds`` is what lets a later run
-see the leftovers.
+re-raises, and the marker plus ``preflight._orphan_seeds`` is what lets a later
+run see the leftovers.
 
 No ``proxmoxer`` import here, at module scope or anywhere else, for the reason
 ``__init__`` gives: importing the registry must not drag the client in. The
@@ -157,9 +154,7 @@ def _size_gb(disk: str) -> int:
 def create(session: api.Session, tfvars: dict) -> dict:
     """Create everything ``render`` described, and report it as the inventory.
 
-    Keyed by the logical name, with the same five fields the module's
-    ``outputs.tf`` emitted, so ``inventory.json`` is unchanged by the move off
-    OpenTofu.
+    Keyed by the logical name, with the five fields ``inventory.json`` carries.
     """
     image = tfvars["image"]
     image_id = image["volid"]

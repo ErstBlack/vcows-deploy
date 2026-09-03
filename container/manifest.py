@@ -1,9 +1,9 @@
 """Write the build manifest. Runs once, inside the image, at build time.
 
-R5 wants every release to be reproducible and archivable: which OpenTofu, which
-provider, which RPMs, which git revision. Only a step inside the build can read
-`rpm -qa`, and only the build knows the git SHA and the base digest -- so this
-runs there and the result is baked in at `/opt/vcows/manifest.json`.
+R5 wants every release to be reproducible and archivable: which RPMs, which git
+revision. Only a step inside the build can read `rpm -qa`, and only the build
+knows the git SHA and the base digest -- so this runs there and the result is
+baked in at `/opt/vcows/manifest.json`.
 
 It also carries the **source**-RPM list. D22 settled that the GPL obligation
 cannot be engineered away while the container is the deliverable, and D5 tied
@@ -19,7 +19,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 # `%{VENDOR}` because the source sidecar is assembled per vendor: the EPEL
 # packages come from a different repository than the AppStream ones and are
@@ -35,9 +34,8 @@ QUERY = "%{NAME}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\t%{SOURCERPM}\t%{VENDOR}\n"
 #: Measured on rpm 4.19.1.1: the conditional query format
 #: ``%|SOURCERPM?{%{SOURCERPM}}:{}|`` does **not** help -- the tag tests as
 #: present and still renders ``(none)`` -- so the sentinel has to be dropped
-#: here. ``%{VENDOR}`` renders it too, and is deliberately left alone: `tofu`
-#: carries no vendor because it is a GitHub release RPM, and the manifest
-#: recording what rpm actually said about each package is the point of
+#: here. ``%{VENDOR}`` renders it too, and is deliberately left alone: the
+#: manifest recording what rpm actually said about each package is the point of
 #: ``packages``. Only ``source_rpms`` below is a derived list that a reposync
 #: consumes, so only it is filtered.
 NO_TAG = "(none)"
@@ -46,11 +44,6 @@ NO_TAG = "(none)"
 #: so the image cannot see its own tree state and this arrives as a build arg --
 #: which means a stale or hand-typed value is always possible.
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}(-dirty)?\Z")
-
-#: The two facts the lock records. `version = "0.9.8"` sits inside the provider
-#: block, and the `h1:` hash is the only integrity anchor the registry offers.
-LOCK_VERSION = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
-LOCK_HASH = re.compile(r'"(h1:[^"]+)"')
 
 
 def packages() -> list[dict[str, str]]:
@@ -93,57 +86,6 @@ def git_sha() -> str:
     return value if SHA_PATTERN.match(value) else "unknown"
 
 
-def _provider(lock_env: str, sha_env: str, source: str) -> dict:
-    """Version and hash from a committed lock, not from build args.
-
-    The ARGs and the lock are two records of one fact, and the *deploy* uses the
-    lock -- it is copied into the module directory the CLI stages from. A manifest
-    reading the ARGs can therefore name a provider the image does not install,
-    which is the git-SHA untruth one layer down.
-    """
-    path = Path(os.environ[lock_env])
-    text = path.read_text()
-    version, lock_hash = LOCK_VERSION.search(text), LOCK_HASH.search(text)
-    if version is None or lock_hash is None:
-        raise SystemExit(
-            f"{path}: no provider version or h1 hash in the lock, so the manifest "
-            f"cannot say what provider this image installs"
-        )
-    return {
-        "source": source,
-        "version": version.group(1),
-        "artifact_sha256": os.environ.get(sha_env, "unknown"),
-        # The registry serves no signature for dmacvicar/libvirt, so the lock hash
-        # is the only integrity anchor there. See licenses/dmacvicar-libvirt/.
-        "lock_hash": lock_hash.group(1),
-    }
-
-
-def provider() -> dict:
-    return _provider(
-        "PROVIDER_LOCK", "PROVIDER_SHA256", "registry.opentofu.org/dmacvicar/libvirt"
-    )
-
-
-def providers() -> list[dict]:
-    """Every provider the image installs, one per backend module.
-
-    A list rather than the single `provider` above, which stays because it is the
-    shape existing readers of manifest.json already parse. Both are emitted; the
-    list is the one that stays true when a third backend arrives.
-    """
-    found = [provider()]
-    if os.environ.get("PVE_PROVIDER_LOCK"):
-        found.append(
-            _provider(
-                "PVE_PROVIDER_LOCK",
-                "PVE_PROVIDER_SHA256",
-                "registry.opentofu.org/bpg/proxmox",
-            )
-        )
-    return found
-
-
 def pip_packages() -> list[dict]:
     """What is in the image but not in the RPM database.
 
@@ -167,16 +109,6 @@ def pip_packages() -> list[dict]:
     ]
 
 
-def tofu_version() -> dict:
-    out = subprocess.run(
-        ["tofu", "version", "-json"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return json.loads(out)
-
-
 def main() -> int:
     installed = packages()
     manifest = {
@@ -187,12 +119,6 @@ def main() -> int:
             "name": os.environ.get("BASE_IMAGE", "unknown"),
             "digest": os.environ.get("BASE_DIGEST", "unknown"),
         },
-        "tofu": tofu_version(),
-        "provider": provider(),
-        # Every provider, including the one `provider` above cannot name. Both
-        # are emitted rather than the old key being replaced: `provider` is the
-        # shape existing readers already parse.
-        "providers": providers(),
         "packages": installed,
         # What `rpm -qa` cannot see. Empty on a build that vendored nothing.
         "pip_packages": pip_packages(),

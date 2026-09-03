@@ -3,11 +3,10 @@
 # **`gitleaks dir` does not honour .gitignore.** Measured, with a real
 # `ghp_`-shaped token as a canary: planted under `mutants/`, `.venv/` and
 # `.tools/`, every one of them was reported. The scanned-bytes figure gitleaks
-# prints is not evidence to the contrary -- it counts decoded text, so `.tools/`
-# at 462 MB contributes almost nothing to it and looks skipped when it is not.
+# prints is not evidence to the contrary -- it counts decoded text.
 #
-# Without this file the gate therefore reads ~570 MB of other people's code:
-# every dependency in `.venv/`, the provider mirror in `.tools/`, and mutmut's
+# Without this file the gate therefore reads other people's code: every
+# dependency in `.venv/`, the pinned binaries in `.tools/`, and mutmut's
 # scratch copy of the tree. That is wrong twice over. It is slow, and a test
 # fixture inside somebody else's package -- the kind of file that exists to look
 # like a credential -- would turn `just lint` red for a secret this repository
@@ -35,7 +34,7 @@ description = "Paths that are not this repository's source"
 paths = [
     # Every one of these is gitignored, and gitleaks scans them anyway.
     '''^\.venv/''',              # dependencies -- 103 MB
-    '''^\.tools/''',             # pinned binaries and the 462 MB provider mirror
+    '''^\.tools/''',             # pinned tool binaries
     '''^mutants/''',             # mutmut's copied tree, rebuilt by every run
     '''^\.cache/''',             # uv cache, scan archives, delivery bundles
     '''^\.hypothesis/''',        # property-test example database

@@ -1,13 +1,7 @@
-"""Teardown, by marker, through python3-libvirt. Not `tofu destroy`.
+"""Teardown, by marker, through python3-libvirt.
 
-The comparison was re-run against the provider source and a live OpenTofu 1.12.6
-and it holds -- see findings.md §1. The short version: destroy is driven purely by
-state, D23 throws state away every deploy, and a `tofu destroy` with empty state
-reports "No objects need to be destroyed" and exits 0. Worse, on the first deploy to
-a host ``libvirt_volume.base`` *is* written to state, and destroy ignores the
-``count`` guard that protects it in config -- so the obvious implementation deletes
-the shared golden image out from under every other deployment on that host. Nothing
-here can make that mistake: volumes carry no marker, so destroy never sees the base.
+Volumes carry no marker, so destroy never sees the shared golden image and cannot
+delete it out from under every other deployment on the host -- findings.md §1.
 
 Three things are load-bearing:
 
@@ -23,7 +17,7 @@ Three things are load-bearing:
   flag error into an undiagnosable undefine failure.
 * **Every object's outcome is reported, and any failure is fatal.** Five domains with
   three objects each is twenty things that can fail independently. Silent partial
-  success is the specific defect findings.md §1 rejects `tofu destroy` for.
+  success is the specific defect findings.md §1 names.
 """
 
 from __future__ import annotations

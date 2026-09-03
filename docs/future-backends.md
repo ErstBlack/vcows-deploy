@@ -86,7 +86,9 @@ a future backend can bring its own tools without touching core.
 
 Four facts above or in `orchestrator-architecture.md` moved. Recorded here so
 the next reader does not re-derive them; the decisions they feed live in #196
-(vSphere effort and decisions) and #198 (OpenTofu's role), not in this file.
+(vSphere effort and decisions), not in this file. #198 is settled: #204 removed
+OpenTofu from both backends, and a vSphere backend brings it back behind
+`create` only if the provider earns its place there.
 
 | Claim | Now |
 |---|---|
