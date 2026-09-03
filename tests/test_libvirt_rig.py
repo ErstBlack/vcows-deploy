@@ -4,26 +4,31 @@ Skipped with an explicit reason when ``VCOWS_RIG_URI`` is unset -- never
 silently. A gate that quietly passes because it did not run is worse than no
 gate.
 
-Read-only apart from ``pool.refresh()``, which is a directory rescan. Nothing here
-defines, starts, stops or undefines anything: the two probe domains are fixtures on
-the rig, and destroy is not exercised against a real VM until the acceptance run
-has created one to tear down. ``tests/test_libvirt_boot.py`` is the file that
-does define, start and undefine one, under this same ``rig`` gate.
+Nothing here is assumed to be on the rig beforehand. The two probe domains the
+discovery tests read are defined by the ``probes`` fixture through the same
+connection the tests use, never started, and undefined however the module ends;
+the rig they ran on carried them as hand-made fixtures until 2026-09-03, when it
+no longer did and four tests failed on any tree. Everything else is read-only
+apart from ``pool.refresh()``, which is a directory rescan. Starting a guest is
+``tests/test_libvirt_boot.py``'s job, under this same ``rig`` gate.
 
 The pair of probes is deliberate. ``vcows-probe02`` carries a current
-``urn:vcows:1`` marker and is the positive case; ``vcows-spike-probe01`` still
-carries spike A2's ``https://example.invalid/vcows`` and is therefore the
-*unmarked* case, for free.
+``urn:vcows:1`` marker whose logical name differs from its hypervisor name and
+is the positive case; ``vcows-spike-probe01`` carries spike A2's
+``https://example.invalid/vcows`` namespace, a marker-shaped element that is
+not ours, and is therefore the *unmarked* case for free.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
 
 from orchestrator.backends.base import Action, decide
 from orchestrator.backends.libvirt import preflight
+from orchestrator.marker import Marker
 from orchestrator.problems import Severity
 from tests.conftest import gate
 
@@ -39,6 +44,59 @@ pytestmark = needs_rig
 
 MARKED_PROBE = "vcows-probe02"
 UNMARKED_PROBE = "vcows-spike-probe01"
+#: On the marked probe only, so a conflict names one domain.
+PROBE_MAC = "52:54:00:c0:ff:ee"
+#: Spike A2's marker, verbatim: the right element name under the wrong namespace.
+SPIKE_A2_MARKER = (
+    '<vcows xmlns="https://example.invalid/vcows">{"name":"probe01"}</vcows>'
+)
+
+
+def _probe_xml(name: str, marker: str, mac: str | None) -> str:
+    """The least domain libvirt will define: never started, so `qemu` rather
+    than `kvm`, no disk, and a NIC only where a test wants a MAC to collide."""
+    nic = (
+        f"<interface type='network'><source network='default'/>"
+        f"<mac address='{mac}'/></interface>"
+        if mac
+        else ""
+    )
+    return (
+        f"<domain type='qemu'><name>{name}</name><memory unit='MiB'>64</memory>"
+        f"<os><type arch='x86_64'>hvm</type></os><metadata>{marker}</metadata>"
+        f"<devices>{nic}</devices></domain>"
+    )
+
+
+@pytest.fixture(scope="module")
+def probes():
+    """Define both probes, hand over, undefine them however the module ends.
+
+    A domain already holding one of these names is a leftover of a run that was
+    killed between define and undefine -- the names are this module's own and
+    nothing else on the rig uses them -- so it is undefined first rather than
+    left to make every later run fail on a collision. `finally` rather than a
+    teardown after `yield` alone, so an assertion in the define loop still
+    undefines what was defined before it.
+    """
+    import libvirt
+
+    assert RIG is not None  # every test here is behind needs_rig
+    wanted = [
+        (MARKED_PROBE, Marker.for_vm("probe02", "spike").to_xml(), PROBE_MAC),
+        (UNMARKED_PROBE, SPIKE_A2_MARKER, None),
+    ]
+    defined = []
+    with preflight.connect({"target": {"libvirt": {"uri": RIG}}}) as conn:
+        try:
+            for name, marker, mac in wanted:
+                with contextlib.suppress(libvirt.libvirtError):
+                    conn.lookupByName(name).undefine()
+                defined.append(conn.defineXML(_probe_xml(name, marker, mac)))
+            yield
+        finally:
+            for dom in defined:
+                dom.undefine()
 
 
 @pytest.fixture
@@ -76,7 +134,7 @@ def test_the_daemon_version_is_not_the_client_version(session):
 # -- discovery -------------------------------------------------------------
 
 
-def test_the_marked_probe_is_found_by_marker(rig_cfg, session):
+def test_the_marked_probe_is_found_by_marker(probes, rig_cfg, session):
     discovered = preflight.preflight(rig_cfg, session)
     probe = next(e for e in discovered.vms if e.name == MARKED_PROBE)
     assert probe.marker is not None
@@ -87,13 +145,13 @@ def test_the_marked_probe_is_found_by_marker(rig_cfg, session):
     assert probe.marker.name != probe.name
 
 
-def test_the_superseded_probe_reads_as_unmarked(rig_cfg, session):
+def test_the_superseded_probe_reads_as_unmarked(probes, rig_cfg, session):
     discovered = preflight.preflight(rig_cfg, session)
     probe = next(e for e in discovered.vms if e.name == UNMARKED_PROBE)
     assert probe.marker is None
 
 
-def test_an_unmarked_domain_whose_name_we_want_is_refused(rig_cfg, session):
+def test_an_unmarked_domain_whose_name_we_want_is_refused(probes, rig_cfg, session):
     """vcows will not adopt or overwrite something it did not create."""
     rig_cfg["vms"][0]["name"] = UNMARKED_PROBE
     discovered = preflight.preflight(rig_cfg, session)
@@ -214,10 +272,10 @@ def test_an_address_with_a_dhcp_reservation_refuses(rig_cfg, session):
     assert any("a DHCP reservation" in p.message for p in problems)
 
 
-def test_a_mac_already_on_the_rig_refuses(rig_cfg, session):
+def test_a_mac_already_on_the_rig_refuses(probes, rig_cfg, session):
     """vcows-probe02's MAC, claimed by a VM with a different logical name -- so it
     is somebody else's, not ours."""
-    rig_cfg["vms"][0]["nics"][0]["mac"] = "52:54:00:c0:ff:ee"
+    rig_cfg["vms"][0]["nics"][0]["mac"] = PROBE_MAC
     problems = conflicts(rig_cfg, session)
     assert any(
         f"already configured on domain '{MARKED_PROBE}'" in p.message for p in problems
