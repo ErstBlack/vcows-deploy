@@ -118,7 +118,6 @@ class FakePool:
         self.uploads: dict[str, tuple[int, FakeStream]] = {}
         self.refresh_error: libvirt.libvirtError | None = None
         self.active_error: libvirt.libvirtError | None = None
-        self.name_error: libvirt.libvirtError | None = None
         self.xml_error: libvirt.libvirtError | None = None
         #: Raised by every volume this pool hands out, not by the pool itself.
         self.volume_xml_error: libvirt.libvirtError | None = None
@@ -131,8 +130,6 @@ class FakePool:
         self.volume_delete_error: libvirt.libvirtError | None = None
 
     def name(self) -> str:
-        if self.name_error is not None:
-            raise self.name_error
         return self._name
 
     def isActive(self) -> bool:
