@@ -831,6 +831,32 @@ def test_a_teardown_that_raises_keeps_the_problems_it_already_had(
     assert any("the pool went away" in p for p in record["problems"])
 
 
+def test_a_teardown_that_returns_keeps_the_problems_it_already_had(
+    backend, tmp_path, monkeypatch
+):
+    """The return path's twin of the test above. `_destroy` appends the
+    outcome's problems to the advisory ones already in `run.extra`; an
+    assignment there would drop the advisory half and pass every other
+    assertion in this file, because none of them carries both at once."""
+    from orchestrator.backends.base import Outcome
+    from orchestrator.problems import Problem, Severity
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "lab-a.yaml"
+    path.write_text(CONFIG.replace("good://example", "odd://example"))
+
+    backend.world = [ours("app01")]
+    backend.outcome = Outcome(
+        destroyed=["app01"],
+        problems=[Problem(Severity.WARNING, "could not refresh pool", "storage")],
+    )
+
+    assert cli.main(["destroy", str(path), "--yes"]) == 0
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert any("endpoint scheme is unusual" in p for p in record["problems"])
+    assert any("could not refresh pool" in p for p in record["problems"])
+
+
 # -- the build manifest, and the modes ---------------------------------------
 
 
