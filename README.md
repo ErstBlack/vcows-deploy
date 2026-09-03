@@ -482,9 +482,6 @@ just dev-env
 just check
 ```
 
-Optionally `.venv/bin/pre-commit install`, which runs the cheap half of
-`just lint` before each commit.
-
 `just` on its own lists every recipe. Both CI pipelines call the same ones and
 nothing else, which is what `docs/ci.md` is about.
 

@@ -186,12 +186,8 @@ main() {
                                  "$REPO"/scripts/*.sh "$REPO"/.claude/hooks/*.sh
     gate "workflows carry no logic" workflows_carry_no_logic
     # The secret scan, and the only gate here that is about the repository's
-    # contents rather than its code. `.pre-commit-config.yaml` has carried a
-    # gitleaks hook since early on, but `pre-commit` is in no recipe, no script
-    # and neither pipeline -- README calls installing it "Optionally" -- so it
-    # only ever fired for a developer who had run `pre-commit install`, and it
-    # scans the staged diff rather than the tree. This is the whole tree, on
-    # every run, in CI.
+    # contents rather than its code. It runs on the whole tree, on every run,
+    # in CI.
     #
     # `dir`, not `detect`: 8.30 removed `detect` and split it into `dir` (a
     # filesystem tree) and `git` (history). The tree is the right recurring
