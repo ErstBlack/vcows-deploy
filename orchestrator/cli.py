@@ -73,22 +73,6 @@ class UsageError(Exception):
     """
 
 
-def manifest() -> dict | None:
-    """The build manifest, or ``None`` when there is none to read.
-
-    Absent and unreadable are different facts and used to be one return value.
-    Absent is ordinary -- a checkout is not a release. A file that exists and will
-    not parse is the R5 record of a delivered artifact being unreadable, which is
-    worth a line on stderr rather than the silence a dev box gets.
-    """
-    if not MANIFEST.is_file():
-        return None
-    try:
-        return json.loads(MANIFEST.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{MANIFEST}: {exc}") from exc
-
-
 def _timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -608,18 +592,24 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
 
 
 def _print_manifest() -> None:
-    """What this image is, printed before anything that can return early."""
+    """What this image is, printed before anything that can return early.
+
+    Absent and unreadable are different facts. Absent is ordinary -- a checkout is
+    not a release, and it prints nothing. A file that exists and will not parse is
+    the R5 record of a delivered artifact being unreadable, which is worth a line
+    on stderr rather than the silence a dev box gets.
+    """
+    if not MANIFEST.is_file():
+        return
     try:
-        build = manifest()
-        if build is None:
-            return
+        build = json.loads(MANIFEST.read_text())
         log.info("image   %s built %s", build["git_sha"], build["built"])
         log.info(
             "base    %s@%s", build["base_image"]["name"], build["base_image"]["digest"]
         )
         packages, sources = len(build["packages"]), len(build["source_rpms"])
         log.info("packages %s from %s sources", packages, sources)
-    except (ValueError, KeyError, TypeError) as exc:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         log.warning("image: %s will not parse (%s)", MANIFEST, exc)
 
 
