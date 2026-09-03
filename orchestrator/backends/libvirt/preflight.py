@@ -97,8 +97,9 @@ def connect(cfg: dict) -> Iterator[Any]:
     libvirt.registerErrorHandler(_chatter, None)
     uri = connection_uri(cfg["target"]["libvirt"])
     # Derived from config rather than given, so the config does not say what was
-    # actually dialed and nothing else records it. Paths only -- `ssh_keyfile` and
-    # `known_hosts` name files here, they do not carry their contents.
+    # actually dialed and nothing else records it. No credential can reach this
+    # line: `_check_target` refuses a password and a query string, and `ssh_key`
+    # never touches the URI -- it goes to ssh through ~/.ssh.
     log.info("connecting to %s", uri)
     conn = libvirt.open(uri)
     try:

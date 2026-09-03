@@ -26,7 +26,6 @@ part of a value -- the shape is enough to say what is wrong.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -46,11 +45,17 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
-#: ``ca_file`` is a path on whichever machine runs the deploy, so it carries the
-#: same absolute-no-whitespace rule libvirt's ``SSH_PATH_PATTERN`` states. A
-#: literal rather than an import: the two fields reach different libraries, and
-#: neither backend's rule is the other's to widen.
-CA_PATH_PATTERN = r"^/[^\s]*\Z"
+#: ``ca_cert`` carries the certificate itself, so this asks whether it opens like
+#: one. It also catches the mistake worth catching: a *private* key pasted where
+#: the public half belongs, which `requests` would reject and which is a
+#: credential put into a config for nothing.
+CA_CERT_PATTERN = r"^-----BEGIN CERTIFICATE-----"
+
+#: An absolute path with no whitespace -- what ``ca_file`` held at v0.1. Matched
+#: only to say the field changed shape. A literal rather than an import of the
+#: libvirt backend's: the two fields reach different libraries, and neither
+#: backend's rule is the other's to widen.
+PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: ``user@realm!tokenid=secret``. The secret half is matched but never captured
 #: into a message.
@@ -133,9 +138,10 @@ TARGET_SCHEMA: dict[str, Any] = {
         "token": {"type": "string", "minLength": 1},
         "user": {"type": "string", "minLength": 1},
         "password": {"type": "string", "minLength": 1},
-        # A CA bundle for a PVE certificate signed by a private CA. proxmoxer
-        # hands this to requests' `verify=`, which takes a path there.
-        "ca_file": {"type": "string", "pattern": CA_PATH_PATTERN},
+        # The CA certificate for a PVE certificate signed by a private CA, as
+        # PEM. `api.connect` writes it to a file, because proxmoxer hands
+        # `verify_ssl` to requests' `verify=`, which wants a path.
+        "ca_cert": {"type": "string", "pattern": CA_CERT_PATTERN},
         "insecure": {"type": "boolean"},
     },
 }
@@ -286,27 +292,25 @@ def _check_target(target: dict) -> list[Problem]:
             )
         )
 
-    ca_file = target.get("ca_file")
-    if ca_file is not None and target.get("insecure"):
+    ca_cert = target.get("ca_cert")
+    if ca_cert is not None and target.get("insecure"):
         problems.append(
             Problem.error(
-                "ca_file and insecure: true contradict each other. One names the "
-                "CA that must have signed the certificate, the other checks no "
+                "ca_cert and insecure: true contradict each other. One is the CA "
+                "that must have signed the certificate, the other checks no "
                 "certificate at all. Drop whichever was not meant.",
-                where="target.proxmox.ca_file",
+                where="target.proxmox.ca_cert",
             )
         )
-    # A warning, not an error, for the same reason the libvirt backend warns
-    # about ssh_keyfile: `validate` is the offline phase and runs anywhere, while
-    # this is a path on whichever machine runs the deploy -- normally the
-    # container, where it is bind-mounted at run time.
-    if ca_file is not None and not Path(ca_file).is_file():
+    # The v0.1 shape, `ca_file: /run/secrets/pve-ca.pem`. An error rather than a
+    # warning, for the same reason the libvirt backend errors on one: there is no
+    # compatibility path and nothing is mounted for it any more.
+    if isinstance(ca_cert, str) and PATH_PATTERN.match(ca_cert):
         problems.append(
-            Problem.warning(
-                f"{ca_file} does not exist here. It is read on the machine "
-                f"running the deploy, not on the target, so this matters only "
-                f"if that is this one.",
-                where="target.proxmox.ca_file",
+            Problem.error(
+                "ca_cert is the certificate itself now, not a path to it. Paste "
+                "the PEM in -- nothing is mounted for it.",
+                where="target.proxmox.ca_cert",
             )
         )
 

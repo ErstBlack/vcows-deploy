@@ -37,14 +37,20 @@ it.
 ## What the bundle holds
 
 The compressed image, the SBOM, and the trivy report describing *that* image,
-plus a `SHA256SUMS` covering all three and the digest of the uncompressed
-archive inside the gzip -- so a site can verify before or after decompressing.
+`vcows.sh`, plus a `SHA256SUMS` covering all four and the digest of the
+uncompressed archive inside the gzip -- so a site can verify before or after
+decompressing.
 
-On receipt:
+`vcows.sh` is `scripts/vcows.sh` with `@IMAGE@` replaced by the tag stored inside
+`image.tar`, not by what `image_tag` computes: a worktree suffix or an edit since
+the build moves the two apart, and the site has to be told the tag `podman load`
+will actually restore. It is the only file in the bundle whose contents depend on
+which image it ships beside.
+
+On receipt, all of it:
 
 ```
-sha256sum -c SHA256SUMS
-gunzip -c vcows-deploy-*.tar.gz | podman load
+./vcows.sh install
 ```
 
 Compression is `gzip -9 -n`. `-n` drops the stored filename and mtime so the
@@ -87,6 +93,6 @@ even though every gate is green.
 
 1. `just image`
 2. `just scan` -- green, or triage via `cve-triage`
-3. `just bundle`
+3. `just bundle` -- check `.cache/delivery/vcows.sh` names the tag you expect
 4. `reposync` the `source_rpms` list from the manifest onto the source medium
 5. Ship both media together

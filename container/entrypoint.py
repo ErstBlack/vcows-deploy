@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 """Put the operator's SSH credentials where `ssh` will actually look, then exec.
 
-**Why this exists at all.** The config carries `ssh_keyfile` and `known_hosts`,
-and the obvious mechanism -- URI query parameters -- does not work. Measured
-against a real hypervisor, in this image:
+**Why this exists at all.** The config carries `ssh_key` and `known_hosts`, and
+the obvious mechanism -- URI query parameters -- does not work. Measured against
+a real hypervisor, in this image:
 
 * libvirt's own client honours `keyfile=` on `qemu+ssh` but **ignores
   `known_hosts=`**, which is a libssh/libssh2 parameter. Without it, `ssh` falls
@@ -13,9 +13,14 @@ against a real hypervisor, in this image:
   exporting it changes nothing.
 
 What the client *does* do is run `ssh`, so it reads `~/.ssh/config`. Writing that
-file is the one mechanism that reaches it, and it leaves the key and the
-known_hosts file exactly where they were mounted, read only. Nothing here copies
-key material.
+file is the one mechanism that reaches it.
+
+**The key is copied now.** Both fields carry the credential itself rather than a
+path to a mounted file, so this writes three files: the key, the known_hosts and
+a `config` naming the two fixed paths below. That is one bind mount fewer for a
+site to get right, and it means nothing the operator wrote is interpolated into
+`~/.ssh/config` -- the injection `_path` used to refuse has no route left. The
+copy lives in the container's own filesystem and goes with `--rm`.
 
 This is container glue, deliberately, and it is why `cli.py` contains none of it:
 outside the image an operator's own `~/.ssh` is already correct, and a tool that
@@ -27,7 +32,6 @@ from __future__ import annotations
 import logging
 import os
 import pwd
-import re
 import sys
 import time
 from pathlib import Path
@@ -36,12 +40,11 @@ import yaml
 
 VCOWS = "/usr/local/bin/vcows"
 
-#: Duplicated from `orchestrator/cli.py` rather than imported, for the same
-#: reason `SSH_PATH` below is: this runs *before* `vcows` is a process, it lives
-#: outside `/opt/vcows`, and it imports nothing from the package today. Importing
-#: `orchestrator` here would make a package-level import error surface as a
-#: broken entrypoint instead of the sentence `vcows` itself would have printed a
-#: moment later.
+#: Duplicated from `orchestrator/cli.py` rather than imported: this runs *before*
+#: `vcows` is a process, it lives outside `/opt/vcows`, and it imports nothing
+#: from the package today. Importing `orchestrator` here would make a
+#: package-level import error surface as a broken entrypoint instead of the
+#: sentence `vcows` itself would have printed a moment later.
 log = logging.getLogger("vcows.entrypoint")
 
 
@@ -87,12 +90,12 @@ def _configure_logging() -> None:
     root.setLevel(level)
 
 
-#: An absolute path with no whitespace in it. Mirrors ``SSH_PATH_PATTERN`` in
-#: ``orchestrator/backends/libvirt/schema.py``, and is duplicated rather than
-#: imported on purpose: this runs *before* `vcows` is a process at all, so the
-#: schema's rejection of the same value would arrive after the file below had
-#: already been written and read.
-SSH_PATH = re.compile(r"^/[^\s]*\Z")
+#: Where each credential lands, under the ``.ssh`` of whatever home `ssh` will
+#: read. Fixed rather than taken from the config: these are the only two values
+#: `ssh_config` interpolates, so nothing the operator wrote reaches a file that
+#: is parsed one directive per line.
+KEY_NAME = "vcows_key"
+HOSTS_NAME = "vcows_known_hosts"
 
 #: Verbs that open no connection, so nothing needs installing for them.
 #:
@@ -135,30 +138,36 @@ def config_path(argv: list[str]) -> Path | None:
     return None
 
 
-def _path(value: object, field: str) -> str | None:
-    """One credential path, or a refusal. ``None`` means the operator set none.
+def credential(value: object, field: str) -> str | None:
+    """One credential's text, or a refusal. ``None`` means the operator set none.
 
-    ``ssh`` reads its config one directive per line, so a value carrying a
-    newline does not become a path -- it becomes whatever follows it.
-    ``ProxyCommand`` is command execution on the next connection, and
-    ``StrictHostKeyChecking no`` reopens from here exactly the hole R-D refuses
-    in the URI.
+    Only the type is checked. The value goes into a file of its own now, not into
+    ``~/.ssh/config``, so there is nothing to append a directive to and nothing
+    to escape -- but this still runs before `vcows validate`, and a YAML list or
+    number would otherwise be a ``TypeError`` out of the write rather than the
+    sentence `validate` was about to print. The value is never quoted back:
+    ``ssh_key`` is the private key.
+
+    The trailing newline is not cosmetic. ``ssh_key: |-`` chomps it, and OpenSSH
+    refuses a key whose last line has no terminator -- a failure that names
+    neither the config nor the chomping indicator that caused it.
     """
     if value is None:
         return None
-    if not isinstance(value, str) or not SSH_PATH.match(value):
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(
-            f"{field} must be an absolute path with no whitespace in it. It is "
-            f"written into ~/.ssh/config verbatim, where a newline would append "
-            f"directives of its own. Run `vcows validate` to see the value."
+            f"{field} must be the contents of the file, as text -- not a path to "
+            f"it and not empty. Run `vcows validate` to see what was set."
         )
-    return value
+    return value if value.endswith("\n") else value + "\n"
 
 
-def ssh_config(keyfile: str | None, known_hosts: str | None) -> str:
-    """Raises ``ValueError`` rather than interpolating anything questionable."""
-    keyfile = _path(keyfile, "ssh_keyfile")
-    known_hosts = _path(known_hosts, "known_hosts")
+def ssh_config(keyfile: Path | None, known_hosts: Path | None) -> str:
+    """The `~/.ssh/config` naming the two files `install` writes beside it.
+
+    Both arguments are paths this module chose, so nothing here is interpolated
+    from the operator's YAML.
+    """
     lines = [
         "# Written by the vcows container entrypoint from target.libvirt.",
         "# libvirt's client runs ssh, so this is the one place that reaches it.",
@@ -174,13 +183,39 @@ def ssh_config(keyfile: str | None, known_hosts: str | None) -> str:
         "  ServerAliveInterval 30",
         "  ServerAliveCountMax 6",
     ]
-    if keyfile:
+    if keyfile is not None:
         lines += [f"  IdentityFile {keyfile}", "  IdentitiesOnly yes"]
-    if known_hosts:
+    if known_hosts is not None:
         # StrictHostKeyChecking stays on: refusing `no_verify=1` in the URI (R-D)
         # would be pointless if the same hole were opened here.
         lines += [f"  UserKnownHostsFile {known_hosts}", "  StrictHostKeyChecking yes"]
     return "\n".join(lines) + "\n"
+
+
+def _write(path: Path, body: str) -> None:
+    """Create `path` at 0600 and write `body`, or raise ``FileExistsError``.
+
+    `os.open` with `O_EXCL` and the mode on the call, rather than `exists()` then
+    `write_text` then `chmod`. Two things were wrong with that shape.
+
+    `write_text` creates at `0o666 & ~umask`, and the image's umask is 0022 --
+    measured, `podman run --rm --entrypoint sh IMAGE -c umask`. So a file now
+    holding the private key itself would be 0644 until the `chmod` on the next
+    line, and `ssh` refuses a group-readable key anyway.
+    `orchestrator/cli.py`'s `os.umask(0o077)` cannot close the window: `main`
+    `execv`s into vcows *after* these writes. The mode argument here is honoured
+    at creation, and 0022 does not touch owner bits, so the file is 0600 from the
+    syscall that makes it.
+
+    `exists()` and `write_text` are also two syscalls around a call that
+    *truncates*, so a file arriving between them was silently clobbered -- what
+    the "theirs wins" branch in `install` exists to prevent. `O_EXCL` makes that
+    one atomic operation, and `FileExistsError` is its own `OSError` subclass, so
+    the caller can tell the two outcomes apart.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(body)
 
 
 def install(argv: list[str]) -> None:
@@ -213,16 +248,16 @@ def install(argv: list[str]) -> None:
     if not isinstance(libvirt, dict):
         log.debug("no SSH config installed: `target.libvirt` is not a mapping")
         return
-    keyfile, known_hosts = libvirt.get("ssh_keyfile"), libvirt.get("known_hosts")
-    if not keyfile and not known_hosts:
-        return
-
-    # Before `home()`, so a poisoned config is refused even for a UID with no
-    # passwd entry -- where there is nothing to write but still something to say.
+    # Before `home()`, so a value that is not text is refused even for a UID with
+    # no passwd entry -- where there is nothing to write but still something to
+    # say.
     try:
-        body = ssh_config(keyfile, known_hosts)
+        key = credential(libvirt.get("ssh_key"), "ssh_key")
+        known_hosts = credential(libvirt.get("known_hosts"), "known_hosts")
     except ValueError as exc:
         log.warning("%s", exc)
+        return
+    if key is None and known_hosts is None:
         return
 
     where = home()
@@ -234,46 +269,35 @@ def install(argv: list[str]) -> None:
         return
 
     ssh_dir = where / ".ssh"
-    destination = ssh_dir / "config"
+    key_path = ssh_dir / KEY_NAME if key is not None else None
+    hosts_path = ssh_dir / HOSTS_NAME if known_hosts is not None else None
 
-    # `os.open` with `O_EXCL` and the mode on the call, rather than `exists()`
-    # then `write_text` then `chmod`. Two things were wrong with that shape.
+    # `config` first, and the order matters. It is the file an operator mounts to
+    # take this over, so a `config` that is already there has to stop the run
+    # *before* the key is copied in -- otherwise the "theirs wins" message below
+    # would be false about a private key already sitting in the container.
     #
-    # `write_text` creates at `0o666 & ~umask`, and the image's umask is 0022 --
-    # measured, `podman run --rm --entrypoint sh IMAGE -c umask`. So the file
-    # naming the operator's private key path was 0644 until the `chmod` on the
-    # next line. `orchestrator/cli.py`'s `os.umask(0o077)` cannot close that:
-    # `main` below `execv`s into vcows *after* this write, so it is set strictly
-    # too late, and nothing else in the image sets one. The mode argument here is
-    # honoured at creation, and 0022 does not touch owner bits, so the file is
-    # 0600 from the syscall that makes it.
-    #
-    # `exists()` and `write_text` are also two syscalls around a call that
-    # *truncates*, so a config arriving between them was silently clobbered --
-    # exactly what the "theirs wins" branch below exists to prevent. `O_EXCL`
-    # makes that one atomic operation.
-    #
-    # The two messages stay separable because `FileExistsError` is its own
-    # `OSError` subclass and is caught first. The `mkdir` is deliberately outside
-    # that inner catch: with `exist_ok=True` its only `FileExistsError` is
-    # `~/.ssh` existing as a regular file, which is not "somebody mounted their
-    # own config" and must not claim to be.
+    # The `mkdir` is deliberately outside the inner catch: with `exist_ok=True`
+    # its only `FileExistsError` is `~/.ssh` existing as a regular file, which is
+    # not "somebody mounted their own config" and must not claim to be.
     try:
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
-            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
+            _write(ssh_dir / "config", ssh_config(key_path, hosts_path))
+            if key is not None:
+                _write(ssh_dir / KEY_NAME, key)
+            if known_hosts is not None:
+                _write(ssh_dir / HOSTS_NAME, known_hosts)
+        except FileExistsError as exc:
             # Somebody mounted their own. Theirs wins -- and it is said out loud,
             # because the alternative is debugging a credential the config named
             # and nothing ever installed.
             log.warning(
-                "%s already exists; leaving it alone. This run's ssh_keyfile "
-                "and known_hosts were not installed.",
-                destination,
+                "%s already exists; leaving it alone. This run's ssh_key and "
+                "known_hosts were not installed.",
+                exc.filename,
             )
             return
-        with os.fdopen(fd, "w") as handle:
-            handle.write(body)
     except OSError as exc:
         # Name the consequence, as the "already exists" branch above does. The
         # next thing the operator sees is `Host key verification failed` out of
@@ -281,11 +305,11 @@ def install(argv: list[str]) -> None:
         # synthesised passwd entry's home is `/` and unwritable: two messages,
         # and without this line the second looks like the error.
         log.warning(
-            "could not write %s: %s. This run's ssh_keyfile and known_hosts "
+            "could not write into %s: %s. This run's ssh_key and known_hosts "
             "were not installed, so the connection will use whatever ssh finds "
             "on its own -- likely failing with a host key or permission error "
             "that does not mention this.",
-            destination,
+            ssh_dir,
             exc,
         )
 

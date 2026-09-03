@@ -18,6 +18,7 @@ from orchestrator.backends import REGISTRY
 from orchestrator.backends.base import Backend, Discovered, Existing
 from orchestrator.backends.proxmox import api
 from orchestrator.marker import Marker
+from tests.conftest import CA_CERT
 from tests.fake_proxmox import FakeProxmox
 
 
@@ -145,25 +146,32 @@ def test_connect_verifies_tls_by_default(pve_cfg, fake_proxmoxer, pve_token):
     assert fake_proxmoxer["verify_ssl"] is True
 
 
-def test_a_ca_file_reaches_proxmoxer_as_the_path_it_is(
+def test_a_ca_certificate_reaches_proxmoxer_as_a_file_holding_it(
     pve_cfg, fake_proxmoxer, pve_token
 ):
-    """Measured in proxmoxer's https backend: `verify_ssl` is handed to requests'
-    `verify=` unchanged, and requests takes a CA bundle path there."""
-    pve_cfg["target"]["proxmox"]["ca_file"] = "/etc/pki/ca.pem"
+    """The config carries the certificate and requests wants a path, so `connect`
+    writes one. Measured in proxmoxer's https backend: `verify_ssl` is handed to
+    requests' `verify=` unchanged, and requests takes a CA bundle path there.
+
+    Not cleaned up, deliberately: `cli.main`'s `os.umask(0o077)` makes it 0600
+    and the container is `--rm`, so the file goes with the run.
+    """
+    pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
     with api.connect(pve_cfg):
         pass
-    assert fake_proxmoxer["verify_ssl"] == "/etc/pki/ca.pem"
+    written = Path(fake_proxmoxer["verify_ssl"])
+    assert written.read_text() == CA_CERT
+    assert written.suffix == ".pem"
 
 
-def test_insecure_turns_verification_off_and_outranks_a_ca_file(
+def test_insecure_turns_verification_off_and_outranks_a_ca_certificate(
     pve_cfg, fake_proxmoxer, pve_token
 ):
     """`validate` refuses the two together, so this is what the code does with a
-    config that got past it: no verification, rather than a bundle that reads as
-    one thing and behaves as another."""
+    config that got past it: no verification, rather than a certificate that
+    reads as one thing and behaves as another. Nothing is written either."""
     pve_cfg["target"]["proxmox"]["insecure"] = True
-    pve_cfg["target"]["proxmox"]["ca_file"] = "/etc/pki/ca.pem"
+    pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
     with api.connect(pve_cfg):
         pass
     assert fake_proxmoxer["verify_ssl"] is False

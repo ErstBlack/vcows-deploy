@@ -23,7 +23,7 @@ close to unreadable, where a Python check names both fields the operator set.
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -38,21 +38,27 @@ from ...limits import MAX_DISK_GB, MAX_MEMORY_MIB, MAX_VCPUS
 from ...problems import Problem
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
-#: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
+#: of two volume names. ``\Z``, not ``$``, for the reason PATH_PATTERN spells
 #: out below: Python's ``$`` also matches before a trailing newline, and a name
 #: carrying one reaches libvirt as a domain name.
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
-#: An absolute path with no whitespace in it. Both credential paths are
-#: interpolated verbatim into ``~/.ssh/config`` by the container entrypoint, one
-#: per line, so a value carrying a newline appends directives of its own --
-#: ``ProxyCommand`` reaches command execution, and ``StrictHostKeyChecking no``
-#: undoes R-D from the side the URI check cannot see. ``\Z``, not ``$``: Python's
-#: ``$`` also matches before a trailing newline, which is precisely the character
-#: this is here to refuse.
-SSH_PATH_PATTERN = r"^/[^\s]*\Z"
+#: A PEM private key's opening line. ``ssh_key`` carries the key itself, so this
+#: asks whether it opens like one -- the container entrypoint writes it to a file
+#: and hands the file to ``ssh``, which otherwise fails with ``invalid format``
+#: and names no config field. It also catches the value an operator reaches for
+#: by habit, a *public* key, which is not a secret and authenticates nothing.
+#: Unanchored at the end: everything after the header is base64 and a footer.
+SSH_KEY_PATTERN = r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+
+#: An absolute path with no whitespace in it -- what these two fields held at
+#: v0.1. Matched only to say so: they carry contents now, nothing is mounted for
+#: them, and ``known_hosts`` has no pattern of its own, so an unrecognised path
+#: would otherwise reach ``ssh`` as a known_hosts file of one nonsense line.
+#: ``\Z``, not ``$``: Python's ``$`` also matches before a trailing newline.
+PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: Backend fallbacks, and not the config's ``defaults`` block -- core has already
 #: resolved that one by the time this module runs. Each is the value used when a
@@ -115,9 +121,12 @@ TARGET_SCHEMA: dict[str, Any] = {
         # Must already exist. Creating a pool is a host-level mutation on someone
         # else's hypervisor; preflight refuses when it is missing or inactive.
         "pool": {"type": "string", "minLength": 1},
-        # Not merely non-empty: these two reach ~/.ssh/config verbatim.
-        "ssh_keyfile": {"type": "string", "pattern": SSH_PATH_PATTERN},
-        "known_hosts": {"type": "string", "pattern": SSH_PATH_PATTERN},
+        # The credentials themselves, not paths to them. The container copies
+        # each into its own ~/.ssh, which goes with `--rm`.
+        "ssh_key": {"type": "string", "pattern": SSH_KEY_PATTERN},
+        # No pattern: a known_hosts line is `host algo base64` with any
+        # algorithm name, so non-empty is the whole of what can be said.
+        "known_hosts": {"type": "string", "minLength": 1},
     },
 }
 
@@ -136,7 +145,7 @@ def connection_uri(target: dict) -> str:
     ``known_hosts`` -- it is libssh/libssh2 only -- so no spelling of the
     credential parameters does anything here. Both ends run ``ssh``, so the
     credentials reach it through ``~/.ssh/config``, which the container's
-    entrypoint writes from ``ssh_keyfile`` and ``known_hosts``. R-D's refusal of
+    entrypoint writes from ``ssh_key`` and ``known_hosts``. R-D's refusal of
     an operator-supplied query string still matters: it is what keeps
     ``no_verify=1`` off the connection. **The netloc, by contrast, travels
     verbatim** -- only the scheme and the query are replaced here -- which is why
@@ -250,7 +259,7 @@ def _check_target(target: dict) -> list[Problem]:
             Problem.error(
                 f"URI must carry no query string, got {parts.query!r}. Neither "
                 f"client reads credentials from it -- both run ssh, so "
-                f"ssh_keyfile and known_hosts travel via ~/.ssh/config, which "
+                f"ssh_key and known_hosts travel via ~/.ssh/config, which "
                 f"the container entrypoint writes. Setting it here can only "
                 f"weaken the connection: no_verify=1 disables host key "
                 f"verification.",
@@ -266,7 +275,7 @@ def _check_target(target: dict) -> list[Problem]:
             Problem.error(
                 "URI must carry no password. Neither client would use it -- both "
                 "run ssh, so credentials travel via ~/.ssh/config, which the "
-                "container entrypoint writes from ssh_keyfile and known_hosts. "
+                "container entrypoint writes from ssh_key and known_hosts. "
                 "It would be logged in plaintext with the connection.",
                 where=where,
             )
@@ -276,17 +285,17 @@ def _check_target(target: dict) -> list[Problem]:
             Problem.error(f"unexpected fragment {parts.fragment!r}", where=where)
         )
 
-    for field in ("ssh_keyfile", "known_hosts"):
-        path = target.get(field)
-        # A warning, not an error: `validate` is the offline phase and runs
-        # anywhere, while these are paths on whichever machine runs the deploy --
-        # normally the container, where they are bind-mounted at run time.
-        if path is not None and not Path(path).is_file():
+    # The v0.1 shape, which every config written so far carries. An error rather
+    # than a warning: there is no compatibility path, nothing is mounted for
+    # these any more, and the alternative is `ssh` failing on a key file holding
+    # one line of text that happens to be a filename.
+    for field in ("ssh_key", "known_hosts"):
+        value = target.get(field)
+        if isinstance(value, str) and PATH_PATTERN.match(value):
             problems.append(
-                Problem.warning(
-                    f"{path} does not exist here. It is read on the machine "
-                    f"running the deploy, not on the target, so this matters "
-                    f"only if that is this one.",
+                Problem.error(
+                    f"{field} is the credential itself now, not a path to it. "
+                    f"Paste the file's contents in -- nothing is mounted for it.",
                     where=f"target.libvirt.{field}",
                 )
             )

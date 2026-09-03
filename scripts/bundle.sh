@@ -38,10 +38,21 @@ archive_label() {
     printf '%s\n' "$value"
 }
 
+# The tag `podman load` will restore, which is the one vcows.sh has to name.
+# Read from the archive for the same reason the labels above are, and for one
+# more: `image_tag` computes a tag from the Containerfile, and a worktree suffix
+# or an edit since the build moves it away from what the archive stores.
+archive_tag() {
+    local archive="$1" tag
+    tag="$(tar -xOf "$archive" manifest.json | jq -r '.[0].RepoTags[0] // empty')"
+    [ -n "$tag" ] || die "image in $archive carries no RepoTags -- built without a tag?"
+    printf '%s\n' "$tag"
+}
+
 main() {
     need gzip jq
 
-    local scan out archive sbom report version revision worktree name
+    local scan out archive sbom report version revision worktree name tag
 
     scan="$REPO/.cache/scan"
     archive="$scan/image.tar"
@@ -78,6 +89,7 @@ main() {
     ( cd "$scan" && sha256sum -c --status PASSED ) ||
         die "the PASSED stamp in .cache/scan does not describe image.tar -- re-run 'just scan'"
 
+    tag="$(archive_tag "$archive")"
     version="$(archive_label "$archive" org.opencontainers.image.version)"
     revision="$(archive_label "$archive" org.opencontainers.image.revision)"
     name="vcows-deploy-${version}-${revision}.tar.gz"
@@ -123,19 +135,25 @@ main() {
     # reconstructed later is an SBOM for whatever was current then.
     cp "$sbom" "$report" "$out/"
 
+    # The wrapper, naming the tag the archive stores rather than the one this
+    # tree would compute. `sed` rather than `cp`: it is the only file in the
+    # bundle whose contents depend on which image it is shipped beside.
+    sed "s|@IMAGE@|$tag|" "$REPO/scripts/vcows.sh" > "$out/vcows.sh"
+    chmod 0755 "$out/vcows.sh"
+
     # Named explicitly rather than globbed: a glob would depend on the shell
     # expanding words before performing the redirection to avoid hashing the
     # file being written, and a fixed order makes SHA256SUMS itself reproducible.
     ( cd "$out" && sha256sum \
-        "$name" sbom.spdx.json trivy.json image.tar.sha256 > SHA256SUMS )
+        "$name" sbom.spdx.json trivy.json image.tar.sha256 vcows.sh > SHA256SUMS )
 
     log ""
     log "bundle  $out"
     log "  $name  ($(du -h "$out/$name" | cut -f1 || true))"
+    log "  vcows.sh  ($tag)"
     log "  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS"
     log ""
-    log "on receipt:  sha256sum -c SHA256SUMS"
-    log "             gunzip -c $name | podman load"
+    log "on receipt:  ./vcows.sh install"
     log ""
     log "not signed -- see 'Why signing was removed' in docs/ci.md"
 }
