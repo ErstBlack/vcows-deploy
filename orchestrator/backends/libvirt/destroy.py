@@ -463,36 +463,6 @@ def _deletable(path: str, target: Existing, claimed: set[str], out: Outcome) -> 
     return True
 
 
-def _deleted_on_name_alone(out: Outcome, target: Existing, path: str) -> None:
-    """Report a delete taken against the preflight snapshot rather than a domain.
-
-    The vanished branch is deliberate and stays: dropping a gone domain's
-    recorded disks is a guaranteed leak, which is worse than the race collecting
-    them opens (df60f74, 2f8ebe2). It is not the post-undefine crash window --
-    an undefined domain is in no ``listAllDomains``, so ``preflight`` yields no
-    target for it and ``orphan_volumes`` names that leak instead.
-
-    But the evidence is weaker there and said so nowhere. With no live document
-    to re-read, ``_deletable``'s two remaining guards are "no existing domain
-    claims this path" and a basename match, and a volume created *after*
-    preflight ran satisfies both by construction -- so a second operator who
-    destroys and re-deploys inside the first operator's confirm prompt has the
-    new disks unlinked, reported as ``destroyed``, with no problem recorded.
-
-    A warning rather than an error: this must not stop the teardown, and
-    ``preflight``'s module docstring requires a skip to name the object and what
-    the skip cost. This is the same obligation for a delete taken on less.
-    """
-    out.problems.append(
-        Problem.warning(
-            f"{path} was deleted on its name alone: domain {target.name!r} was "
-            f"already gone, so this path came from the preflight snapshot and "
-            f"nothing re-read the domain to confirm it still owns it",
-            where=target.name,
-        )
-    )
-
-
 def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
     """Tear down exactly the set preflight discovered. Raises on any failure.
 
@@ -568,7 +538,17 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
                     before = len(out.destroyed)
                     _delete_volume(session, path, target.name, out)
                     if vanished and len(out.destroyed) > before:
-                        _deleted_on_name_alone(out, target, path)
+                        # The vanished branch deletes against the preflight
+                        # snapshot, with no live document re-read to confirm it.
+                        out.problems.append(
+                            Problem.warning(
+                                f"{path} was deleted on its name alone: domain "
+                                f"{target.name!r} was already gone, so this path "
+                                f"came from the preflight snapshot and nothing "
+                                f"re-read the domain to confirm it still owns it",
+                                where=target.name,
+                            )
+                        )
     except BaseException as exc:
         # `out` is a local, and `DestroyError` is the only route that carries
         # it out of here. An interrupt takes neither route, so `_destroy`'s

@@ -5,8 +5,9 @@ differ because Proxmox differs, and each one is the seam earning its keep:
 
 * **A NIC attaches to a bridge, and only a bridge.** Proxmox has no equivalent of
   a libvirt network, so the ``bridge``/``network`` union does not exist here and
-  ``bridge`` is simply required. That is why ``cloudinit.check_addressing`` holds
-  the addressing checks and each backend keeps its own attachment rule.
+  ``bridge`` is simply required. There is no union to check, so this backend has
+  no attachment check of its own: ``NIC_SCHEMA`` carries the rule and
+  ``validate`` calls the shared ``cloudinit.check_addressing`` directly.
 * **Firmware is a choice, not a set of host paths.** libvirt needs ``loader``,
   ``loader_format`` and ``nvram_template`` because the operator has to name OVMF
   files that differ per distribution. Proxmox owns its own OVMF and allocates the
@@ -128,7 +129,7 @@ TARGET_SCHEMA: dict[str, Any] = {
         "import_datastore": {"type": "string", "minLength": 1},
         # Exactly one of `token`, or `user` and `password` -- checked in
         # `_check_auth` rather than as a jsonschema `oneOf`, the way the libvirt
-        # backend checks its NIC union in `_check_nics`.
+        # backend checks its NIC union in code rather than in its schema.
         "token": {"type": "string", "minLength": 1},
         "user": {"type": "string", "minLength": 1},
         "password": {"type": "string", "minLength": 1},
@@ -162,7 +163,7 @@ def validate(cfg: dict) -> list[Problem]:
         problems += structural
         if structural and not nic_checks_are_safe(vm, structural):
             continue
-        problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
+        problems += check_addressing(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
     problems += check_disk_capacity(cfg)
     problems += check_image_digest(cfg)
@@ -318,22 +319,6 @@ def _check_target(target: dict) -> list[Problem]:
             )
         )
     return problems
-
-
-def _check_nics(
-    vm: dict,
-    where: str,
-    seen_ips: dict[str, str],
-    seen_macs: dict[str, str],
-    deployment: str,
-) -> list[Problem]:
-    """The attachment rule is the schema's job here, so this is the shared half.
-
-    `bridge` is `required` in NIC_SCHEMA, so a missing one is already a
-    structural problem with a readable message. There is no union to check, which
-    is the whole difference from the libvirt backend.
-    """
-    return check_addressing(vm, where, seen_ips, seen_macs, deployment)
 
 
 def _check_image_name(cfg: dict) -> list[Problem]:
