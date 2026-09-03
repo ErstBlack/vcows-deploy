@@ -239,8 +239,11 @@ def _decision(d: Decision) -> dict[str, Any]:
     return record
 
 
-def _record(run: _Run, outcome: str, **extra: Any) -> None:
+def _record(run: _Run, outcome: str) -> None:
     """``run.json``: what was asked, what was decided, what happened.
+
+    Everything beyond the fixed keys arrives through ``run.extra``, which is the
+    only channel: a caller with something to add writes it there first.
 
     The R5 build manifest is copied in beside it, not merged into it: that half is
     baked at image build time and this half is what a runtime can observe. The
@@ -268,7 +271,6 @@ def _record(run: _Run, outcome: str, **extra: Any) -> None:
             "outcome": outcome,
             "decisions": [_decision(d) for d in run.decisions],
             **run.extra,
-            **extra,
         },
     )
 
@@ -289,7 +291,8 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
         # run directory is the whole account an air-gapped site ships back, and
         # its absence is otherwise indistinguishable from a run that never ran.
         try:
-            _record(run, "failed", error=f"{type(exc).__name__}: {exc}")
+            run.extra["error"] = f"{type(exc).__name__}: {exc}"
+            _record(run, "failed")
         except OSError as unwritable:
             # The original invariant restated: a closed stderr must not become
             # the exception the operator sees instead of `exc`.
@@ -409,7 +412,8 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
             f"{', '.join(sorted(set(creating) - set(vms))) or 'names differ'}"
         )
     _write_json(run.path / "inventory.json", {"vms": vms})
-    _record(run, "ok", created=sorted(creating))
+    run.extra["created"] = sorted(creating)
+    _record(run, "ok")
     log.info("created %d VM(s); run directory %s", len(vms), run.path)
     return 0
 
@@ -531,13 +535,10 @@ def _destroy(
     for problem in out.problems:
         _problem(problem)
 
-    _record(
-        run,
-        "failed" if out.failed else "partial" if out.skipped else "ok",
-        destroyed=sorted(out.destroyed),
-        skipped=sorted(out.skipped),
-        problems=run.extra["problems"] + [str(p) for p in out.problems],
-    )
+    run.extra["destroyed"] = sorted(out.destroyed)
+    run.extra["skipped"] = sorted(out.skipped)
+    run.extra["problems"] += [str(p) for p in out.problems]
+    _record(run, "failed" if out.failed else "partial" if out.skipped else "ok")
     log.info("destroyed %d object(s)", len(out.destroyed))
     if out.failed:
         # `Outcome`'s docstring says a backend that returns this "without its
