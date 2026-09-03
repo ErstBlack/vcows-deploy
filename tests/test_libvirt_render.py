@@ -1,8 +1,8 @@
 """`render` is pure, so it is golden-file tested byte for byte.
 
-The golden file is the tfvars document OpenTofu actually consumes. Comparing it
-whole rather than field by field is what makes an accidental rename or a dropped
-key show up as a diff instead of as a passing test.
+The golden file is the values document `create` consumes. Comparing it whole
+rather than field by field is what makes an accidental rename or a dropped key
+show up as a diff instead of as a passing test.
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ GOLDEN = Path(__file__).parent / "golden" / "libvirt.tfvars.json"
 
 
 @pytest.fixture
-def prepared(tmp_path):
+def prepared():
     """What `prepare` resolves against the session: the seed ISOs it built, and
     whether the golden image is already on this host."""
     return Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {
                 "app01": "/run/vcows/lab-a/app01-seed.iso",
@@ -120,11 +119,10 @@ def test_configured_address_is_the_primary_nics(cfg, prepared):
     assert vms["app01"]["configured_address"] == "192.168.122.70"
 
 
-def test_base_volume_when_it_is_already_on_the_host(cfg, tmp_path):
+def test_base_volume_when_it_is_already_on_the_host(cfg):
     """Each apply runs against a fresh state, so without this the module would
     try to create an existing volume on every deploy after the first."""
     prepared = Prepared(
-        workdir=tmp_path,
         artifacts={
             "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
             "base_volume": {
@@ -152,40 +150,3 @@ def test_only_the_vms_it_is_given_are_rendered(cfg, prepared):
 def test_module_helpers_agree_with_the_rendered_names():
     assert render_mod.overlay_name("app01") == "app01.qcow2"
     assert render_mod.seed_name("app01") == "app01-seed.iso"
-
-
-def test_the_provider_is_given_the_transport_that_can_reach_the_host(cfg, prepared):
-    """The two clients need different schemes, and getting it wrong fails only at
-    apply time, after a multi-GB upload.
-
-    libvirt's own client does not recognise `sshcmd` at all. The provider's `ssh`
-    dials a hardcoded monolithic socket that a split-daemon host does not have,
-    through a forward SELinux refuses. Both measured against the rig; the apply is
-    the only thing that would have noticed.
-    """
-    from orchestrator.backends.libvirt.schema import connection_uri
-
-    target = cfg["target"]["libvirt"]
-    rendered = render(cfg, prepared)["uri"]
-    assert rendered.startswith("qemu+sshcmd://")
-    assert rendered == connection_uri(target, "sshcmd")
-    assert rendered != connection_uri(target), "preflight and the apply differ"
-    # Credentials travel through ~/.ssh/config, which the container's entrypoint
-    # writes -- no spelling of the URI parameters reaches both clients.
-    assert "?" not in rendered
-
-
-# -- the other half of the module contract ---------------------------------
-
-
-def test_a_missing_vms_output_is_a_broken_module_not_an_empty_inventory():
-    """`parse_outputs` exists so the module's `output` block is not the public
-    API. Reading a renamed output as `{}` spends that isolation on silence: the
-    deploy records `created 0 VM(s)` and `outcome: ok` beside an `inventory.json`
-    that contradicts both."""
-    from orchestrator.backends.libvirt import LibvirtBackend
-
-    backend = LibvirtBackend()
-    assert backend.parse_outputs({"vms": {"value": {"app01": {}}}}).vms == {"app01": {}}
-    with pytest.raises(ValueError, match="vms"):
-        backend.parse_outputs({"something_else": {"value": "not an inventory"}})

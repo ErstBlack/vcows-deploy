@@ -12,11 +12,12 @@ requires-python = ">=3.12"
 # one of these as RPMs**, from a local repo mirror, and carries no pip and no
 # virtualenv of its own:
 #
-#   jsonschema  -> python3-jsonschema  (appstream)
-#   PyYAML      -> python3-pyyaml      (appstream)
-#   pycdlib     -> python3-pycdlib     (epel; 1.16.0 verified against the A1 API)
-#   libvirt     -> python3-libvirt     (appstream)
-#   requests    -> python3-requests    (appstream; proxmoxer's https backend)
+#   jsonschema        -> python3-jsonschema        (appstream)
+#   PyYAML            -> python3-pyyaml            (appstream)
+#   pycdlib           -> python3-pycdlib           (epel; 1.16.0, verified against the A1 API)
+#   libvirt           -> python3-libvirt           (appstream)
+#   requests          -> python3-requests          (appstream; proxmoxer's https backend)
+#   requests-toolbelt -> python3-requests-toolbelt (epel; 1.0.0)
 #
 # **`proxmoxer` is the one exception, and it is deliberate.** Measured
 # 2026-09-01: `dnf repoquery python3-proxmoxer` returns nothing across Rocky 10
@@ -30,6 +31,11 @@ requires-python = ">=3.12"
 # `requests` is declared even though proxmoxer does not require it: proxmoxer
 # marks it optional, so nothing would install it, and the https backend is the
 # only one this project uses.
+#
+# `requests-toolbelt` is declared for the same kind of reason and is never
+# imported by this project: proxmoxer streams a multipart upload only when it can
+# import it, and without it the golden image is read whole into memory and
+# anything over 2 GiB raises OverflowError.
 #
 # `libvirt-python` is absent from this list on purpose: PyPI publishes sdist
 # only, so pip would need gcc and network access. Because there is no virtualenv
@@ -53,6 +59,7 @@ dependencies = [
     "pycdlib>=1.16",
     "proxmoxer>=2.3",
     "requests>=2.32",
+    "requests-toolbelt>=1.0",
 ]
 
 [project.scripts]

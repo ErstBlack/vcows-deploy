@@ -714,15 +714,14 @@ def test_a_disk_of_the_same_name_elsewhere_does_not_clear_the_refusal(cfg, tmp_p
 # -- the connection --------------------------------------------------------
 
 
-def test_preflight_dials_qemu_ssh_not_sshcmd(cfg, monkeypatch):
-    """The two clients need different transports and `connection_uri` takes the
-    one it is given, so the call site is where the choice actually happens.
+def test_preflight_dials_qemu_ssh(cfg, monkeypatch):
+    """What is dialled, not merely that something was.
 
     libvirt's own C client does not recognise `sshcmd` at all. Handing it one is
     half of what the acceptance run found, and at a site it presents as
     `remote_open: transport in URL not recognised` -- loud, fatal, and not
-    obviously about a URI scheme. `render`'s call site is pinned twice; this one
-    was pinned by nothing, and changing it passed the whole suite.
+    obviously about a URI scheme. `connection_uri` now builds one scheme, so this
+    is what pins that the one it builds is the one this client can use.
     """
     dialled = []
     monkeypatch.setattr(libvirt, "open", lambda uri: dialled.append(uri) or conn)

@@ -75,12 +75,12 @@ class Discovered:
     """Everything one ``preflight`` walk found. The only thing that crosses from
     the connected half of the pipeline into the pure half.
 
-    It exists because ``render`` is pure while each apply runs against a fresh,
-    empty state -- so the module only ever creates, and something has to say
-    which of the things it would create are already there. For libvirt that is
-    the shared golden image, and preflight is *already* walking the pool to
-    satisfy findings.md §2's orphan-volume refusal, so the answer is a lookup on
-    data it is holding rather than a second round trip.
+    It exists because ``prepare`` cannot reach the target while ``create`` only
+    ever creates, so something has to say which of the things ``create`` would
+    make are already there. For libvirt that is the shared golden image, and
+    preflight is *already* walking the pool to satisfy findings.md §2's
+    orphan-volume refusal, so the answer is a lookup on data it is holding
+    rather than a second round trip.
 
     Core reads ``vms`` and forwards the record without ever reading
     ``artifacts``, which is what keeps core from learning what a storage volume
@@ -115,33 +115,14 @@ class Discovered:
 
 @dataclass(frozen=True)
 class Prepared:
-    """Whatever ``prepare`` produced for ``render`` to consume.
+    """Whatever ``prepare`` produced for ``create`` to consume.
 
-    ``artifacts`` is the half in use. Nothing reads ``workdir`` at v0.1 -- the
-    seam is free, the same way ``Inventory``'s below is. ``prepare`` is a context
-    manager for backends that stage bytes locally, and ``findings.md`` guarantees
-    it cannot reach the target, so a backend serving an image over HTTP or writing
-    an OVA has no other way to tell ``render`` where it put them. Deleting the
-    field narrows that contract before the backend that exercises it exists.
+    Opaque to core, which carries it from one call to the next and reads
+    nothing in it. For both shipped backends it holds the seed ISOs and the one
+    fact preflight had to look up while connected.
     """
 
-    workdir: Path
     artifacts: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Inventory:
-    """The handoff contract. Minimal, and **documented as unstable**.
-
-    Core does consume it: ``cli._deploy`` compares ``vms`` against the set it
-    asked for, refuses the deploy when the two disagree, and writes
-    ``inventory.json`` from it. What has no consumer is the *file* -- nothing
-    downstream of vcows reads it, and no schema is published for it. That is what
-    keeps the contract free to change, and why ``inventory_version`` is deferred
-    until something outside this repo depends on the shape.
-    """
-
-    vms: dict[str, dict[str, Any]]
 
 
 @dataclass
@@ -348,12 +329,10 @@ def _named(vms: list[Existing]) -> str:
 
 
 class Backend(ABC):
-    """One backend is one package, and its tofu module sits beside the file that
-    defines the class -- by convention, not by method. That is ``<pkg>/tofu/``
-    only while the class is defined in the package's own ``__init__.py``, which
-    ``cli.module_dir`` resolves and does not enforce."""
-
-    name: str
+    """One backend is one package, and the class the registry holds is its only
+    entry point. Every method below is a signature core calls in a fixed order:
+    ``validate`` offline, then ``connect`` around ``preflight``, then ``prepare``
+    from what preflight found, then ``create`` against a session again."""
 
     @abstractmethod
     def config_schema(self) -> dict:
@@ -385,37 +364,28 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def prepare(
-        self, cfg: dict, workdir: Path, discovered: Discovered
-    ) -> AbstractContextManager[Prepared]:
-        """Build whatever the apply needs, and hold it open for the apply's life.
+    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered) -> Prepared:
+        """Build whatever ``create`` needs, under ``workdir``, and record it.
 
-        A context manager because a future backend may need the orchestrator to
-        serve the image over HTTP for the hypervisor to pull -- a listening
-        socket held open for the duration and torn down after. For libvirt it
-        yields immediately after building the seed ISOs. It costs nothing today;
-        retrofitting it later would mean restructuring. Note that such a socket
-        is one the backend opened itself, not the hypervisor session, which is
-        closed by the time this runs.
+        For both shipped backends that is the seed ISOs, written into the run
+        directory and kept there so a VM that will not boot can be debugged from
+        the media it was actually given.
 
         **Takes what ``preflight`` found, not a connection.** It needs the
-        target's state -- which of the things the module would create already
+        target's state -- which of the things ``create`` would make already
         exist -- but not the ability to go and look, which ``preflight`` has
         already done. Passing data rather than a session also makes "prepare
         runs after preflight" a type dependency instead of a convention.
         """
 
     @abstractmethod
-    def render(self, cfg: dict, prepared: Prepared) -> dict:
-        """Pure: config plus prepare's record, out to a tfvars dict. No I/O."""
+    def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
+        """Create every VM in ``cfg`` and return the inventory map.
 
-    @abstractmethod
-    def parse_outputs(self, raw: dict) -> Inventory:
-        """Raw ``tofu output -json`` to the inventory contract.
-
-        Per-backend because each module declares its own outputs. Without this
-        step the module's output block *is* the public API -- rename an output
-        and every consumer of inventory.json breaks.
+        ``session`` is what ``connect`` yielded. The result is keyed by logical VM
+        name; the per-VM record is backend-specific but always carries ``name``
+        and ``configured_address``. A failure raises with the resource named and
+        rolls nothing back; ``preflight`` sees the leftovers on the next run.
         """
 
     @abstractmethod

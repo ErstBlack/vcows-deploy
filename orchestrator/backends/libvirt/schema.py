@@ -118,39 +118,28 @@ TARGET_SCHEMA: dict[str, Any] = {
 }
 
 
-def connection_uri(target: dict, transport: str = "ssh") -> str:
-    """The URI for the client that is about to use it. **The two differ.**
+def connection_uri(target: dict) -> str:
+    """The URI vcows dials. One scheme, for every client this tool has left.
 
-    Measured against the rig, in the container, because none of this is
-    documented anywhere the two implementations agree:
+    It used to build two. The second was the go-libvirt provider's
+    ``qemu+sshcmd``, and with the provider gone the same ``qemu+ssh`` serves
+    preflight, create and destroy -- all three are libvirt's own C client, which
+    does not recognise ``sshcmd`` at all (``remote_open: transport in URL not
+    recognised``) and reaches a modern split-daemon host through
+    ``virt-ssh-helper``.
 
-    * ``preflight`` uses libvirt's own C client, which does **not** recognise
-      ``sshcmd`` at all -- ``remote_open: transport in URL not recognised``. It
-      needs ``qemu+ssh``, where it reaches a modern split-daemon host through
-      ``virt-ssh-helper``.
-    * The provider is go-libvirt, whose ``qemu+ssh`` dials a hardcoded
-      ``/var/run/libvirt/libvirt-sock`` over an SSH socket forward. That socket
-      does not exist on a split-daemon host, and even given ``socket=`` the
-      forward is refused, because SELinux does not let ``sshd`` open a libvirt
-      socket. Its ``qemu+sshcmd`` runs ``ssh`` itself and asks the remote end for
-      ``virt-ssh-helper``, falling back to ``nc -U`` when that is absent -- the
-      modern path with a monolithic fallback, already upstream.
-
-    **No query string, deliberately.** Neither client honours the credential
-    parameters the way the config implies: libvirt's ``qemu+ssh`` ignores
-    ``known_hosts`` (it is libssh/libssh2 only), the provider's ``qemu+ssh``
-    spells it ``knownhosts``, and ``qemu+sshcmd`` fails outright on either. Both
-    run ``ssh``, so the credentials reach them through ``~/.ssh/config``, which
-    the container's entrypoint writes from ``ssh_keyfile`` and ``known_hosts``.
-    R-D's refusal of an operator-supplied query string still matters: it is what
-    keeps ``no_verify=1`` off the connection. **The netloc, by contrast, travels
+    **No query string, deliberately.** libvirt's ``qemu+ssh`` ignores
+    ``known_hosts`` -- it is libssh/libssh2 only -- so no spelling of the
+    credential parameters does anything here. Both ends run ``ssh``, so the
+    credentials reach it through ``~/.ssh/config``, which the container's
+    entrypoint writes from ``ssh_keyfile`` and ``known_hosts``. R-D's refusal of
+    an operator-supplied query string still matters: it is what keeps
+    ``no_verify=1`` off the connection. **The netloc, by contrast, travels
     verbatim** -- only the scheme and the query are replaced here -- which is why
-    a password is refused in ``_check_target`` rather than stripped here. Left to
-    this function it would reach the rendered tfvars and sit in the run directory
-    in plaintext.
+    a password is refused in ``_check_target`` rather than stripped here.
     """
     parts = urlsplit(target["uri"])
-    return urlunsplit(parts._replace(scheme=f"qemu+{transport}", query=""))
+    return urlunsplit(parts._replace(scheme="qemu+ssh", query=""))
 
 
 def validate(cfg: dict) -> list[Problem]:
@@ -307,14 +296,16 @@ def _check_target(target: dict) -> list[Problem]:
     if parts.password is not None:
         # The query string is not the only way credentials reach the URI, and
         # this one survives further: `connection_uri` replaces the scheme and
-        # clears the query but leaves the netloc alone, so a password is
-        # rendered into the tfvars and sits in the run directory in plaintext.
+        # clears the query but leaves the netloc alone, so a password reaches
+        # `preflight.connect`'s "connecting to %s" line whole. It used to reach
+        # the rendered tfvars too, and sit in the run directory in plaintext;
+        # `render` no longer emits a URI, so the log is where it lands now.
         problems.append(
             Problem.error(
                 "URI must carry no password. Neither client would use it -- both "
                 "run ssh, so credentials travel via ~/.ssh/config, which the "
                 "container entrypoint writes from ssh_keyfile and known_hosts. "
-                "It would be written to the run directory in plaintext.",
+                "It would be logged in plaintext with the connection.",
                 where=where,
             )
         )

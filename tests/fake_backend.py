@@ -2,9 +2,9 @@
 
 It earns its place by proving three things interface design alone cannot:
 
-1. Core runs the whole pipeline -- validate, preflight, prepare, render, apply,
-   outputs, destroy -- **with no libvirt import anywhere in the call path.** That
-   is the actual test of whether the seam is real.
+1. Core runs the whole pipeline -- validate, preflight, prepare, create,
+   destroy -- **with no libvirt import anywhere in the call path.** That is the
+   actual test of whether the seam is real.
 2. The ownership policy holds against a backend with no libvirt semantics:
    absent -> create, ours -> skip, unmarked -> refuse.
 3. Two backends register at once and the config schema composes.
@@ -20,7 +20,6 @@ from orchestrator.backends.base import (
     Backend,
     Discovered,
     Existing,
-    Inventory,
     Outcome,
     Prepared,
 )
@@ -35,17 +34,18 @@ class FakeSession:
         self.world = world
         self.closed = False
         self.destroyed: list[str] = []
+        #: What `create` read out of the `Prepared` it was handed. A caller that
+        #: builds its own instead of passing `prepare`'s is visible here.
+        self.seed: str | None = None
 
 
 class FakeBackend(Backend):
-    name = "fake"
-
     def __init__(self, name: str = "fake", world: list[Existing] | None = None):
+        #: The registry key, and the `target.<name>` block `validate` reads.
         self.name = name
         #: What "already exists on the target". Tests set this directly.
         self.world: list[Existing] = list(world or [])
         self.sessions: list[FakeSession] = []
-        self.prepared_dirs: list[Path] = []
         #: What `destroy` reports back. None means "everything that was asked".
         self.outcome: Outcome | None = None
 
@@ -94,12 +94,9 @@ class FakeBackend(Backend):
 
     # -- apply -----------------------------------------------------------
 
-    @contextmanager
-    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered):
-        self.prepared_dirs.append(workdir)
+    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered) -> Prepared:
         (workdir / "fake-artifact").write_text("seed\n")
-        yield Prepared(
-            workdir=workdir,
+        return Prepared(
             artifacts={
                 "seed": str(workdir / "fake-artifact"),
                 # Carried through from preflight, not looked up again.
@@ -107,22 +104,31 @@ class FakeBackend(Backend):
             },
         )
 
-    def render(self, cfg: dict, prepared: Prepared) -> dict:
-        return {
-            "endpoint": cfg["target"][self.name]["endpoint"],
-            "seed": prepared.artifacts["seed"],
-            "vms": {
-                vm["name"]: {
-                    "marker_xml": Marker.for_vm(vm["name"], cfg["deployment"]).to_xml(),
-                }
-                for vm in cfg["vms"]
-            },
-        }
+    def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
+        """Put every configured VM into the world, and report what went in.
 
-    def parse_outputs(self, raw: dict) -> Inventory:
-        if "vms" not in raw:
-            raise ValueError("the tofu module declared no `vms` output")
-        return Inventory(vms=raw["vms"].get("value", {}))
+        The real backends define a domain or clone a template here. This one
+        appends to the list `preflight` reads, which is what makes a second
+        deploy against the same fake see them and skip.
+        """
+        # A `Prepared` that is not `prepare`'s is a KeyError here rather than a
+        # deploy that quietly creates VMs from media nothing built.
+        session.seed = prepared.artifacts["seed"]
+        for vm in cfg["vms"]:
+            marker = Marker.for_vm(vm["name"], cfg["deployment"])
+            session.world.append(Existing(name=vm["name"], id=marker.id, marker=marker))
+        return {
+            vm["name"]: {
+                "name": vm["name"],
+                # The two keys `Backend.create` promises in every record. The
+                # fake has no networking, so this is what the config asked for
+                # and empty when it asked for nothing.
+                "configured_address": (vm.get("nics") or [{}])[0]
+                .get("ip_cidr", "")
+                .split("/")[0],
+            }
+            for vm in cfg["vms"]
+        }
 
     def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         for t in targets:

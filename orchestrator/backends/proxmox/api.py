@@ -7,12 +7,13 @@ Proxmox cluster. Nothing here is imported at module scope; ``connect`` imports
 ``proxmoxer`` inside its own body, exactly as the libvirt backend imports
 ``libvirt`` inside the methods that hold a connection.
 
-**Two things this module does not do.** It does not upload: the golden image and
-the seed ISOs both go through ``proxmox_virtual_environment_file``, which uses
-PVE's own HTTP API for the ``import`` and ``iso`` content types, so vcows never
-streams a multi-GB image itself. And it does not create: everything the apply
-does belongs to the module in ``tofu/``. What is left is discovery and teardown,
-which is the same split the libvirt backend has.
+**This module is the calls, not the phases.** ``preflight.py``, ``create.py`` and
+``destroy.py`` each drive one phase and each reaches PVE through the ``Session``
+and the helpers here, which is what makes ``wait`` a single implementation: every
+task any phase starts is checked for its ``exitstatus`` the same way. The uploads
+and the VM creation are the exception and stay in ``create.py`` against
+``Session.prox`` -- one endpoint apiece, and a wrapper here would only rename
+them.
 """
 
 from __future__ import annotations
@@ -28,14 +29,18 @@ from .schema import TOKEN_ENV, token_parts
 
 log = logging.getLogger(__name__)
 
-#: Ceiling on one PVE task. Generous because the tasks this module waits on are
-#: a stop and a delete -- a stop on a wedged guest is the slow one, and a limit
-#: short enough to be tidy would abandon a teardown that was going to succeed.
+#: Ceiling on one PVE task. The tasks waited on are a stop and a delete on the
+#: teardown, and an image upload, a VM create, a resize and a start on the create
+#: path. Generous because a stop on a wedged guest is the slow one and a limit
+#: short enough to be tidy would abandon a teardown that was going to succeed --
+#: 600 was chosen for that stop, and has not been measured against an image
+#: import, which is the other candidate for the slowest task here.
 TASK_TIMEOUT = 600
 
 #: How often ``Tasks.blocking_status`` asks. Its loop sleeps once more after the
-#: task reports stopped, so this is also a fixed tax per wait; one second is
-#: small enough not to matter against a stop or a delete.
+#: task reports stopped, so this is a fixed tax on every wait -- the upload, the
+#: create, the resize and the start of a create, and the stop and delete of a
+#: teardown. One second is small enough not to matter against any of them.
 POLL_INTERVAL = 1
 
 

@@ -9,9 +9,10 @@ document was accepted, the normaliser threw, the guest fell back to DHCP and
 reported `cloud-init status: done` on an address nobody asked for), `#161` (the
 device name the guest ends up with), and `#164`.
 
-Under the `rig` gate, which already names the hypervisor, plus what `tofu`
-names -- this applies the shipped module rather than reading state. No new gate
-name: `KNOWN` in `tests/test_gates.py` stays a closed set of seven.
+Under the `rig` gate alone, which already names the hypervisor. The deploy runs
+in this process through `python3-libvirt`, so nothing here needs a binary on
+PATH or a provider mirror. No new gate name: `KNOWN` in `tests/test_gates.py`
+stays a closed set of seven.
 
 Two facts about the rig it depends on, both of them checked by
 `tests/test_libvirt_rig.py` in its own right:
@@ -38,7 +39,7 @@ import yaml
 from orchestrator import cli
 from orchestrator.backends.libvirt import preflight
 from orchestrator.cloudinit import mac_of
-from tests.conftest import CONFIG, MIRROR, NEEDS_TOFU, TOFU, require, tofu_env
+from tests.conftest import CONFIG
 from tests.test_libvirt_rig import BASE_ON_RIG, RIG, needs_rig
 from tests.test_qcow2 import make_qcow2
 
@@ -133,7 +134,6 @@ def guest(tmp_path_factory):
     it is asserted on so a destroy that fails is a failure and not a leftover
     the next run trips over.
     """
-    require("tofu", TOFU is not None and MIRROR.is_dir(), NEEDS_TOFU)
     assert RIG is not None  # every test here is behind needs_rig
     tmp = tmp_path_factory.mktemp("boot")
 
@@ -160,20 +160,14 @@ def guest(tmp_path_factory):
     path = tmp / f"{DEPLOYMENT}.yaml"
     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
 
-    env = tofu_env(tmp)
-    with pytest.MonkeyPatch.context() as patch:
-        for name in ("TF_CLI_CONFIG_FILE", "no_proxy"):
-            patch.setenv(name, env[name])
-        assert cli.main(["deploy", str(path), "--run-dir", str(tmp / "deploy")]) == 0
-        try:
-            yield _parse(_wait_for(key))
-        finally:
-            assert (
-                cli.main(
-                    ["destroy", str(path), "--yes", "--run-dir", str(tmp / "destroy")]
-                )
-                == 0
-            )
+    assert cli.main(["deploy", str(path), "--run-dir", str(tmp / "deploy")]) == 0
+    try:
+        yield _parse(_wait_for(key))
+    finally:
+        assert (
+            cli.main(["destroy", str(path), "--yes", "--run-dir", str(tmp / "destroy")])
+            == 0
+        )
 
 
 def _stand_in(cfg: dict, tmp: Path) -> Path:
@@ -183,7 +177,7 @@ def _stand_in(cfg: dict, tmp: Path) -> Path:
     `imagecheck.check_disk_capacity`, which raises on the zero magic. A
     header-only qcow2 carrying the base image's virtual size, truncated to its
     physical size, passes both that and `preflight.base_volume`'s size
-    comparison -- so `create` is False and the module attaches the volume that
+    comparison -- so `create` is False and the deploy attaches the volume that
     is already there.
     """
     with preflight.connect(cfg) as conn:

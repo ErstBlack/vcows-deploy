@@ -1,15 +1,15 @@
 """The five commands, end to end, with `import libvirt` broken.
 
 This is `tests/test_seam.py`'s cycle run the way an operator runs it -- through
-`main()`, against a real OpenTofu, writing a real run directory. The fake backend
-has no hypervisor semantics, so anything that passes here passes because the
-pipeline works and not because libvirt happened to be installed.
+`main()`, writing a real run directory. The fake backend has no hypervisor
+semantics, so anything that passes here passes because the pipeline works and not
+because libvirt happened to be installed.
 
-`deploy` really does call `tofu init`, `plan`, `apply` and `output`, against
-`tests/tofu/`. That module uses the builtin `terraform_data`, so nothing is
-installed and nothing is contacted; what it proves is the part that has never run
-before this stage -- that render's output reaches a plan, that a plan reaches an
-apply, and that the apply's outputs come back through `parse_outputs`.
+`deploy` really does call `prepare` and then `create` on the backend the registry
+holds, against a session `connect` opened for it. What that proves is the part
+core owns: that only the VMs being created reach either call, that what `create`
+reports back is reconciled against what was asked for, and that the run directory
+records both.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ import pytest
 from orchestrator import VERSION, cli
 from orchestrator.backends.base import Existing
 from orchestrator.marker import Marker
-from tests.conftest import needs_tofu_binary, tofu_env
 from tests.fake_backend import FakeBackend
 from tests.test_seam import no_libvirt  # noqa: F401 -- used as a fixture
 
@@ -63,17 +62,6 @@ def config(tmp_path, monkeypatch):
     path = tmp_path / "lab-a.yaml"
     path.write_text(textwrap.dedent(CONFIG))
     return str(path)
-
-
-@pytest.fixture
-def offline(tmp_path, monkeypatch):
-    """Point OpenTofu at an empty filesystem mirror, so a stray provider
-    reference fails immediately instead of reaching for the registry."""
-    mirror = tmp_path / "empty-mirror"
-    mirror.mkdir()
-    env = tofu_env(tmp_path, mirror=mirror)
-    for key in ("TF_CLI_CONFIG_FILE", "no_proxy"):
-        monkeypatch.setenv(key, env[key])
 
 
 def latest_run(tmp_path):
@@ -117,10 +105,9 @@ def test_version_prints_the_single_definition(capsys):
 )
 def test_version_survives_every_way_tofu_version_can_fail(monkeypatch, capsys, raised):
     """`version` is the command you run *because* something is wrong with the
-    build. `_tofu_version`'s tuple already names the four classes `_capture` can
-    raise for this same call; `cmd_version` named two, so a slow `tofu` and a
-    `tofu` printing something unparseable -- the two states this command exists
-    to discover -- exited 1."""
+    build. `cmd_version` named two of the four classes `_capture` can raise for
+    this call, so a slow `tofu` and a `tofu` printing something unparseable --
+    the two states this command exists to discover -- exited 1."""
 
     def boom(*a, **k):
         raise raised
@@ -285,8 +272,7 @@ def test_the_backend_is_handed_the_config_on_every_call(backend, config, monkeyp
 # -- deploy -----------------------------------------------------------------
 
 
-@needs_tofu_binary
-def test_deploy_runs_the_whole_pipeline(no_libvirt, backend, config, offline, tmp_path):  # noqa: F811
+def test_deploy_runs_the_whole_pipeline(no_libvirt, backend, config, tmp_path):  # noqa: F811
     assert cli.main(["deploy", config]) == 0
     run = latest_run(tmp_path)
 
@@ -294,44 +280,42 @@ def test_deploy_runs_the_whole_pipeline(no_libvirt, backend, config, offline, tm
     # the media it was actually given rather than from a rebuild.
     assert (run / "seed" / "fake-artifact").is_file()
 
-    # What was applied, and the record of it.
-    tfvars = json.loads((run / "tofu" / "main.auto.tfvars.json").read_text())
-    assert set(tfvars["vms"]) == {"app01", "app02"}
-    assert (run / "tofu" / "plan.bin").is_file()
-    assert (run / "tofu" / "terraform.tfstate").is_file()
-    for phase in ("init", "plan", "apply"):
-        assert (run / "tofu" / f"{phase}.json").is_file()
+    # `create` was handed a session of its own, after `prepare` ran without one.
+    assert [s.closed for s in backend.sessions] == [True, True]
+    # ...and the `Prepared` that `prepare` returned, not one core built. Passing
+    # a fresh `Prepared()` here loses the media the VMs are supposed to boot.
+    assert backend.sessions[1].seed == str(run / "seed" / "fake-artifact")
 
     inventory = json.loads((run / "inventory.json").read_text())
     assert set(inventory["vms"]) == {"app01", "app02"}
+    assert inventory["vms"]["app01"]["name"] == "app01"
 
     record = json.loads((run / "run.json").read_text())
     assert record["outcome"] == "ok"
     assert record["vcows"] == VERSION
     assert record["created"] == ["app01", "app02"]
-    assert record["tofu"]["terraform_version"]
 
 
-@needs_tofu_binary
-def test_the_run_directory_is_not_world_readable(backend, config, offline, tmp_path):
+def test_the_run_directory_is_not_world_readable(backend, config, tmp_path):
     """It holds the seed ISOs, and those hold `user_data` verbatim (F12)."""
     assert cli.main(["deploy", config]) == 0
     mode = stat.S_IMODE(latest_run(tmp_path).stat().st_mode)
     assert mode == 0o700
 
 
-def test_a_second_deploy_creates_nothing_and_launches_no_tofu(
+def test_a_second_deploy_creates_nothing_and_calls_no_backend(
     backend, config, tmp_path, monkeypatch, capsys
 ):
-    """Every VM already exists and is ours. D23 drops them from the tfvars, which
-    leaves nothing to apply -- so the apply must not happen at all."""
+    """Every VM already exists and is ours. D23 drops them from the set being
+    created, which leaves nothing to do -- so neither `prepare` nor `create`
+    runs, and no seed ISO is written for a VM nobody asked for."""
     backend.world = [ours("app01"), ours("app02")]
     monkeypatch.setattr(
-        cli.tofu, "init", lambda *a, **k: pytest.fail("tofu must not run")
+        backend, "create", lambda *a, **k: pytest.fail("create must not run")
     )
     assert cli.main(["deploy", config]) == 0
     assert "nothing to create" in capsys.readouterr().err
-    assert not (latest_run(tmp_path) / "tofu").exists()
+    assert not (latest_run(tmp_path) / "seed").exists()
 
 
 def test_a_refusal_stops_the_deploy_before_anything_is_built(
@@ -339,13 +323,12 @@ def test_a_refusal_stops_the_deploy_before_anything_is_built(
 ):
     backend.world = [Existing(name="app01", id="0", marker=None)]
     monkeypatch.setattr(
-        cli.tofu, "init", lambda *a, **k: pytest.fail("tofu must not run")
+        backend, "create", lambda *a, **k: pytest.fail("create must not run")
     )
     assert cli.main(["deploy", config]) == 1
 
     run = latest_run(tmp_path)
     assert not (run / "seed").exists()
-    assert not (run / "tofu").exists()
     assert json.loads((run / "run.json").read_text())["outcome"] == "refused"
     assert "nothing was changed" in capsys.readouterr().err
 
@@ -373,24 +356,29 @@ def test_a_refused_deploys_reason_reaches_the_run_record(
     assert any("storage pool 'images'" in p for p in record["problems"])
 
 
-def test_a_failed_apply_still_leaves_a_run_record(
+def test_a_failed_create_still_leaves_a_run_record(
     backend, config, tmp_path, monkeypatch, capsys
 ):
     """The run directory is what a site ships back for support, and today it is
     present for every run where nothing happened and absent for every run where
-    something did."""
+    something did. `create` rolls nothing back, so the record of what it was
+    part-way through is the only account of the leftovers."""
+
+    class CreateError(Exception):
+        """A backend's own error. findings.md §3 rules out a shared hierarchy,
+        so core catches nothing narrower than `BaseException`."""
 
     def boom(*a, **k):
-        raise cli.tofu.TofuError("tofu init failed (exit 1): no provider mirror")
+        raise CreateError("app02: could not define the domain")
 
-    monkeypatch.setattr(cli.tofu, "init", boom)
+    monkeypatch.setattr(backend, "create", boom)
     assert cli.main(["deploy", config]) == 1
 
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "failed"
-    assert "no provider mirror" in record["error"]
+    assert "could not define the domain" in record["error"]
     assert record["decisions"], "what it was about to do survives the failure"
-    assert "TofuError" in capsys.readouterr().err
+    assert "CreateError" in capsys.readouterr().err
 
 
 def test_a_run_record_that_could_not_be_written_says_so(
@@ -419,128 +407,6 @@ def test_a_run_record_that_could_not_be_written_says_so(
     assert not (given / "run.json").exists()
 
 
-def test_a_deploy_that_worked_is_not_failed_by_the_version_it_records(
-    backend, config, tmp_path, monkeypatch, capsys
-):
-    """`tofu version` is provenance, asked for after the apply succeeded and
-    `inventory.json` is already on disk. Letting it raise reached `_guard`, which
-    wrote `outcome: failed` over a deploy that created every VM it was asked to --
-    beside an inventory saying otherwise."""
-
-    def boom(*a, **k):
-        raise cli.tofu.TofuError("tofu version failed (exit 1)")
-
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
-    )
-    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu,
-        "outputs",
-        lambda w: {"vms": {"value": {"app01": {"name": "app01"}, "app02": {}}}},
-    )
-    monkeypatch.setattr(cli.tofu, "version", boom)
-
-    assert cli.main(["deploy", config]) == 0
-    run = latest_run(tmp_path)
-    record = json.loads((run / "run.json").read_text())
-    assert record["outcome"] == "ok"
-    assert record["tofu"] is None
-    assert record["created"] == ["app01", "app02"]
-    assert (run / "inventory.json").is_file()
-    assert "cannot record the tofu version" in capsys.readouterr().err
-    # Both halves. `tofu: null` alone reads as "vcows did not ask", and the
-    # reason went to a terminal the shipped run directory does not include.
-    assert any("cannot record the tofu version" in p for p in record["problems"])
-    assert any("[tofu]" in p for p in record["problems"]), (
-        "the problem names what could not be recorded, not the VM being deployed"
-    )
-
-
-def test_a_failed_apply_records_the_warnings_that_came_before_it(
-    backend, config, tmp_path, monkeypatch
-):
-    """`Result.warnings` exists so the run directory can keep them -- "the copy
-    that outlives the terminal" -- and the failed run is where that copy matters
-    most. Collecting them once after all three steps meant the runs that raised
-    recorded none of them."""
-    warned = cli.tofu.Result(
-        0, diagnostics=(cli.tofu.Diagnostic("warning", "deprecated argument"),)
-    )
-
-    def boom(*a, **k):
-        raise cli.tofu.TofuError("tofu apply failed (exit 1)")
-
-    monkeypatch.setattr(cli.tofu, "init", lambda w: warned)
-    monkeypatch.setattr(
-        cli.tofu,
-        "plan",
-        lambda w, o: cli.tofu.Result(
-            0,
-            changes={"add": 2},
-            diagnostics=(cli.tofu.Diagnostic("warning", "unused variable"),),
-        ),
-    )
-    monkeypatch.setattr(cli.tofu, "apply", boom)
-
-    assert cli.main(["deploy", config]) == 1
-    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
-    assert record["outcome"] == "failed"
-    assert record["tofu_warnings"] == [
-        "warning: deprecated argument",
-        "warning: unused variable",
-    ]
-
-
-def test_a_failing_tofu_step_records_its_own_warnings_too(
-    backend, config, tmp_path, monkeypatch
-):
-    """The other half of the test above. `_note_warnings` runs after each step
-    *returns*, so the step that raised kept none of its own -- and `TofuError`
-    has carried the whole `Result` since it was written, with nothing in
-    production reading it."""
-
-    def boom(*a, **k):
-        raise cli.tofu.TofuError(
-            "tofu apply failed (exit 1)",
-            cli.tofu.Result(
-                1,
-                diagnostics=(
-                    cli.tofu.Diagnostic("warning", "apply warned about a flag"),
-                    cli.tofu.Diagnostic("error", "apply blew up"),
-                ),
-            ),
-        )
-
-    monkeypatch.setattr(
-        cli.tofu,
-        "init",
-        lambda w: cli.tofu.Result(
-            0, diagnostics=(cli.tofu.Diagnostic("warning", "init warned"),)
-        ),
-    )
-    monkeypatch.setattr(
-        cli.tofu,
-        "plan",
-        lambda w, o: cli.tofu.Result(
-            0,
-            changes={"add": 2},
-            diagnostics=(cli.tofu.Diagnostic("warning", "plan warned"),),
-        ),
-    )
-    monkeypatch.setattr(cli.tofu, "apply", boom)
-
-    assert cli.main(["deploy", config]) == 1
-    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
-    assert record["outcome"] == "failed"
-    assert record["tofu_warnings"] == [
-        "warning: init warned",
-        "warning: plan warned",
-        "warning: apply warned about a flag",
-    ]
-
-
 def test_an_interrupted_destroy_still_leaves_a_run_record(
     backend, config, tmp_path, monkeypatch
 ):
@@ -559,90 +425,20 @@ def test_an_interrupted_destroy_still_leaves_a_run_record(
     assert "KeyboardInterrupt" in record["error"]
 
 
-def test_a_plan_that_creates_nothing_is_never_applied(
+def test_a_backend_that_created_fewer_vms_than_asked_fails_the_deploy(
     backend, config, tmp_path, monkeypatch
 ):
-    """The last check between a mis-rendered tfvars and an apply that reports
-    success having done nothing.
-
-    Distinct from `test_a_second_deploy_creates_nothing_and_launches_no_tofu`,
-    which never reaches tofu at all: here two VMs are genuinely being created,
-    the module is initialised and planned, and the *plan* is the thing that
-    proposes nothing. Replacing the guard with `if False` passed the whole suite.
-    """
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 0})
-    )
-    monkeypatch.setattr(
-        cli.tofu, "apply", lambda *a, **k: pytest.fail("apply must not run")
-    )
-    assert cli.main(["deploy", config]) == 1
-
-    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
-    assert record["outcome"] == "failed"
-    assert "no creates for 2 VM(s)" in record["error"]
-
-
-def test_a_module_that_created_fewer_vms_than_asked_fails_the_deploy(
-    backend, config, tmp_path, monkeypatch
-):
-    """A renamed or partial output yields `created 0 VM(s)` under `outcome: ok`:
-    a run whose two artifacts contradict each other, with the record siding
+    """A backend that reports a subset yields `created 0 VM(s)` under `outcome:
+    ok`: a run whose two artifacts contradict each other, with the record siding
     against the truth. This is the reporting shape acceptance defect 5 passed
     through."""
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
-    )
-    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "outputs", lambda w: {"vms": {"value": {"app01": {"name": "app01"}}}}
-    )
-    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
+    monkeypatch.setattr(backend, "create", lambda *a: {"app01": {"name": "app01"}})
 
     assert cli.main(["deploy", config]) == 1
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "failed"
     assert "1 VM(s) for the 2" in record["error"]
     assert not (latest_run(tmp_path) / "inventory.json").exists()
-
-
-def test_staging_refuses_a_module_directory_it_cannot_copy_whole(tmp_path):
-    """Staging copies `*.tf` and the lock, so anything else is left behind and the
-    apply runs against a module missing a piece of itself -- diagnosed at a site,
-    as OpenTofu's error for whatever the absent file defined."""
-    source = tmp_path / "tofu"
-    source.mkdir()
-    (source / "main.tf").write_text("# module\n")
-    (source / "cloud-init.tftpl").write_text("# a template nothing carries\n")
-    with pytest.raises(RuntimeError, match=re.escape("cloud-init.tftpl")):
-        cli._stage_module(source, tmp_path / "workdir")
-
-
-def test_staging_ignores_what_a_local_tofu_init_left_behind(tmp_path):
-    """`.terraform/` and its state file are byproducts, not module content -- the
-    staged copy initialises itself. Refusing them would mean a developer who ran
-    `tofu init` in the source tree could no longer deploy."""
-    source = tmp_path / "tofu"
-    (source / ".terraform" / "providers").mkdir(parents=True)
-    (source / "main.tf").write_text("# module\n")
-    (source / ".terraform.tfstate").write_text("{}\n")
-    (source / ".terraform.lock.hcl").write_text("# lock\n")
-    workdir = tmp_path / "workdir"
-    workdir.mkdir()
-    cli._stage_module(source, workdir)
-    assert sorted(p.name for p in workdir.iterdir()) == [
-        ".terraform.lock.hcl",
-        "main.tf",
-    ]
-
-
-def test_staging_an_empty_module_directory_is_not_an_empty_module(tmp_path):
-    source = tmp_path / "tofu"
-    source.mkdir()
-    with pytest.raises(RuntimeError, match="no module to stage"):
-        cli._stage_module(source, tmp_path)
 
 
 def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
@@ -661,47 +457,36 @@ def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        cli.tofu, "init", lambda *a, **k: pytest.fail("tofu must not run")
+        backend, "create", lambda *a, **k: pytest.fail("create must not run")
     )
     assert cli.main(["deploy", config]) == 1
 
 
-def test_only_the_vms_that_do_not_exist_yet_reach_the_module(
+def test_only_the_vms_that_do_not_exist_yet_reach_the_backend(
     backend, config, tmp_path, monkeypatch
 ):
-    """D23: the module only ever creates, so a VM that already exists is dropped
-    from the tfvars here rather than skipped later. Against a reused state,
-    leaving it in `for_each` and then dropping it would plan a destroy of a live
-    VM; against a fresh one it would be created a second time."""
+    """D23: `create` only ever creates, so a VM that already exists is dropped
+    here rather than skipped further down. `prepare` is handed the same narrowed
+    config -- a seed ISO for a VM that is not being created is `user_data`
+    written for nothing."""
     backend.world = [ours("app01")]
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 1})
-    )
-    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "outputs", lambda w: {"vms": {"value": {"app02": {"name": "app02"}}}}
-    )
-    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
-    # `prepare` builds the seed media, and it is handed the same narrowed config
-    # -- a seed ISO for a VM that is not being created is a secret written for
-    # nothing.
-    prepared_with: list[Any] = []
-    real_prepare = backend.prepare
-    monkeypatch.setattr(
-        backend,
-        "prepare",
-        lambda cfg, *rest: prepared_with.append(cfg) or real_prepare(cfg, *rest),
-    )
+    # Both halves of the apply, recording the config each was handed.
+    narrowed: list[Any] = []
+    for name in ("prepare", "create"):
+        real = getattr(backend, name)
+        monkeypatch.setattr(
+            backend,
+            name,
+            lambda cfg, *rest, _f=real: narrowed.append(cfg) or _f(cfg, *rest),
+        )
 
     assert cli.main(["deploy", config]) == 0
-    run = latest_run(tmp_path)
-    assert [vm["name"] for vm in prepared_with[0]["vms"]] == ["app02"]
-    tfvars = json.loads((run / "tofu" / "main.auto.tfvars.json").read_text())
-    assert list(tfvars["vms"]) == ["app02"]
-    assert json.loads((run / "inventory.json").read_text())["vms"] == {
-        "app02": {"name": "app02"}
-    }
+    assert [[vm["name"] for vm in cfg["vms"]] for cfg in narrowed] == [
+        ["app02"],
+        ["app02"],
+    ]
+    inventory = json.loads((latest_run(tmp_path) / "inventory.json").read_text())
+    assert list(inventory["vms"]) == ["app02"]
 
 
 # -- the run directory ------------------------------------------------------
@@ -909,7 +694,7 @@ def test_a_returned_fatal_problem_is_not_recorded_as_ok(
     assert any("went away mid-run" in p for p in record["problems"])
 
 
-def test_a_module_that_created_the_right_count_under_wrong_names_fails(
+def test_a_backend_that_created_the_right_count_under_wrong_names_fails(
     backend, config, tmp_path, monkeypatch
 ):
     """RW-B1. The reconciliation compared counts, so two VMs asked for and two
@@ -917,21 +702,12 @@ def test_a_module_that_created_the_right_count_under_wrong_names_fails(
     `inventory.json` in the same directory disagreeing about what exists, with
     `outcome: ok` over both. The message already computed the set difference and
     carried an `or 'names differ'` fallback, so a set comparison was always the
-    intent. Unreachable through the libvirt module, whose `vms` output is keyed
-    off `for_each = var.vms`."""
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
+    intent."""
     monkeypatch.setattr(
-        cli.tofu, "plan", lambda w, o: cli.tofu.Result(0, changes={"add": 2})
+        backend,
+        "create",
+        lambda *a: {"app01": {"name": "app01"}, "ghost": {"name": "ghost"}},
     )
-    monkeypatch.setattr(cli.tofu, "apply", lambda w, p: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu,
-        "outputs",
-        lambda w: {
-            "vms": {"value": {"app01": {"name": "app01"}, "ghost": {"name": "ghost"}}}
-        },
-    )
-    monkeypatch.setattr(cli.tofu, "version", lambda w=None: {})
 
     assert cli.main(["deploy", config]) == 1
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
@@ -1201,13 +977,12 @@ def test_a_run_dir_that_cannot_be_made_private_says_which_mode_it_wanted(
     assert "0700" in err and "user_data" in err
 
 
-@needs_tofu_binary
 def test_nothing_in_the_run_directory_is_readable_by_anyone_else(
-    backend, config, offline, tmp_path
+    backend, config, tmp_path
 ):
-    """The directory has been 0700 since Stage 4; its contents were not. The
-    state, the saved plan and the JSON streams are written by tofu and the seed
-    ISOs by pycdlib, so vcows opens none of them and no chmod can reach them."""
+    """The directory has been 0700 since Stage 4; its contents were not. The seed
+    ISOs are written by pycdlib rather than by vcows, so no per-file chmod can
+    reach them and the umask is the only lever."""
     assert cli.main(["deploy", config]) == 0
     loose = sorted(
         str(p.relative_to(latest_run(tmp_path)))
@@ -1215,24 +990,6 @@ def test_nothing_in_the_run_directory_is_readable_by_anyone_else(
         if p.stat().st_mode & 0o077
     )
     assert loose == []
-
-
-def test_a_plan_with_no_change_summary_is_not_a_plan_that_creates_nothing(
-    backend, config, tmp_path, monkeypatch
-):
-    """`_read_stream` returns `{}` for a stream that is missing or will not parse,
-    deliberately -- the exit code is the authority on success. Reported as "no
-    creates" it sends whoever reads it to the module instead of to the file."""
-    monkeypatch.setattr(cli.tofu, "init", lambda w: cli.tofu.Result(0))
-    monkeypatch.setattr(cli.tofu, "plan", lambda w, o: cli.tofu.Result(0))
-    monkeypatch.setattr(
-        cli.tofu, "apply", lambda *a, **k: pytest.fail("apply must not run")
-    )
-    assert cli.main(["deploy", config]) == 1
-
-    error = json.loads((latest_run(tmp_path) / "run.json").read_text())["error"]
-    assert "no change summary" in error
-    assert "plan.json" in error
 
 
 def test_a_backend_exception_becomes_a_message_and_an_exit_code(

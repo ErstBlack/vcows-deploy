@@ -811,21 +811,20 @@ def test_every_problem_is_reported_not_just_the_first(cfg):
 # -- the URI ---------------------------------------------------------------
 
 
-def test_preflight_and_the_provider_are_given_different_transports():
-    """Measured, not chosen. libvirt's own client does not recognise `sshcmd`
-    (`transport in URL not recognised`), and the provider's `ssh` dials a
-    monolithic socket a split-daemon host does not have, through a forward
-    SELinux refuses. One config, two clients, two schemes."""
+def test_one_scheme_serves_every_client_this_tool_has():
+    """It used to build two: the go-libvirt provider needed `qemu+sshcmd`, which
+    libvirt's own client does not recognise at all (`transport in URL not
+    recognised`). With the provider gone, preflight, create and destroy are all
+    that dial, and all three are that client."""
     target = {"uri": "qemu+ssh://vcows@vcows/system"}
     assert schema.connection_uri(target) == "qemu+ssh://vcows@vcows/system"
-    assert schema.connection_uri(target, "sshcmd") == "qemu+sshcmd://vcows@vcows/system"
+    assert "sshcmd" not in schema.connection_uri(target)
 
 
 def test_credentials_never_reach_the_uri():
-    """No spelling of the credential parameters works for both clients -- libvirt
-    ignores `known_hosts`, the provider's ssh dialer spells it `knownhosts`, and
-    `sshcmd` fails on either. They arrive through ~/.ssh/config instead, so a URI
-    carrying them would be a silently ignored promise."""
+    """libvirt's `qemu+ssh` ignores `known_hosts` -- it is libssh/libssh2 only --
+    so a URI carrying the credential parameters would be a silently ignored
+    promise. They arrive through ~/.ssh/config instead."""
     uri = schema.connection_uri(
         {
             # A query string the validator would have refused, because the only
