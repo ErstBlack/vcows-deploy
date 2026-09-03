@@ -49,13 +49,11 @@ dev-env:
 # Six static gates: ruff, ruff format, hadolint, shellcheck, workflows,
 # gitleaks.
 
-# Every static gate, in one pass.
-lint:
-    ./scripts/lint.sh
+# `just lint --fix` applies what ruff can fix first; arguments pass through.
 
-# The same gates, applying what ruff can fix first.
-fix:
-    ./scripts/lint.sh --fix
+# Every static gate, in one pass.
+lint *ARGS:
+    ./scripts/lint.sh {{ARGS}}
 
 # Type-check with ty.
 typecheck:
@@ -101,13 +99,10 @@ bundle:
 # roughly four times that on a cold cache; mutmut re-tests only the mutants whose
 # function changed, so a warm one is far less.
 
+# `just mutants --write-baseline` records the current numbers in
+# docs/mutation-baseline.json: a deliberate act with a reason in the commit
+# body, never the way to make a red `just mutants` go green.
+
 # Mutation testing, failing only on a regression against the baseline.
-mutants:
-    ./scripts/mutants.sh
-
-# A deliberate act with a reason in the commit body -- never the way to make a red
-# `just mutants` go green.
-
-# Record the current mutation numbers in docs/mutation-baseline.json.
-mutants-baseline:
-    ./scripts/mutants.sh --write-baseline
+mutants *ARGS:
+    ./scripts/mutants.sh {{ARGS}}
