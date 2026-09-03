@@ -428,30 +428,37 @@ _DIGEST = "actions/checkout@" + "a" * 40
 
 GATE_ROWS = [
     # The `#82` shape: a list spliced into a list under `script:`.
-    ("anchored-list", {"ci.yml": _MINIMAL}, _ANCHORED % HOSTILE, False),
-    ("anchored-list-benign", {"ci.yml": _MINIMAL}, _ANCHORED % "just dev-env", True),
+    pytest.param({"ci.yml": _MINIMAL}, _ANCHORED % HOSTILE, False, id="anchored-list"),
+    pytest.param(
+        {"ci.yml": _MINIMAL},
+        _ANCHORED % "just dev-env",
+        True,
+        id="anchored-list-benign",
+    ),
     # A plain string under `run:`, which the walk has always reached. This is
     # the `fullmatch`-not-`match` property: the chain starts with `just check`.
-    ("bare-string", {"ci.yml": _RUN % HOSTILE}, "", False),
-    ("bare-string-benign", {"ci.yml": _MINIMAL}, "", True),
+    pytest.param({"ci.yml": _RUN % HOSTILE}, "", False, id="bare-string"),
+    pytest.param({"ci.yml": _MINIMAL}, "", True, id="bare-string-benign"),
     # A list inside a list, reached only by `lines()` recursing on itself.
-    ("nested-list", {"ci.yml": _MINIMAL}, _SCRIPT % f"[[{HOSTILE}]]", False),
-    ("nested-list-benign", {"ci.yml": _MINIMAL}, _SCRIPT % "[[just check]]", True),
+    pytest.param(
+        {"ci.yml": _MINIMAL}, _SCRIPT % f"[[{HOSTILE}]]", False, id="nested-list"
+    ),
+    pytest.param(
+        {"ci.yml": _MINIMAL}, _SCRIPT % "[[just check]]", True, id="nested-list-benign"
+    ),
     # `uses:`, the second allowlist. A tag ref is what the pin exists to refuse.
-    ("mutable-tag", {"ci.yml": _USES % "actions/checkout@v7"}, "", False),
-    ("digest-pin", {"ci.yml": _USES % _DIGEST}, "", True),
+    pytest.param(
+        {"ci.yml": _USES % "actions/checkout@v7"}, "", False, id="mutable-tag"
+    ),
+    pytest.param({"ci.yml": _USES % _DIGEST}, "", True, id="digest-pin"),
     # `workflows_carry_no_logic`'s own reason for globbing both extensions:
     # reading only one "fails open on a file it was written to cover". The file
     # discovery is the gate's, not YAML's.
-    ("yaml-extension", {"ci.yaml": _RUN % HOSTILE}, "", False),
+    pytest.param({"ci.yaml": _RUN % HOSTILE}, "", False, id="yaml-extension"),
 ]
 
 
-@pytest.mark.parametrize(
-    ("github", "gitlab", "must_pass"),
-    [row[1:] for row in GATE_ROWS],
-    ids=[row[0] for row in GATE_ROWS],
-)
+@pytest.mark.parametrize(("github", "gitlab", "must_pass"), GATE_ROWS)
 def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
     tmp_path, github, gitlab, must_pass
 ):
@@ -475,19 +482,19 @@ def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
 #: three must name no script -- pointing at `os-deps.sh` for something it does
 #: not install is worse than the bare message.
 NEED_ROWS = [
-    ("os-deps", "curl", "curl not on PATH -- run scripts/os-deps.sh"),
-    ("install-tools", "trivy", "trivy not on PATH -- run scripts/install-tools.sh"),
-    ("assumed-present", "gzip", "gzip not on PATH"),
-    ("neither-installer", "qemu-img", "qemu-img not on PATH"),
-    ("unheard-of", "nosuchtool", "nosuchtool not on PATH"),
+    pytest.param("curl", "curl not on PATH -- run scripts/os-deps.sh", id="os-deps"),
+    pytest.param(
+        "trivy",
+        "trivy not on PATH -- run scripts/install-tools.sh",
+        id="install-tools",
+    ),
+    pytest.param("gzip", "gzip not on PATH", id="assumed-present"),
+    pytest.param("qemu-img", "qemu-img not on PATH", id="neither-installer"),
+    pytest.param("nosuchtool", "nosuchtool not on PATH", id="unheard-of"),
 ]
 
 
-@pytest.mark.parametrize(
-    ("tool", "message"),
-    [row[1:] for row in NEED_ROWS],
-    ids=[row[0] for row in NEED_ROWS],
-)
+@pytest.mark.parametrize(("tool", "message"), NEED_ROWS)
 def test_need_names_the_installer_that_provides_the_missing_tool(
     tmp_path, tool, message
 ):
