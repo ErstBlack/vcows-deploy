@@ -18,7 +18,6 @@ import logging
 import re
 import sys
 import time
-from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -26,6 +25,7 @@ import pytest
 import orchestrator
 from orchestrator import cli, limits
 from orchestrator.backends.libvirt import destroy, preflight
+from tests.conftest import REPO
 
 # -- the streams and markers that go missing quietly -----------------------
 
@@ -278,8 +278,7 @@ def test_nothing_prints(capsys):
     """
     import ast
 
-    root = Path(__file__).resolve().parent.parent
-    sources = [*(root / "orchestrator").rglob("*.py"), root / "container/entrypoint.py"]
+    sources = [*(REPO / "orchestrator").rglob("*.py"), REPO / "container/entrypoint.py"]
     offenders = []
     for path in sources:
         for node in ast.walk(ast.parse(path.read_text())):
@@ -288,7 +287,7 @@ def test_nothing_prints(capsys):
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "print"
             ):
-                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+                offenders.append(f"{path.relative_to(REPO)}:{node.lineno}")
     assert offenders == []
 
 

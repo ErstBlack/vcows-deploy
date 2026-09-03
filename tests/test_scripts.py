@@ -48,8 +48,9 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS = ROOT / "scripts"
+from tests.conftest import REPO
+
+SCRIPTS = REPO / "scripts"
 
 #: Enough of a Containerfile for `containerfile_arg` to parse. Override the
 #: version line to drive the guard.
@@ -380,7 +381,7 @@ def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") 
     `tmp_path`.
     """
     tree = _tree(tmp_path, "lint.sh")
-    (tree / ".venv").symlink_to(ROOT / ".venv")
+    (tree / ".venv").symlink_to(REPO / ".venv")
     workflows = tree / ".github" / "workflows"
     workflows.mkdir(parents=True)
     for name, text in github.items():

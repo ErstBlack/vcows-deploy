@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import re
 import tomllib
-from pathlib import Path
 
 from orchestrator import VERSION
 from orchestrator.marker import Marker
-
-ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import REPO
 
 FOUR_DIGIT = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 
@@ -34,7 +32,7 @@ def test_marker_carries_the_version():
 
 
 def test_pyproject_agrees():
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    data = tomllib.loads((REPO / "pyproject.toml").read_text())
     assert data["project"]["version"] == VERSION
 
 
@@ -46,7 +44,7 @@ def test_the_image_tag_agrees():
     Containerfile would ship an image whose tag, label and manifest all disagreed
     with the marker inside every VM it created.
     """
-    text = (ROOT / "Containerfile").read_text()
+    text = (REPO / "Containerfile").read_text()
     found = re.search(r"^ARG VCOWS_VERSION=(\S+)$", text, re.MULTILINE)
     assert found is not None, "Containerfile no longer declares ARG VCOWS_VERSION"
     assert found.group(1) == VERSION
