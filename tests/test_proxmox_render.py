@@ -94,7 +94,7 @@ def test_efi_is_the_default_when_firmware_is_unset(pve_cfg, prepared):
 
 
 def test_a_nic_carries_a_null_vlan_rather_than_omitting_it(pve_cfg, prepared):
-    """A map of objects in HCL must have a uniform shape."""
+    """Every NIC in the map carries the same keys, so `create` reads one shape."""
     nics = render(pve_cfg, prepared)["vms"]
     assert nics["app01"]["nics"][0]["vlan_id"] is None
     assert nics["app02"]["nics"][0]["vlan_id"] == 42

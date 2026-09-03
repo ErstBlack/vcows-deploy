@@ -13,9 +13,8 @@ Two shapes are dictated by PVE rather than by taste:
 
 * ``bios`` is PVE's vocabulary (``ovmf``/``seabios``), translated here from the
   config's ``efi``/``bios``, so one operator reads both backends' configs.
-* ``vlan_id`` is emitted as ``null`` rather than omitted, because a map of
-  objects in HCL must have a uniform shape -- the same reason the libvirt
-  backend emits both halves of its NIC union.
+* ``vlan_id`` is emitted as ``null`` rather than omitted, so every NIC in the
+  map has the same keys and ``create`` reads one shape.
 """
 
 from __future__ import annotations

@@ -72,12 +72,11 @@ def test_capacity_is_in_bytes_on_the_overlay(cfg, prepared):
     assert render(cfg, prepared)["vms"]["app01"]["disk_bytes"] == 40 * 1024**3
 
 
-def test_a_nic_carries_both_union_keys_with_one_null(cfg, prepared):
-    """A ternary between two differently-shaped objects does not type-check in
-    HCL, so the shape stays uniform and the choice lives in the values."""
+def test_a_nic_names_the_attachment_kind_and_its_source(cfg, prepared):
+    """The config names either a network or a bridge; the choice is made here, so
+    `create.domain_xml` has one shape to spell into its `<interface>`."""
     nic = render(cfg, prepared)["vms"]["app01"]["nics"][0]
-    assert nic["network"] == "default"
-    assert nic["bridge"] is None
+    assert (nic["kind"], nic["source"]) == ("network", "default")
 
     cfg["vms"][0]["nics"][0] = {
         "bridge": "br0",
@@ -85,7 +84,7 @@ def test_a_nic_carries_both_union_keys_with_one_null(cfg, prepared):
         "gateway": "192.168.122.1",
     }
     nic = render(cfg, prepared)["vms"]["app01"]["nics"][0]
-    assert (nic["network"], nic["bridge"]) == (None, "br0")
+    assert (nic["kind"], nic["source"]) == ("bridge", "br0")
 
 
 def test_firmware_defaults_and_overrides(cfg, prepared):

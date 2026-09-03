@@ -245,8 +245,8 @@ prepare() {
         {
           "mac": "52:54:00:be:a8:60",
           "model": "virtio",
-          "network": "default",
-          "bridge": null
+          "kind": "network",
+          "source": "default"
         }
       ]
     }

@@ -3,12 +3,6 @@
 Everything ``create`` needs that is not in its XML templates comes through here
 as *values*, which is what keeps the whole config-to-values step testable with
 no hypervisor: it is compared against a golden file byte for byte.
-
-One shape here was dictated by HCL rather than by taste, and it stays. A NIC
-emits **both** ``network`` and ``bridge`` with the unused one ``None``: a ternary
-between two differently-shaped objects did not type-check in HCL, so the shape
-stayed uniform and the choice lived in the values. ``create.domain_xml`` reads it
-the same way, so there is nothing to gain by narrowing it now.
 """
 
 from __future__ import annotations
@@ -86,6 +80,8 @@ def _nic(vm: dict, index: int, deployment: str) -> dict[str, Any]:
     return {
         "mac": mac_of(vm, index, deployment),
         "model": nic.get("model", "virtio"),
-        "network": nic.get("network"),
-        "bridge": nic.get("bridge"),
+        # The config names either a `network` or a `bridge`; the choice is made
+        # here, and `create.domain_xml` spells both into the same two slots.
+        "kind": "network" if nic.get("network") else "bridge",
+        "source": nic.get("network") or nic.get("bridge"),
     }
