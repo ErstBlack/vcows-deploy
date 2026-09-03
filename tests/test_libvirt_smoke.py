@@ -10,9 +10,10 @@ that quietly passes because it did not run is worse than no gate.
 **Every needle here is still the one the shell matched, character for
 character**, with one exception and one narrowing, both forced by the move off
 the OpenTofu provider (`#204`) and both marked where they are: `create.py`
-declares `format='raw'` on the loader where the module passed null, and libvirt
-hands that attribute back, so the loader needle carries it and the two absences
-are scoped to the `<nvram>` line they were always about.
+declares `format='raw'` on the loader where the module passed null, and whether
+libvirt hands that attribute back depends on its version, so the loader needle
+accepts both measured echoes and the two absences are scoped to the `<nvram>`
+line they were always about.
 
 The subject changed; what is asserted about it did not. These are assertions
 about a document libvirtd stored, and libvirtd does not know which client sent
@@ -189,14 +190,20 @@ PRESENT = [
     # directory and .fd suffix -- so it is also what proves the element is there
     # for the two absences below to mean anything.
     #
-    # `format='raw'` is the one needle that changed with #204 and it is not
-    # cosmetic: the module passed `format = null` for a raw loader, where
-    # `create.firmware_xml` declares the format it was given, and libvirt stores
-    # the attribute rather than dropping it as a default. So this now asserts the
-    # declaration survived too.
+    # The loader needle is the one that changed with #204: the module passed
+    # `format = null` for a raw loader, where `create.firmware_xml` declares the
+    # format it was given. What libvirt echoes for a raw loader is a version
+    # fact, measured: 11.1.0 (the dev box, test driver) stores `format='raw'`;
+    # 10.0.0 (this gate's runner, qemu driver, after the descriptor match that
+    # fills `firmware='efi'` back) stores the element without it. Both are the
+    # pinned loader reaching the domain verbatim, so either form passes; a
+    # needle is a string or a tuple of acceptable strings.
     (
         "the pinned raw loader reached the domain verbatim",
-        f"<loader readonly='yes' type='pflash' format='raw'>{LOADER}</loader>",
+        (
+            f"<loader readonly='yes' type='pflash'>{LOADER}</loader>",
+            f"<loader readonly='yes' type='pflash' format='raw'>{LOADER}</loader>",
+        ),
     ),
     (
         "the varstore path follows the raw template's suffix",
@@ -314,7 +321,8 @@ class TestApplied:
         "needle", [needle for _, needle in PRESENT], ids=[what for what, _ in PRESENT]
     )
     def test_the_domain_xml_carries(self, domain_xml, needle):
-        assert needle in domain_xml
+        forms = (needle,) if isinstance(needle, str) else needle
+        assert any(form in domain_xml for form in forms), forms
 
     @pytest.mark.parametrize(
         "needle", [needle for _, needle in ABSENT], ids=[what for what, _ in ABSENT]
