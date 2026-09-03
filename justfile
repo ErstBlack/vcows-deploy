@@ -106,3 +106,8 @@ bundle:
 # Mutation testing, failing only on a regression against the baseline.
 mutants *ARGS:
     ./scripts/mutants.sh {{ARGS}}
+
+# Machine-local recipes, if this box has any. `import?` is silent when the file
+# is absent, which is every CI runner; what a box keeps there is its own
+# business and never lands in this repository.
+import? '/srv/vcows-holding/local.just'
