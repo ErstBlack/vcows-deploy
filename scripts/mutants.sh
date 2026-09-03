@@ -50,6 +50,10 @@
 # and needs no listing step to build. Measured last-digit spread over 4937
 # mutants: 8.6% to 11.3% per digit, five shards at 931/1045/1019/984/958.
 #
+# The shard's numbers reach the verdict by two roads: on GitHub as a job output,
+# read back from VCOWS_MUTANTS_STATS_k, and on GitLab as the artifact file this
+# writes either way.
+#
 # An environment variable rather than a flag because `workflows_carry_no_logic`
 # in scripts/lint.sh fullmatches every CI command against `just [a-z][a-z-]*`,
 # and `just mutants --shard 1/5` is not that. A local run sets nothing and is
@@ -165,7 +169,7 @@ judge() {
 # One shard: run its glob, save its numbers, judge nothing. The verdict is a
 # question about all N shards at once, and no shard holds the answer.
 run_shard() {
-    local spec="$1" k n d digits="" glob stats total checked survived no_tests
+    local spec="$1" k n d digits="" glob stats total checked survived no_tests compact
 
     [[ "$spec" =~ ^([0-9]+)/([0-9]+)$ ]] ||
         die "VCOWS_MUTANTS_SHARD is '$spec' -- expected 'k/N', as in 1/5"
@@ -201,6 +205,19 @@ run_shard() {
 
     mkdir -p "$SHARD_DIR"
     cp "$STATS" "$SHARD_DIR/shard-$k.json"
+    # And, on GitHub, as a job output as well. Artifacts were the first design
+    # and every shard's upload failed with "Artifact storage quota has been hit"
+    # (job 100822624337): the quota is shared across the account, recalculated
+    # only every 6 to 12 hours, and stale-full from delivery bundles already
+    # deleted. Step outputs have their own 1 MB-per-job budget, which a hundred
+    # bytes of counters will not fill. The file above is still written, because
+    # GitLab's side of this seam is the artifact.
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        # `jq -c` on its own line, and one line of output: a step output is a
+        # `name=value` pair that a newline ends.
+        compact="$(jq -c . "$STATS")"
+        printf 'stats-%s=%s\n' "$k" "$compact" >> "$GITHUB_OUTPUT"
+    fi
     log ""
     log "  shard     $k of $n  ($glob)"
     log "  checked   $checked of $total"
@@ -217,6 +234,24 @@ verdict() {
     local dir="$1" files raw sums distinct total killed survived no_tests checked
 
     [ -n "$dir" ] || die "--verdict needs the directory the shard stats were collected into"
+
+    # The GitHub side of the seam run_shard writes: the shards' numbers arrive as
+    # job outputs rather than as files, because the account's artifact storage
+    # quota refused the uploads (job 100822624337). Landing them in $dir first
+    # means one code path judges both platforms -- GitLab's shards arrive here as
+    # artifact files and set none of these.
+    #
+    # An unset or empty variable is skipped rather than diagnosed: a cancelled
+    # matrix job leaves its output empty, and the sum check below is what has to
+    # catch that, since it is also what catches a shard that ran nothing.
+    local n var
+    for n in 1 2 3 4 5 6 7 8 9 10; do
+        var="VCOWS_MUTANTS_STATS_$n"
+        if [ -n "${!var:-}" ]; then
+            mkdir -p "$dir"
+            printf '%s\n' "${!var}" > "$dir/shard-$n.json"
+        fi
+    done
 
     shopt -s nullglob
     files=("$dir"/*.json)

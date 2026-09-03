@@ -117,8 +117,10 @@ mutation-verdict:
   timeout: 15m
   cache: [*tools_cache]
   # Not *bootstrap: that anchor's third line is `just dev-env`, and the verdict
-  # is jq over five small files -- no venv, no mutants/ tree. Mirrors the
-  # mutation-verdict job in .github/workflows/ci.yml.
+  # is jq over five small files -- no venv, no mutants/ tree. The same job in
+  # .github/workflows/ci.yml differs in one respect: it receives those files as
+  # job outputs, because that account's artifact storage quota refused the
+  # uploads. Here the artifacts above are the seam.
   script:
     - ./scripts/os-deps.sh
     - ./scripts/install-tools.sh

@@ -69,6 +69,12 @@ jobs:
   # 7m53s over 4983 mutants. The loop is 93% of the job, per-mutant fixed cost is
   # ~65 ms of warm pytest, and the only lever left is cores -- which on the Free
   # plan means more runners rather than a bigger one.
+  #
+  # Measured sharded, on the same runners: the `just mutants` step is 1m54s and
+  # the whole job 2m13s. Generation is 14s and the stats phase ~18s of that, so
+  # the loop is about 80s for shard 1's 944 mutants, at 11.7 mutants/second
+  # against 58.97 on a 16-core box. The fixed ~35s each shard repeats is the
+  # price of the split, and five of them still finish in a quarter of 8m31s.
   mutation:
     runs-on: ubuntu-latest
     # `VCOWS_MUTANTS_SHARD=k/5` takes the mutants whose ordinal ends in a digit
@@ -84,6 +90,25 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5]
+    # The shards' numbers, carried to the verdict as job outputs rather than as
+    # artifacts: every upload-artifact step here failed with "Artifact storage
+    # quota has been hit" (job 100822624337), because the 500 MB is shared across
+    # the account and recalculated every 6 to 12 hours, so bundles deleted hours
+    # ago still occupy it. Outputs have their own 1 MB per job, and five stats
+    # objects are a few hundred bytes.
+    #
+    # Each matrix job sets only its own key; the other four evaluate to empty in
+    # it, and GitHub keeps the non-empty value across the matrix. That last claim
+    # is the one this shape rests on and it is measured by this run, not by the
+    # documentation. A cancelled or failed shard leaves its key empty, which the
+    # verdict's sum check fails on -- the same check that catches a shard that
+    # ran nothing.
+    outputs:
+      stats-1: ${{ steps.mutants.outputs.stats-1 }}
+      stats-2: ${{ steps.mutants.outputs.stats-2 }}
+      stats-3: ${{ steps.mutants.outputs.stats-3 }}
+      stats-4: ${{ steps.mutants.outputs.stats-4 }}
+      stats-5: ${{ steps.mutants.outputs.stats-5 }}
     # Still 30, and still sized against a wedge rather than a slow run, like
     # `check`'s: a shard is now a fifth of the work, not a fifth of the ceiling.
     timeout-minutes: 30
@@ -119,32 +144,27 @@ jobs:
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
       - run: just dev-env
+      # A shard judges nothing: its numbers mean something only summed with the
+      # other four. `id:` is what lets the job's `outputs:` above read the
+      # `stats-<k>` line scripts/mutants.sh appends to $GITHUB_OUTPUT.
       - run: just mutants
+        id: mutants
         env:
           VCOWS_MUTANTS_SHARD: ${{ matrix.shard }}/5
-      # A shard judges nothing, because its numbers mean something only summed
-      # with the other four, and matrix jobs share nothing but artifacts.
-      # `if-no-files-found: error` for the reason `fail-fast: false` is set
-      # above: a shard that reports nothing otherwise reaches the verdict as four
-      # shards that add up to less, which is the vacuous pass scripts/mutants.sh
-      # exists to catch. One day of retention because these files are a few
-      # hundred bytes each and the repository's artifact quota is what disabled
-      # the delivery upload in scheduled.yml.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          name: mutation-stats-${{ matrix.shard }}
-          path: .cache/mutation-stats/
-          if-no-files-found: error
-          retention-days: 1
 
   # Where a sharded run becomes a verdict. A job rather than a step because
-  # matrix jobs share nothing but artifacts: each shard holds part of the count
-  # and none of them can apply the gate.
+  # matrix jobs share nothing: each shard holds part of the count and none of
+  # them can apply the gate.
   #
   # `just mutants-verdict` sums the five stats files and asserts the sum accounts
   # for every mutant mutmut generated. That equality is `generation_floor`'s
   # argument in sharded form -- it is what catches a shard that checked nothing
-  # or an artifact that never arrived, neither of which any single shard can see.
+  # and one whose numbers never arrived, neither of which any single shard sees.
+  #
+  # The five numbers arrive as `needs.mutation.outputs`, not as artifacts, for
+  # the quota reason the `outputs:` block above records (job 100822624337).
+  # scripts/mutants.sh writes each non-empty one back into a shard file, so the
+  # summing code is the same one GitLab's artifacts feed.
   #
   # No `just dev-env` and no uv cache: the verdict is jq over five small files,
   # and it needs neither the venv nor a mutants/ tree.
@@ -162,12 +182,13 @@ jobs:
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
-        with:
-          pattern: mutation-stats-*
-          merge-multiple: true
-          path: .cache/mutation-stats
       - run: just mutants-verdict
+        env:
+          VCOWS_MUTANTS_STATS_1: ${{ needs.mutation.outputs.stats-1 }}
+          VCOWS_MUTANTS_STATS_2: ${{ needs.mutation.outputs.stats-2 }}
+          VCOWS_MUTANTS_STATS_3: ${{ needs.mutation.outputs.stats-3 }}
+          VCOWS_MUTANTS_STATS_4: ${{ needs.mutation.outputs.stats-4 }}
+          VCOWS_MUTANTS_STATS_5: ${{ needs.mutation.outputs.stats-5 }}
 
   # The end-to-end gate. It deploys against a libvirtd installed on the runner
   # and asserts against `virsh dumpxml` and `qemu-img info` rather than against

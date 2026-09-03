@@ -112,9 +112,9 @@ bundle:
 mutants *ARGS:
     ./scripts/mutants.sh {{ARGS}}
 
-# The verdict over a sharded CI run: sum the stats the shard jobs left in
-# .cache/mutation-stats/ and apply the same baseline gate to the sum. Needs jq
-# and those files, and neither a venv nor a mutants/ tree.
+# Needs jq and the files the shard jobs left in .cache/mutation-stats/, and
+# neither a venv nor a mutants/ tree.
+# The verdict over a sharded CI run: the shard stats summed, then the baseline gate.
 mutants-verdict:
     ./scripts/mutants.sh --verdict .cache/mutation-stats
 
