@@ -57,19 +57,6 @@ lint:
 fix:
     ./scripts/lint.sh --fix
 
-# The secret scan on its own, for when that is the question. `just lint` runs the
-# same command as its sixth gate, so this adds no coverage -- it is the short
-# way to re-check after touching something that looks like a credential, without
-# waiting on ruff, hadolint, shellcheck and the workflow parser.
-#
-# `git` rather than `dir` scans history instead of the tree, and is the one-time
-# question this deliberately does not ask on every run:
-#   .tools/bin/gitleaks git . --no-banner --redact
-
-# Scan the working tree for secrets (the sixth `just lint` gate, on its own).
-secrets:
-    .tools/bin/gitleaks dir . -c .gitleaks.toml --no-banner --redact
-
 # Type-check with ty.
 typecheck:
     .venv/bin/ty check
