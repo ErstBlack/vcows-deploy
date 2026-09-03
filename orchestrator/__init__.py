@@ -36,19 +36,15 @@ VERSION = "0.1.0.0"
 #: with no trailing newline so the cursor stays where the operator types -- being
 #: the only unprefixed output there is, it is trivially separable from the log.
 #:
-#: Both `%(levelname)-7s` and `%(short)-10s` are padded, so the message column
+#: Both `%(levelname)-7s` and `%(module)-10s` are padded, so the message column
 #: starts at the same offset on every line whatever the level or the module. That
 #: is what keeps `cli._row`'s table aligned once every row carries a prefix, and
 #: what makes a wall of these scannable at all.
 #:
-#: `short` is the module rather than the dotted path -- `preflight`, not
-#: `orchestrator.backends.libvirt.preflight`, which is 38 characters of the same
-#: prefix on every line. `_Short` below supplies it.
-#:
 #: Milliseconds because a preflight puts four lines in the same second, and an
 #: operator correlating against hypervisor logs needs the ordering to be visible
 #: rather than inferred from line order.
-LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)-7s %(short)-10s %(message)s"
+LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)-7s %(module)-10s %(message)s"
 
 #: UTC, matching the run directory's name -- the trailing `Z` is in LOG_FORMAT,
 #: after the milliseconds. `asctime` is localtime unless the converter below says
@@ -61,8 +57,8 @@ LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 #: a usable quiet mode -- it drops the report and keeps the problems.
 LOG_LEVEL_DEFAULT = "INFO"
 
-#: Named `vcows` rather than by `__name__`: `orchestrator` is the one module
-#: name wider than the `short` column, and this logger exists for one message.
+#: Named `vcows` rather than by `__name__`, and it exists for one message: the
+#: rejected `VCOWS_LOG_LEVEL` warning at the foot of this file.
 log = logging.getLogger("vcows")
 
 
@@ -85,19 +81,6 @@ def _log_level() -> tuple[str, str | None]:
     if raw.upper() not in logging.getLevelNamesMapping():
         return LOG_LEVEL_DEFAULT, raw
     return raw.upper(), None
-
-
-class _Short(logging.Filter):
-    """Supply ``%(short)s``: the module, without the package path above it.
-
-    Every line in this process comes from the same package, so the dotted prefix
-    is 20-odd characters of noise repeated on each one -- and, being variable
-    width, it moves the message column around and defeats the padding.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.short = record.name.rsplit(".", 1)[-1]
-        return True
 
 
 class _Stderr(logging.StreamHandler):
@@ -140,7 +123,6 @@ def configure_logging() -> str | None:
     """
     logging.Formatter.converter = time.gmtime
     handler = _Stderr()
-    handler.addFilter(_Short())
     handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
     root = logging.getLogger()
     root.handlers.clear()
