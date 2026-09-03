@@ -24,10 +24,6 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-# $CLAUDE_PROJECT_DIR is set by the harness. The fallback keeps the script
-# runnable by hand, which is how it was verified.
-REPO="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-
 # The first stderr line has to be this script's message, so a missing jq is
 # reported here rather than as bash's own "command not found" ahead of it.
 if ! command -v jq >/dev/null 2>&1; then
@@ -36,17 +32,40 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
+# The harness sends `name` and `cwd` and nothing else -- measured 2026-09-03
+# against Claude Code 2.1.259, and the hooks documentation lists no other
+# field. Everything else is derived from `cwd`, which is the checkout the
+# session was in when it asked: the repo root through git's common dir, so a
+# request made from inside a linked worktree still lands beside it rather than
+# under it, and the source branch from that checkout's HEAD, so a worktree cut
+# while on a feature branch starts from the feature branch and not from master.
 input="$(cat)"
 name="$(jq -r '.name // empty' <<<"$input" 2>/dev/null)"
-path="$(jq -r '.path // empty' <<<"$input" 2>/dev/null)"
-source_branch="$(jq -r '.source_branch // empty' <<<"$input" 2>/dev/null)"
+cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"
+cwd="${cwd:-$PWD}"
 
-if [ -z "$name" ] || [ -z "$path" ] || [ -z "$source_branch" ]; then
+if [ -z "$name" ]; then
     printf 'vcows: worktree setup failed at input\n' >&2
-    printf 'expected name, path and source_branch in the hook JSON, got:\n' >&2
+    printf 'expected name in the hook JSON, got:\n' >&2
     printf '%s\n' "$input" >&2
     exit 1
 fi
+
+# Absolute, because `--git-common-dir` is otherwise relative to `cwd` and this
+# script's own working directory is not promised to be `cwd`.
+common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common=""
+if [ -z "$common" ]; then
+    printf 'vcows: worktree setup failed at input\n' >&2
+    printf 'cwd is not inside a git repository: %s\n' "$cwd" >&2
+    exit 1
+fi
+REPO="$(dirname "$common")"
+# A branch name when on one, the commit when detached: `worktree add` accepts
+# either as the start point.
+source_branch="$(git -C "$cwd" symbolic-ref -q --short HEAD 2>/dev/null || git -C "$cwd" rev-parse HEAD)"
+# The directory the harness itself uses, so `EnterWorktree` with `path` and the
+# exit-time cleanup both recognise the tree.
+path="$REPO/.claude/worktrees/$name"
 
 branch="worktree-$name"
 
