@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator.backends.base import Prepared
+from orchestrator.backends.base import Discovered, Prepared
 from orchestrator.backends.libvirt import LibvirtBackend
 from orchestrator.backends.libvirt import create as create_mod
 from tests.fake_libvirt import FakeConnection, FakePool, lv_error
@@ -75,6 +75,36 @@ def defined(cfg, conn, prepared, name: str) -> str:
     return domain_of(conn, name)
 
 
+# -- prepare ---------------------------------------------------------------
+
+
+def test_prepare_builds_a_seed_per_vm_and_carries_the_base_volume(cfg, tmp_path):
+    """The other half of what `create` is handed. The seed paths are built here
+    and the base volume is only passed through: preflight found it while
+    connected, and nothing downstream can find it out again.
+    """
+    discovered = Discovered(
+        vms=(),
+        artifacts={
+            "base_volume": {
+                "name": "golden.qcow2",
+                "create": False,
+                "path": "/var/lib/libvirt/images/golden.qcow2",
+            }
+        },
+    )
+
+    prepared = LibvirtBackend().prepare(cfg, tmp_path, discovered)
+
+    assert prepared.artifacts["seed_isos"] == {
+        "app01": str(tmp_path / "app01-seed.iso"),
+        "app02": str(tmp_path / "app02-seed.iso"),
+    }
+    assert (tmp_path / "app01-seed.iso").is_file()
+    assert (tmp_path / "app02-seed.iso").is_file()
+    assert prepared.artifacts["base_volume"] == discovered.artifacts["base_volume"]
+
+
 # -- the base volume -------------------------------------------------------
 
 
@@ -111,15 +141,23 @@ def test_the_base_image_is_not_uploaded_when_the_host_already_has_it(cfg, conn, 
     assert pool.uploads == {}
 
 
-def test_the_capacity_declared_for_the_base_is_the_source_files_size(
+def test_the_base_volume_is_declared_at_the_source_size_and_backs_onto_nothing(
     cfg, conn, pool, prepared
 ):
-    """Spike A4: whatever is declared here is discarded when libvirt reads the
-    uploaded qcow2 header, so the honest number is the file's own size."""
+    """The whole document, because every field in it is a value the daemon acts
+    on. Spike A4: whatever capacity is declared here is discarded when libvirt
+    reads the uploaded qcow2 header, so the honest number is the file's own size
+    -- and the base backs onto nothing, which is what makes it the base.
+    """
     deployed(cfg, conn, prepared)
-    assert (
-        f"<capacity unit='bytes'>{len(BASE_BYTES)}</capacity>"
-        in (pool.volumes["golden.qcow2"])
+
+    assert pool.volumes["golden.qcow2"] == (
+        "<volume type='file'>\n"
+        "  <name>golden.qcow2</name>\n"
+        f"  <capacity unit='bytes'>{len(BASE_BYTES)}</capacity>\n"
+        "  <target><format type='qcow2'/></target>\n"
+        "  \n"
+        "</volume>"
     )
 
 
@@ -131,13 +169,15 @@ def test_the_overlay_backs_onto_the_base_and_carries_the_configured_capacity(
 ):
     deployed(cfg, conn, prepared)
 
-    overlay = pool.volumes["app01.qcow2"]
-    assert (
-        "<backingStore><path>/var/lib/libvirt/images/golden.qcow2</path>"
-        "<format type='qcow2'/></backingStore>" in overlay
+    assert pool.volumes["app01.qcow2"] == (
+        "<volume type='file'>\n"
+        "  <name>app01.qcow2</name>\n"
+        f"  <capacity unit='bytes'>{40 * 1024**3}</capacity>\n"
+        "  <target><format type='qcow2'/></target>\n"
+        "  <backingStore><path>/var/lib/libvirt/images/golden.qcow2</path>"
+        "<format type='qcow2'/></backingStore>\n"
+        "</volume>"
     )
-    assert f"<capacity unit='bytes'>{40 * 1024**3}</capacity>" in overlay
-    assert "<format type='qcow2'/>" in overlay
     # The one place `disk_gb` survives, so it must not also be on the base.
     assert f"{40 * 1024**3}" not in pool.volumes["golden.qcow2"]
 
@@ -190,10 +230,15 @@ def test_the_domain_carries_the_disks_the_run_just_made(cfg, conn, prepared):
 
 def test_autoselected_firmware_pins_nothing(cfg, conn, prepared):
     """app01 sets no loader, so libvirt picks the descriptors itself. The
-    exclusivity matters: a `<loader>` beside `firmware='efi'` is refused."""
+    exclusivity matters: a `<loader>` beside `firmware='efi'` is refused, so the
+    whole block is asserted rather than the attribute alone."""
     xml = defined(cfg, conn, prepared, "app01")
-    assert "<os firmware='efi'>" in xml
-    assert "<loader" not in xml and "<nvram" not in xml
+    assert (
+        "  <os firmware='efi'>\n"
+        "    <type arch='x86_64' machine='q35'>hvm</type>\n"
+        "    <boot dev='hd'/>\n"
+        "  </os>\n" in xml
+    )
 
 
 def test_a_pinned_loader_replaces_the_autoselection_and_names_its_varstore(
@@ -203,14 +248,16 @@ def test_a_pinned_loader_replaces_the_autoselection_and_names_its_varstore(
     an `.fd` varstore against a qcow2 loader is the mismatch acceptance paid for.
     """
     xml = defined(cfg, conn, prepared, "app02")
-    assert "firmware='efi'" not in xml
     assert (
-        "<loader readonly='yes' type='pflash' format='qcow2'>"
-        "/usr/share/edk2/ovmf/OVMF_CODE_4M.qcow2</loader>" in xml
-    )
-    assert (
-        "<nvram template='/usr/share/edk2/ovmf/OVMF_VARS_4M.qcow2' format='qcow2'>"
-        f"{create_mod.NVRAM_DIR}/app02_VARS.qcow2</nvram>" in xml
+        "  <os>\n"
+        "    <type arch='x86_64' machine='q35'>hvm</type>\n"
+        "    <loader readonly='yes' type='pflash' format='qcow2'>"
+        "/usr/share/edk2/ovmf/OVMF_CODE_4M.qcow2</loader>\n"
+        "    <nvram template='/usr/share/edk2/ovmf/OVMF_VARS_4M.qcow2' "
+        "format='qcow2'>"
+        f"{create_mod.NVRAM_DIR}/app02_VARS.qcow2</nvram>\n"
+        "    <boot dev='hd'/>\n"
+        "  </os>\n" in xml
     )
 
 
@@ -232,6 +279,32 @@ def test_a_loader_with_no_template_asks_for_no_varstore():
     assert loader.endswith("/usr/share/OVMF/OVMF_CODE.fd</loader>\n")
 
 
+def test_a_raw_loader_names_an_fd_varstore_and_declares_no_format():
+    """RHEL ships a raw `.fd` OVMF pair where Fedora ships qcow2, which is why
+    the paths are config. Two things follow the format and nothing else says so:
+    the varstore's extension, and the `format=` attribute that must be *absent*
+    for raw -- libvirt takes the default there, and a `format='raw'` beside a
+    template it has to copy is the pairing the pinned case exists to avoid.
+    """
+    firmware, loader = create_mod.firmware_xml(
+        {
+            "firmware": "efi",
+            "loader": "/usr/share/OVMF/OVMF_CODE.fd",
+            "loader_format": "raw",
+            "nvram_template": "/usr/share/OVMF/OVMF_VARS.fd",
+            "domain_name": "app01",
+        }
+    )
+
+    assert firmware == ""
+    assert loader == (
+        "    <loader readonly='yes' type='pflash' format='raw'>"
+        "/usr/share/OVMF/OVMF_CODE.fd</loader>\n"
+        "    <nvram template='/usr/share/OVMF/OVMF_VARS.fd'>"
+        f"{create_mod.NVRAM_DIR}/app01_VARS.fd</nvram>\n"
+    )
+
+
 def test_bios_asks_for_no_firmware_at_all(cfg, conn, prepared):
     cfg["vms"][0]["firmware"] = "bios"
     xml = defined(cfg, conn, prepared, "app01")
@@ -239,16 +312,37 @@ def test_bios_asks_for_no_firmware_at_all(cfg, conn, prepared):
     assert "firmware=" not in xml
 
 
-def test_the_nic_is_attached_the_way_the_config_spelled_it(cfg, conn, prepared):
-    cfg["vms"][0]["nics"][0] = {
-        "bridge": "br0",
-        "ip_cidr": "192.168.122.60/24",
-        "gateway": "192.168.122.1",
-    }
+def test_each_nic_is_attached_the_way_the_config_spelled_it(cfg, conn, prepared):
+    """Both kinds on one domain, and both interfaces asserted whole. `kind`
+    names the element's type *and* the source attribute, so a wrong one is a
+    document libvirt refuses rather than a NIC on the wrong network -- and the
+    interfaces are concatenated with nothing between them, so a separator would
+    put text where the next element has to start.
+    """
+    cfg["vms"][0]["nics"] = [
+        {
+            "network": "default",
+            "mac": "52:54:00:00:00:01",
+            "ip_cidr": "192.168.122.60/24",
+            "gateway": "192.168.122.1",
+        },
+        {"bridge": "br0", "mac": "52:54:00:00:00:02", "ip_cidr": "10.0.0.5/24"},
+    ]
     xml = defined(cfg, conn, prepared, "app01")
-    assert "<interface type='bridge'>" in xml
-    assert "<source bridge='br0'/>" in xml
-    assert "<source network=" not in xml
+
+    assert (
+        "    <interface type='network'>\n"
+        "      <mac address='52:54:00:00:00:01'/>\n"
+        "      <source network='default'/>\n"
+        "      <model type='virtio'/>\n"
+        "    </interface>\n"
+        "    <interface type='bridge'>\n"
+        "      <mac address='52:54:00:00:00:02'/>\n"
+        "      <source bridge='br0'/>\n"
+        "      <model type='virtio'/>\n"
+        "    </interface>\n"
+        "    <serial" in xml
+    )
 
 
 def test_every_domain_is_autostarted_and_started(cfg, conn, prepared):

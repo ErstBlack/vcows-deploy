@@ -161,19 +161,44 @@ def test_each_seed_iso_is_uploaded_as_iso_content_under_its_own_name(
 # -- the VM ----------------------------------------------------------------
 
 
-def test_the_created_vm_imports_the_uploaded_image_and_carries_the_marker(
+def test_the_created_vm_is_the_body_the_cluster_accepted(
     pve_cfg, session, world, prepared
 ):
-    """Identity is the marker, so a description that mangles it produces a VM no
-    later run can prove is ours -- `preflight` reads back exactly this string."""
+    """The whole body, not one key at a time. This is the shape PVE 8.4.0 took in
+    the #198 dry run (`docs/tofu-eval-2026-09-02.md` section 4) with this
+    config's names and MAC substituted, so a key renamed or a value flipped here
+    is a parameter no cluster was ever measured accepting -- and PVE ignores what
+    it does not recognise rather than refusing it.
+
+    Identity is the marker, so a description that mangles it produces a VM no
+    later run can prove is ours -- `preflight` reads back exactly this string.
+    `size=` and `status` are the fake's: PVE records the imported disk's size on
+    the config, and the resize and start rewrite it from there.
+    """
     deployed(pve_cfg, session, prepared)
 
-    config = config_of(world)
-    assert "import-from=local:import/golden.qcow2" in config["scsi0"]
-    assert config["description"] == Marker.for_vm("app01", "lab-a").to_description()
-    assert config["ide2"] == "local:iso/app01-seed.iso,media=cdrom"
-    assert config["boot"] == "order=scsi0;ide2"
-    assert config["onboot"] == 1, "a host reboot must bring it back"
+    assert config_of(world) == {
+        "vmid": "100",
+        "name": "app01",
+        "description": Marker.for_vm("app01", "lab-a").to_description(),
+        "bios": "ovmf",
+        "machine": "q35",
+        "onboot": 1,
+        "cores": 2,
+        "cpu": "host",
+        "memory": 4096,
+        "ostype": "l26",
+        "scsihw": "virtio-scsi-pci",
+        "scsi0": (
+            "local-lvm:0,import-from=local:import/golden.qcow2,"
+            "discard=on,ssd=1,size=40G"
+        ),
+        "ide2": "local:iso/app01-seed.iso,media=cdrom",
+        "boot": "order=scsi0;ide2",
+        "efidisk0": "local-lvm:1,efitype=4m",
+        "net0": "virtio=52:54:00:be:a8:60,bridge=vmbr0",
+        "status": "running",
+    }
 
 
 def test_the_nic_is_attached_the_way_the_config_spelled_it(
@@ -270,6 +295,42 @@ def test_a_resize_that_answers_with_no_upid_is_still_a_success(
     assert paths(world, "put") == ["nodes/pve1/qemu/100/resize"]
     assert "size=40G" in config_of(world)["scsi0"]
     assert world.vms[("pve1", "100")]["status"] == "running"
+
+
+# -- the disk string PVE answers with --------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("disk", "gb"),
+    [
+        ("local-lvm:vm-100-disk-0,size=10G", 10),
+        ("local-lvm:vm-100-disk-0,size=20480M", 20),
+        ("local-lvm:vm-100-disk-0,size=1T", 1024),
+        (
+            "local-lvm:0,import-from=local:import/golden=v2.qcow2,"
+            "discard=on,ssd=1,size=40G",
+            40,
+        ),
+    ],
+)
+def test_the_imported_size_is_read_back_in_gibibytes(disk, gb):
+    """`disk_gb` is compared against this number, so a unit read wrong is a
+    resize to the wrong size or a deploy refused for no reason.
+
+    The last case is a file name carrying an `=`: each field splits on its
+    first one only, and splitting on every one turns a legal volid into a
+    `ValueError` in the middle of a create.
+    """
+    assert create_mod._size_gb(disk) == gb
+
+
+def test_a_unit_the_table_does_not_carry_is_refused_rather_than_guessed():
+    """G is what an import answers with and T and M are the two the table also
+    knows. Anything else raises inside `_made`, which names the VM -- a guessed
+    number would resize a disk to a size the config never asked for.
+    """
+    with pytest.raises(KeyError):
+        create_mod._size_gb("local-lvm:vm-100-disk-0,size=1048576K")
 
 
 # -- the tasks -------------------------------------------------------------
