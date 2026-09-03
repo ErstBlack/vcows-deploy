@@ -75,9 +75,7 @@ the cache. Keying on `tests/` would fix GitHub Actions and not GitLab, whose
 `pyproject.toml` and `uv.lock`. So both pipelines run cold.
 
 The `gitleaks` gate is inside `just lint`, so it runs in `check` on every PR and
-master push rather than as a job of its own. It replaces nothing: the
-`.pre-commit-config.yaml` hook scans the staged diff and only for developers who
-ran `pre-commit install`, while this walks the whole tree on every run.
+master push rather than as a job of its own.
 
 **`gitleaks dir` does not honour `.gitignore`** — measured with a `ghp_`-shaped
 canary planted under `mutants/`, `.venv/` and `.tools/`, all three reported. The

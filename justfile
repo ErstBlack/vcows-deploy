@@ -46,14 +46,6 @@ dev-env:
     uv export --locked --format requirements-txt -o .venv/requirements.txt
     uv pip install -r .venv/requirements.txt
 
-# Install the OS packages the suite needs (python3-libvirt, xorriso).
-os-deps:
-    ./scripts/os-deps.sh
-
-# Download the pinned tool binaries (uv, just, hadolint, trivy, syft).
-tools:
-    ./scripts/install-tools.sh
-
 # Six static gates: ruff, ruff format, hadolint, shellcheck, workflows,
 # gitleaks.
 
