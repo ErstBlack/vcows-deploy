@@ -17,9 +17,10 @@ import os
 import re
 import shutil
 import subprocess
+from textwrap import indent
 
 from orchestrator import VERSION
-from tests.conftest import REPO, WORKTREE, gate
+from tests.conftest import KNOWN_HOSTS, REPO, SSH_KEY, WORKTREE, gate
 
 IMAGE = os.environ.get("VCOWS_IMAGE")
 
@@ -62,6 +63,20 @@ vms:
         gateway: 192.168.122.1
         nameservers: [192.168.122.1]
 """
+
+#: The last line of `CONFIG`'s `target.libvirt`, and so where the two credentials
+#: below are spliced in for the one case that needs them.
+POOL = "    pool: images\n"
+
+#: Spliced into `CONFIG` for the one case that needs them, as YAML block scalars.
+#: The values come from `conftest` rather than being written out again: it is the
+#: only place in the suite that holds a key, and the reason is there.
+INLINE_CREDENTIALS = (
+    "    ssh_key: |\n"
+    + indent(SSH_KEY, "      ")
+    + "    known_hosts: |\n"
+    + indent(KNOWN_HOSTS, "      ")
+)
 
 # The R2 environment: residual egress should fail fast rather than hang at a site.
 OFFLINE_ENV = ("-e", "PIP_NO_INDEX=1", "-e", "no_proxy=*")
@@ -115,6 +130,33 @@ def test_validate_runs_offline(tmp_path):
     result = run("validate", "/config.yaml", mounts=[(config, "/config.yaml")])
     assert result.returncode == 0, result.stdout + result.stderr
     assert "valid" in result.stderr
+
+
+def test_the_entrypoint_writes_the_key_into_the_container(tmp_path):
+    """The half of the credential change that only the image can answer.
+
+    The config carries the key itself now, so the entrypoint copies it in rather
+    than pointing at a mount. 0600 is the assertion that matters twice over: it
+    is a private key, and `ssh` refuses one any group can read.
+
+    `preflight` is run for its side effect only -- it has no network here and
+    fails at the connection, after the entrypoint has already `execv`d. `sh -c`
+    survives that, because the exec replaces the python process and not the
+    shell that started it.
+    """
+    config = tmp_path / "gate.yaml"
+    config.write_text(CONFIG.replace(POOL, POOL + INLINE_CREDENTIALS, 1))
+    result = run(
+        "-c",
+        "/usr/local/bin/vcows-entrypoint preflight /config.yaml >/dev/null 2>&1; "
+        "stat -c '%a %n' ~/.ssh/vcows_key ~/.ssh/vcows_known_hosts ~/.ssh/config",
+        entrypoint="sh",
+        mounts=[(config, "/config.yaml")],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    modes = dict(line.split()[::-1] for line in result.stdout.split("\n") if line)
+    assert set(modes.values()) == {"600"}, result.stdout
+    assert len(modes) == 3, result.stdout
 
 
 # -- what the image says about itself ---------------------------------------

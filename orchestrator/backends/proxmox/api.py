@@ -19,6 +19,7 @@ them.
 from __future__ import annotations
 
 import logging
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -110,7 +111,17 @@ def connect(cfg: dict):
 
     # A bool or a path: proxmoxer hands `verify_ssl` to requests' `verify=`
     # unchanged, and requests takes a CA bundle path there as readily as True.
-    verify = False if target.get("insecure") else target.get("ca_file", True)
+    # The config carries the certificate rather than a path to one, so the file
+    # is written here. `cli.main`'s `os.umask(0o077)` makes it 0600, and the
+    # container is `--rm`, so nothing removes it -- the run takes it away.
+    verify: bool | str = True
+    ca_cert = target.get("ca_cert")
+    if target.get("insecure"):
+        verify = False
+    elif ca_cert is not None:
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as written:
+            written.write(ca_cert)
+        verify = written.name
 
     host = _endpoint_host(target["endpoint"])
     log.info("connecting to %s as %s", host, user)

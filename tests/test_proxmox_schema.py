@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.backends.proxmox import schema
-from tests.conftest import errors, messages, wheres
+from tests.conftest import CA_CERT, errors, messages, wheres
 
 # -- the credential ----------------------------------------------------------
 
@@ -192,49 +192,55 @@ def test_insecure_warns_but_does_not_refuse(pve_cfg):
     assert "target.proxmox.insecure" in wheres(problems)
 
 
-def test_a_ca_file_that_is_here_says_nothing(pve_cfg, tmp_path):
-    """A private CA is the ordinary case on a PVE cluster, and naming its bundle
-    is not a weakening -- unlike `insecure`, which is why only one of them warns."""
-    ca = tmp_path / "ca.pem"
-    ca.write_text("")
-    pve_cfg["target"]["proxmox"]["ca_file"] = str(ca)
+def test_a_ca_certificate_says_nothing(pve_cfg):
+    """A private CA is the ordinary case on a PVE cluster, and pasting its
+    certificate is not a weakening -- unlike `insecure`, which is why only one
+    of them warns."""
+    pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
     problems = schema.validate(pve_cfg)
     assert errors(problems) == []
-    assert "target.proxmox.ca_file" not in wheres(problems)
+    assert "target.proxmox.ca_cert" not in wheres(problems)
 
 
-def test_a_ca_file_that_is_not_here_warns_but_does_not_refuse(pve_cfg):
-    """It is read on the machine running the deploy -- normally the container,
-    where it is bind-mounted -- and `validate` runs anywhere."""
-    pve_cfg["target"]["proxmox"]["ca_file"] = "/nowhere/ca.pem"
-    problems = schema.validate(pve_cfg)
-    assert errors(problems) == []
-    assert "does not exist here" in messages(problems)
-    assert "target.proxmox.ca_file" in wheres(problems)
-
-
-def test_a_ca_file_beside_insecure_is_refused(pve_cfg, tmp_path):
+def test_a_ca_certificate_beside_insecure_is_refused(pve_cfg):
     """Two contradictory answers about the certificate. Honouring either one
     silently is the failure mode: `insecure` wins in `api.connect`, so an
-    operator who added a bundle would get no verification and no warning."""
-    ca = tmp_path / "ca.pem"
-    ca.write_text("")
-    pve_cfg["target"]["proxmox"]["ca_file"] = str(ca)
+    operator who added a certificate would get no verification and no warning."""
+    pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
     pve_cfg["target"]["proxmox"]["insecure"] = True
     problems = errors(schema.validate(pve_cfg))
     assert "contradict each other" in messages(problems)
-    assert set(wheres(problems)) == {"target.proxmox.ca_file"}
+    assert set(wheres(problems)) == {"target.proxmox.ca_cert"}
 
 
-def test_a_relative_ca_file_is_refused(pve_cfg):
+def test_a_path_where_the_certificate_belongs_is_refused_by_name(pve_cfg):
+    """The v0.1 shape, `ca_file: /run/secrets/pve-ca.pem`, and there is no
+    compatibility for it. Nothing is mounted for it any more."""
+    pve_cfg["target"]["proxmox"]["ca_cert"] = "/run/secrets/pve-ca.pem"
+    problems = errors(schema.validate(pve_cfg))
+    assert wheres(problems) == ["target.proxmox.ca_cert"], messages(problems)
+    assert "not a path" in messages(problems)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("pki/ca.pem", id="relative-path"),
+        pytest.param("-----BEGIN RSA PRIVATE KEY-----\n", id="a-private-key"),
+    ],
+)
+def test_something_that_is_not_a_certificate_is_refused(pve_cfg, value):
     """Through `config.validate`, because the pattern on TARGET_SCHEMA is
     enforced by the composed core schema rather than by this backend's own
-    checks."""
+    checks. The last row is the one worth having: `requests` wants the CA
+    certificate, and a key pasted in its place is a credential leaked into a
+    config for nothing."""
     from orchestrator.backends import REGISTRY
     from orchestrator.config import validate
 
-    pve_cfg["target"]["proxmox"]["ca_file"] = "pki/ca.pem"
-    assert "ca_file" in messages(errors(validate(pve_cfg, REGISTRY)))
+    pve_cfg["target"]["proxmox"]["ca_cert"] = value
+    assert "ca_cert" in messages(errors(validate(pve_cfg, REGISTRY)))
 
 
 # -- the per-VM shape --------------------------------------------------------

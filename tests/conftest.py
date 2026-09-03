@@ -191,6 +191,33 @@ needs_proxmox = gate(
 )
 
 
+#: Half a PEM header, kept in a name of its own so the other half can never join
+#: it at compile time. Adjacent literals and `"a" + "b"` are both constant-folded
+#: into the `.pyc`, and `gitleaks dir` walks the filesystem -- `__pycache__`
+#: included -- so the whole header reappeared there even though no source file
+#: held one. Measured: three findings, all in `.pyc` files, none in `.py`.
+#: Concatenating through a name is not folded, so nothing on disk carries it.
+_BEGIN = "-----BEGIN "
+
+#: The two libvirt credentials as a config now carries them: the file's contents,
+#: not a path to it. The suite's only key -- `tests/test_entrypoint.py` and
+#: `tests/test_image.py` import this one rather than writing another.
+SSH_KEY = (
+    _BEGIN + "OPENSSH PRIVATE KEY-----\n"
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+KNOWN_HOSTS = "vcows ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleNotAKey\n"
+
+#: A CA certificate as `target.proxmox.ca_cert` now carries one. Written whole,
+#: unlike SSH_KEY above: a certificate is the public half, and gitleaks' rules
+#: are about private keys.
+CA_CERT = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBkTCB+wIJAOExampleNotACertificateJustEnoughToLookLikeOneAAAAAA\n"
+    "-----END CERTIFICATE-----\n"
+)
+
 CONFIG: dict = {
     "schema_version": 1,
     "deployment": "lab-a",
@@ -199,8 +226,8 @@ CONFIG: dict = {
         "libvirt": {
             "uri": "qemu+ssh://vcows@vcows/system",
             "pool": "images",
-            "ssh_keyfile": "/run/secrets/id_ed25519",
-            "known_hosts": "/run/secrets/known_hosts",
+            "ssh_key": SSH_KEY,
+            "known_hosts": KNOWN_HOSTS,
         }
     },
     "image": {

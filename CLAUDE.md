@@ -164,3 +164,4 @@ surface than the defect warrants is itself a problem.
 | `just typecheck` | `ty check` |
 | `just check` | lint, typecheck, test |
 | `just image`, `just scan`, `just bundle` | Build, scan against the baseline, assemble the delivery bundle |
+| `scripts/vcows.sh` | The five-verb wrapper a site runs; `bundle` substitutes the archive's tag for its `@IMAGE@` and ships it |

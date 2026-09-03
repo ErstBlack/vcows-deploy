@@ -62,44 +62,41 @@ overwritten.
 **Where you run the container**
 
 Rootless podman. The image sets no `USER`: under rootless podman container root
-*is* the invoking user, which is what makes a bind-mounted run directory and a
-0600 SSH key work without a UID-mapping dance.
+*is* the invoking user, which is what makes a bind-mounted run directory work
+without a UID-mapping dance.
 
-**`--user` works, and it needs three things lined up, not one.** Measured with
+**`--user` works, and it needs two things lined up, not one.** Measured with
 `--user 4242`:
 
 * podman synthesises a passwd entry whose home is `/`, and `/` is not writable.
   The entrypoint resolves `~` from that entry — not from `HOME`, deliberately,
-  because that is what `ssh` does — so it cannot write `~/.ssh/config`, says so,
+  because that is what `ssh` does — so it cannot write into `~/.ssh`, says so,
   and the connection then fails with `Host key verification failed`. Setting
   `HOME` does not help. Give it a writable home (`--passwd-entry`) or mount your
   own config at the passwd home's `.ssh/config`.
-* the mounted 0600 key is owned by the mapped host UID, so uid 4242 cannot read
-  it: `Load key ...: Permission denied`.
-* the run directory mount is owned by that same UID and is `0755`, so uid 4242
+* the run directory mount is owned by the mapped host UID and is `0755`, so uid 4242
   cannot create `runs/<deployment>/<timestamp>` inside it. `deploy` and `destroy`
   stop before connecting, with `vcows: cannot create the run directory
   /runs/<deployment>/<timestamp>: Permission denied`, and write nothing.
   `validate` and `preflight` create no run directory and are unaffected, so a
   clean `preflight` says nothing about `deploy`.
 
-The last two are one problem — a mount owned by the wrong UID — with two remedies
-that are **not** equivalent:
+The second is a mount owned by the wrong UID, and it has two remedies that are
+**not** equivalent:
 
 * `--userns=keep-id:uid=4242,gid=0` maps your own UID to 4242 inside the
-  container, so both mounts already have the owner they need. Nothing on the host
+  container, so the mount already has the owner it needs. Nothing on the host
   is chowned, and the run directory comes back owned by you. It sets the
   container UID itself, so `--user` becomes redundant; the writable home is still
   needed. Measured with `--passwd-entry`: all four verbs behave.
-* `:U` on the key mount and on the run directory mount chowns those *host* paths
-  to the subuid backing 4242. It also works, and it charges both sides. Your key
-  copy stops being yours, and so does the output: `./runs/<deployment>` lands
+* `:U` on the run directory mount chowns that *host* path to the subuid backing
+  4242. It also works, and it charges you the output: `./runs/<deployment>` lands
   `drwx------` owned by a subuid, so `ls`, `cat` and `rm -rf` all answer
   `Permission denied`, and reading back the `run.json` an air-gapped site ships
   home takes `podman unshare`.
 
-**`--run-dir` on that same mount writes no record at all.** The third bullet
-above is the default path, where vcows creates a subdirectory inside the mount
+**`--run-dir` on that same mount writes no record at all.** The run-directory
+bullet above is the default path, where vcows creates a subdirectory inside the mount
 and cannot. `--run-dir /runs` names the mount itself, which already exists and is
 empty, so nothing stops it — only the `0700` is refused, and that is deliberately
 a warning. The run goes ahead and dies on the first thing it writes:
@@ -128,42 +125,46 @@ send.
 
 ## Using it
 
+`vcows.sh` ships in the delivery bundle and is the whole interface:
+
+```bash
+./vcows.sh install                 # verify SHA256SUMS, load the image
+./vcows.sh validate                # offline; no connection is opened
+./vcows.sh preflight               # what exists, what would be done
+./vcows.sh deploy                  # create what does not exist
+./vcows.sh destroy                 # tear this deployment down; asks first
+```
+
+It takes the config from `./config.yaml`, the golden images from `./images` and
+writes run records to `./runs`, creating the last two if they are not there.
+`-c`, `-i` and `-r` move any of the three, and `-y` answers `destroy`'s prompt in
+advance. Every path is checked and made absolute before podman runs — a relative
+`-v` source is a *named volume* to podman, not a path.
+
+What it runs is one `podman run` per verb, with no key or `known_hosts` mount:
+both are inline in the config now, and the entrypoint writes them into the
+container's own `~/.ssh`, which goes with `--rm`.
+
 ```bash
 podman run --rm \
   -v ./lab-a.yaml:/config.yaml:ro,z \
-  -v ~/.ssh/id_ed25519:/run/secrets/id_ed25519:ro,z \
-  -v ~/.ssh/known_hosts:/run/secrets/known_hosts:ro,z \
   -v /srv/images:/images:ro,z \
   -v ./runs:/runs:Z \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
 
-On Proxmox there is no key and no `known_hosts` to mount, and no variable to
-export: the credential is in the config, under `target.proxmox`.
-
-```bash
-podman run --rm \
-  -v ./lab-a.yaml:/config.yaml:ro,z \
-  -v /srv/images:/images:ro,z \
-  -v ./runs:/runs:Z \
-  vcows-deploy:0.1.0.0 preflight /config.yaml
-```
-
-A PVE certificate from a private CA is named the same way: `ca_file` under
-`target.proxmox`, an absolute path to a bundle mounted into the container, which
-vcows hands to `requests` as its `verify`. `insecure: true` skips verification
-instead, for a self-signed certificate, and `validate` warns about it — the
-credential goes to whatever answers. The two together are refused; they are two
-contradictory answers about the same certificate.
+A PVE certificate from a private CA goes in the config the same way: `ca_cert`
+under `target.proxmox`, the PEM itself, which vcows writes to a file and hands to
+`requests` as its `verify`. `insecure: true` skips verification instead, for a
+self-signed certificate, and `validate` warns about it — the credential goes to
+whatever answers. The two together are refused; they are two contradictory
+answers about the same certificate.
 
 **The read-only mounts are `:z` and the run directory is `:Z`.** On an SELinux
 host `:Z` relabels the *host* path with a category private to one container, so
 nothing else — including your own `ssh` — can read it afterwards. That is right
-for `./runs`, which belongs to that run alone, and wrong for a key, a config and
-a golden-image directory the rest of the host shares.
-
-Then `deploy /config.yaml`, and `destroy /config.yaml` when it is time. `validate`
-needs none of the mounts but the config.
+for `./runs`, which belongs to that run alone, and wrong for a config and a
+golden-image directory the rest of the host shares.
 
 Each run writes `/runs/<deployment>/<timestamp>/` — its seed ISOs, its inventory
 and a `run.json` saying what happened. `--run-dir` puts one run somewhere else
@@ -191,8 +192,12 @@ target:
   libvirt:
     uri: qemu+ssh://vcows@hypervisor.example/system   # no query string, no password
     pool: images                                       # must exist and be active
-    ssh_keyfile: /run/secrets/id_ed25519      # mounted; see below
-    known_hosts: /run/secrets/known_hosts     # mounted; see below
+    ssh_key: |                                 # the key itself; see below
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      ...
+      -----END OPENSSH PRIVATE KEY-----
+    known_hosts: |                             # the host key line itself
+      hypervisor.example ssh-ed25519 AAAAC3Nz...
 image:
   source_qcow2: /images/golden.qcow2
   base_volume_name: golden.qcow2   # shared per host, uploaded once
@@ -232,7 +237,10 @@ target:
     datastore: local-lvm                     # VM disks; must allow "Disk image"
     import_datastore: local                  # golden image and seed ISOs; must allow "Import" and "ISO image"
     token: 'vcows@pve!deploy=<secret>'       # or user: + password:, exactly one form
-    # ca_file: /run/secrets/pve-ca.pem       # private CA; absolute path, mounted
+    # ca_cert: |                             # private CA; the PEM itself
+    #   -----BEGIN CERTIFICATE-----
+    #   ...
+    #   -----END CERTIFICATE-----
     # insecure: true                         # self-signed certificate; validate warns
 image:
   source_qcow2: /images/golden.qcow2
@@ -332,10 +340,12 @@ turn autostart off per domain with `virsh autostart --disable <name>`, or clear
 The client does not accept them in the URI: libvirt's `qemu+ssh` ignores
 `known_hosts`, which is a libssh parameter, and the transport that reaches a
 modern split-daemon host runs `ssh` itself. So the container's entrypoint writes
-`~/.ssh/config` from the two fields above before handing over to `vcows`. The
-files stay where you mounted them, read-only; nothing is copied.
+the two fields above into `~/.ssh/vcows_key` and `~/.ssh/vcows_known_hosts`, each
+`0600`, plus a `~/.ssh/config` naming them, before handing over to `vcows`. That
+copy lives in the container's own filesystem and goes with `--rm`.
 
-Mount your own `~/.ssh/config` into the container and it is left alone.
+Mount your own `~/.ssh/config` into the container and it is left alone — and
+nothing else is written either, so the key is not copied in at all.
 
 ## The run directory
 
@@ -413,9 +423,9 @@ from the log, and is why it is the exception rather than an oversight. Nothing
 else is written to stdout, so `2>/dev/null` silences vcows entirely.
 
 **The log names paths, never contents.** No `user_data`, no seed ISO bytes, no
-key material — `ssh_keyfile` and `known_hosts` appear as the paths they are, and
-neither a Proxmox `token` nor a `password` appears at all: the connect line names
-the host and the user, which is what a 401 needs and is not the credential.
+key material — `ssh_key`, `known_hosts` and `ca_cert` never appear at all, nor
+does a Proxmox `token` or `password`: the connect line names the host and the
+user, which is what a 401 needs and is not the credential.
 Treat it as less protected than the run directory even so: that directory is
 `0700`, and a container's logs are whatever the host's log driver does with them.
 
@@ -448,19 +458,21 @@ just bundle    # assemble .cache/delivery/
 ```
 
 `just bundle` is what produces the artifact that goes on the medium. It writes
-the compressed image, the SBOM and trivy report describing *that* image, a
-`SHA256SUMS` over all three, and `image.tar.sha256` — the digest of the
-uncompressed archive inside the gzip, so a site can check before or after
-decompressing. The file is named for the version and commit read out of the
+the compressed image, the SBOM and trivy report describing *that* image,
+`vcows.sh` with the archive's own tag substituted in, a `SHA256SUMS` over all
+four, and `image.tar.sha256` — the digest of the uncompressed archive inside the
+gzip, so a site can check before or after decompressing. The file is named for the version and commit read out of the
 image itself rather than out of the working tree, so a bundle cannot claim a
 commit it does not contain.
 
 At the site:
 
 ```bash
-sha256sum -c SHA256SUMS
-gunzip -c vcows-deploy-*.tar.gz | podman load
+./vcows.sh install
 ```
+
+which is `sha256sum -c SHA256SUMS` and `gunzip -c vcows-deploy-*.tar.gz | podman
+load`, then a check that the tag the archive stored is now there.
 
 **The bundle is not signed.** `SHA256SUMS` catches corruption and a mismatched
 pairing; it does not catch substitution. There was a cosign step and it was

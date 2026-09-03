@@ -254,12 +254,17 @@ uncompressed docker-archive `just scan` writes for trivy and syft to seek.
     just bundle       # -> .cache/delivery/
 
 The bundle holds the compressed image, the SBOM and the trivy report that
-describe *that* image, and a `SHA256SUMS` over all three plus the digest of the
-uncompressed archive inside the gzip — so a site can check before or after
+describe *that* image, `vcows.sh` with the archive's stored tag substituted for
+its `@IMAGE@` placeholder, and a `SHA256SUMS` over all four plus the digest of
+the uncompressed archive inside the gzip — so a site can check before or after
 decompressing. On receipt:
 
-    sha256sum -c SHA256SUMS
-    gunzip -c vcows-deploy-*.tar.gz | podman load
+    ./vcows.sh install
+
+which verifies `SHA256SUMS`, loads the one `vcows-deploy-*.tar.gz` beside it, and
+checks the tag is there. The tag comes from `RepoTags[0]` inside `image.tar`
+rather than from `image_tag`, so the wrapper names what `podman load` restores
+even when the Containerfile has moved since the build.
 
 Compression is `gzip -9 -n`. `-n` drops the stored filename and mtime, so the
 same archive always compresses to the same bytes and the digest identifies the

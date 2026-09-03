@@ -45,7 +45,7 @@ UNMARKED_PROBE = "vcows-spike-probe01"
 def rig_cfg(cfg):
     assert RIG is not None  # every test here is behind needs_rig
     cfg["target"]["libvirt"]["uri"] = RIG
-    cfg["target"]["libvirt"].pop("ssh_keyfile", None)
+    cfg["target"]["libvirt"].pop("ssh_key", None)
     cfg["target"]["libvirt"].pop("known_hosts", None)
     return cfg
 

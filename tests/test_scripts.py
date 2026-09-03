@@ -41,6 +41,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -68,6 +69,11 @@ BASELINE_IDS = [f"CVE-2026-{n:05d}" for n in range(100)]
 #: about and does not refuse, and the passing test below asserts it is still
 #: only a warning.
 ARCHIVE_REVISION = "b" * 40
+
+#: The tag stored inside that archive, which is what `podman load` would restore
+#: and so what `bundle.sh` must substitute into the wrapper. Deliberately unlike
+#: `image_tag`'s output: the archive is the authority, not the Containerfile.
+ARCHIVE_TAG = "localhost/vcows-deploy-fixture:9.9.9.9"
 
 #: One fake scanner. `-o PATH` is podman, `--output PATH` is trivy, and
 #: `-o spdx-json=PATH` is syft, so `${2#*=}` covers all three.
@@ -134,11 +140,12 @@ def _stamp_line(archive: Path) -> str:
 
 
 def _fake_archive(path: Path, revision: str) -> None:
-    """A docker-archive as `archive_label` (`bundle.sh`) reads one.
+    """A docker-archive as `archive_label` and `archive_tag` (`bundle.sh`) read one.
 
-    Two JSON members in a tar: `manifest.json` naming the config blob, and the
-    blob carrying the two OCI labels the bundle is named from. Nothing in
-    `bundle.sh` opens a layer, so 2 KB stands in for the real 444 MB.
+    Two JSON members in a tar: `manifest.json` naming the config blob and the
+    stored tag, and the blob carrying the two OCI labels the bundle is named
+    from. Nothing in `bundle.sh` opens a layer, so 2 KB stands in for the real
+    444 MB.
     """
     config = {
         "config": {
@@ -148,7 +155,8 @@ def _fake_archive(path: Path, revision: str) -> None:
             }
         }
     }
-    members = {"manifest.json": [{"Config": "config.json"}], "config.json": config}
+    manifest = [{"Config": "config.json", "RepoTags": [ARCHIVE_TAG]}]
+    members = {"manifest.json": manifest, "config.json": config}
     with tarfile.open(path, "w") as tar:
         for name, payload in members.items():
             blob = json.dumps(payload).encode()
@@ -165,7 +173,7 @@ def _bundle_tree(tmp_path: Path, stamp: str | None) -> Path:
     what these tests are about, and it stands between the precondition and the
     delivery.
     """
-    tree = _tree(tmp_path, "bundle.sh")
+    tree = _tree(tmp_path, "bundle.sh", "vcows.sh")
     scan = tree / ".cache" / "scan"
     scan.mkdir(parents=True)
     _fake_archive(scan / "image.tar", ARCHIVE_REVISION)
@@ -330,13 +338,36 @@ def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
     done = _run(tree, "bash scripts/bundle.sh")
     assert done.returncode == 0, done.stderr
     assert "warning: the archive was built at" in done.stderr
-    assert sorted(p.name for p in (tree / ".cache" / "delivery").iterdir()) == [
+    delivery = tree / ".cache" / "delivery"
+    assert sorted(p.name for p in delivery.iterdir()) == [
         "SHA256SUMS",
         "image.tar.sha256",
         "sbom.spdx.json",
         "trivy.json",
         f"vcows-deploy-9.9.9.9-{ARCHIVE_REVISION}.tar.gz",
+        "vcows.sh",
     ]
+
+
+def test_the_bundled_wrapper_names_the_tag_the_archive_stores(tmp_path):
+    """`podman load` restores the tag recorded in the archive, so that is the one
+    the wrapper has to name -- not the one `image_tag` computes from the
+    Containerfile, which a worktree suffix or a later edit can move away from it.
+
+    Executable and in SHA256SUMS for the same reason the tarball is: a site runs
+    `sha256sum -c` before it runs anything, and a wrapper outside that list is
+    the one file in the bundle nothing vouches for.
+    """
+    tree = _bundle_tree(tmp_path, stamp=None)
+    scan = tree / ".cache" / "scan"
+    (scan / "PASSED").write_text(_stamp_line(scan / "image.tar"))
+    assert _run(tree, "bash scripts/bundle.sh").returncode == 0
+
+    wrapper = tree / ".cache" / "delivery" / "vcows.sh"
+    assert f'IMAGE="{ARCHIVE_TAG}"' in wrapper.read_text()
+    assert PLACEHOLDER not in wrapper.read_text()
+    assert wrapper.stat().st_mode & 0o111, "not executable"
+    assert "vcows.sh" in (tree / ".cache" / "delivery" / "SHA256SUMS").read_text()
 
 
 # --- scripts/lint.sh: workflows carry no logic ------------------------------
@@ -583,3 +614,192 @@ def test_a_path_tool_that_will_not_run_is_named_rather_than_read_as_unknown(tmp_
     assert "trivy --version' failed" in done.stderr
     assert str(tree / "fakebin" / "trivy") in done.stderr
     assert "syft: using" not in done.stderr
+
+
+# --- scripts/vcows.sh: the wrapper a site runs ------------------------------
+#
+# The wrapper's whole contract is the `podman run` command line it builds, and
+# `shellcheck` reads none of that -- it is the same blind spot the module
+# docstring above gives for `containerfile_arg`'s `die`. A fake `podman` that
+# records its argv is what turns the contract into an assertion.
+#
+# It is also the one script here that sources nothing, so `_run`'s `lib.sh` is
+# doing only one thing for these tests: putting the tree's own `.tools/bin`
+# first on PATH, which is where the fake goes.
+
+#: The unsubstituted placeholder. Run out of `scripts/` the wrapper names this
+#: literally; `bundle.sh` replaces it with the tag stored in image.tar, which
+#: the bundle test below asserts separately. The two halves have to be
+#: independent or a broken substitution passes both.
+PLACEHOLDER = "@IMAGE@"
+
+
+def _wrapper_tree(tmp_path: Path, config: bool = True) -> Path:
+    """`vcows.sh` in a tree whose `podman` writes down what it was called with."""
+    tree = _tree(tmp_path, "vcows.sh")
+    binaries = tree / ".tools" / "bin"
+    binaries.mkdir(parents=True)
+    podman = binaries / "podman"
+    podman.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{tree}/podman.argv'\n"
+    )
+    podman.chmod(0o755)
+    if config:
+        (tree / "config.yaml").write_text("schema_version: 1\n")
+    return tree
+
+
+def _wrapper(tree: Path, *args: str) -> tuple[subprocess.CompletedProcess, list[str]]:
+    """Run the wrapper; report what podman got, `[]` meaning it was never run.
+
+    `< /dev/null` fixes the one input these tests cannot otherwise control:
+    `[ -t 0 ]` decides whether `destroy` gets `-it`, and pytest's own stdin is a
+    terminal or not depending on how the suite was invoked.
+    """
+    argv = " ".join(shlex.quote(a) for a in args)
+    done = _run(tree, f"bash scripts/vcows.sh {argv} < /dev/null")
+    recorded = tree / "podman.argv"
+    return done, recorded.read_text().splitlines() if recorded.exists() else []
+
+
+def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False):
+    """The command line each verb is supposed to build, in order."""
+    argv = ["run", "--rm", "-v", f"{tree}/config.yaml:/config.yaml:ro,z"]
+    if images:
+        argv += ["-v", f"{tree}/images:/images:ro,z"]
+    if runs:
+        argv += ["-v", f"{tree}/runs:/runs:Z"]
+    argv += [PLACEHOLDER, verb, "/config.yaml"]
+    if yes:
+        argv.append("--yes")
+    return argv
+
+
+#: One row per verb, plus `destroy -y`. The labels are the assertion as much as
+#: the paths are: `:Z` relabels the host path into a category private to one
+#: container, which is right for `runs/` and would take a shared golden-image
+#: directory away from everything else on the host.
+WRAPPER_ROWS = [
+    pytest.param(("validate",), {"images": True}, id="validate"),
+    pytest.param(("preflight",), {"images": True, "runs": True}, id="preflight"),
+    pytest.param(("deploy",), {"images": True, "runs": True}, id="deploy"),
+    pytest.param(("destroy",), {"images": True, "runs": True}, id="destroy"),
+    pytest.param(
+        ("destroy", "-y"), {"images": True, "runs": True, "yes": True}, id="destroy-yes"
+    ),
+]
+
+
+@pytest.mark.parametrize(("args", "mounts"), WRAPPER_ROWS)
+def test_each_verb_mounts_what_it_needs_and_nothing_else(tmp_path, args, mounts):
+    """Images are mounted for every verb, read-only: `validate` checks `disk_gb`
+    against the image offline and `destroy` runs the same checks before the
+    teardown -- measured at a site, without the mount both warn that a file
+    sitting in `./images` cannot be read. The run directory is for the three
+    verbs that write a record; `validate` writes nothing.
+
+    Asserted as the whole argv rather than as membership: an extra mount, a
+    dropped `--rm` or an `-it` on a non-terminal are all invisible to a test
+    that only asks whether something is present.
+    """
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, *args)
+    assert done.returncode == 0, done.stderr
+    assert argv == _expected(tree, args[0], **mounts)
+
+
+def test_a_relative_path_reaches_podman_absolute(tmp_path):
+    """podman reads a relative `-v` source as a *named volume*, not as a path.
+    Unresolved, `-c sub/config.yaml` would mount an empty volume over
+    /config.yaml and the run would fail on a config the site can see is there."""
+    tree = _wrapper_tree(tmp_path)
+    (tree / "sub").mkdir()
+    shutil.move(tree / "config.yaml", tree / "sub" / "config.yaml")
+    done, argv = _wrapper(tree, "validate", "-c", "sub/config.yaml")
+    assert done.returncode == 0, done.stderr
+    assert f"{tree}/sub/config.yaml:/config.yaml:ro,z" in argv
+
+
+def test_the_two_directories_are_made_when_they_are_not_there(tmp_path):
+    """A site's first `deploy` has neither. Refusing until two empty directories
+    exist is the step that gets skipped, so the wrapper makes them."""
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, "deploy")
+    assert done.returncode == 0, done.stderr
+    assert (tree / "images").is_dir()
+    assert (tree / "runs").is_dir()
+    assert argv, "podman was never reached"
+
+
+#: `(args, the path named, the flag named)`. No mode cases: these run as root in
+#: CI, where 0000 is readable, and `conftest.gate()`'s names are a closed set --
+#: so a root-skip would mean a new gate for one assertion.
+PATH_FAILURES = [
+    pytest.param(
+        ("validate", "-c", "missing.yaml"), "missing.yaml", "--config", id="config"
+    ),
+    pytest.param(
+        ("deploy", "-i", "blocker/images"), "blocker/images", "--images", id="images"
+    ),
+    pytest.param(("deploy", "-r", "blocker"), "blocker", "--runs", id="runs"),
+]
+
+
+@pytest.mark.parametrize(("args", "path", "flag"), PATH_FAILURES)
+def test_a_path_that_will_not_work_is_named_before_podman_runs(
+    tmp_path, args, path, flag
+):
+    """Named with its flag, because the operator's next move is to edit one of
+    three, and podman's own error names a mount source and no flag at all.
+
+    Reached before podman, because the alternative is a container that starts,
+    relabels one path and dies on the next.
+    """
+    tree = _wrapper_tree(tmp_path)
+    (tree / "blocker").write_text("not a directory")
+    done, argv = _wrapper(tree, *args)
+    assert done.returncode == 1, done.stdout
+    assert path in done.stderr
+    assert flag in done.stderr
+    assert argv == [], "podman ran anyway"
+
+
+def test_install_refuses_a_directory_holding_two_bundles(tmp_path):
+    """Two deliveries unpacked into one directory. Loading whichever the glob
+    sorted first is a site running an image nobody chose."""
+    tree = _wrapper_tree(tmp_path, config=False)
+    beside = tree / "scripts"
+    names = ("vcows-deploy-9.9.9.9-a.tar.gz", "vcows-deploy-9.9.9.9-b.tar.gz")
+    empty = hashlib.sha256(b"").hexdigest()
+    for name in names:
+        (beside / name).write_bytes(b"")
+    (beside / "SHA256SUMS").write_text("".join(f"{empty}  {n}\n" for n in names))
+    done, argv = _wrapper(tree, "install")
+    assert done.returncode == 1, done.stdout
+    assert "exactly one" in done.stderr
+    assert argv == [], "podman ran anyway"
+
+
+#: Every shape of "that is not a command line this understands". `-c` with no
+#: value is the one worth naming: taking `$2` unchecked would mount an empty
+#: path and let podman explain it.
+USAGE_ROWS = [
+    pytest.param((), id="no-verb"),
+    pytest.param(("nonesuch",), id="unknown-verb"),
+    pytest.param(("deploy", "--nonesuch"), id="unknown-flag"),
+    pytest.param(("deploy", "-c"), id="flag-with-no-value"),
+    pytest.param(("deploy", "-y"), id="yes-is-destroy-only"),
+    pytest.param(("install", "-c", "config.yaml"), id="install-takes-no-flags"),
+]
+
+
+@pytest.mark.parametrize("args", USAGE_ROWS)
+def test_a_usage_error_exits_2_the_way_argparse_does(tmp_path, args):
+    """The wrapper stands in front of argparse, which exits 2 for an unknown verb
+    or a missing argument. A site that scripts around one exit code should not
+    meet a different one depending on which of the two refused."""
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, *args)
+    assert done.returncode == 2, done.stdout
+    assert "usage:" in done.stderr
+    assert argv == [], "podman ran anyway"
