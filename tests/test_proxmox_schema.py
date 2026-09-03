@@ -369,3 +369,19 @@ def test_a_recognised_image_name_says_nothing(pve_cfg):
         said = messages(schema.validate(pve_cfg))
         assert "import" not in said, name
         assert errors(schema.validate(pve_cfg)) == [], name
+
+
+# -- defaults ----------------------------------------------------------------
+
+
+def test_a_libvirt_only_key_under_defaults_is_refused(pve_cfg):
+    """Core resolves `defaults` before the backend sees a VM, so a key this
+    backend does not have is caught by `VM_SCHEMA`'s `additionalProperties` --
+    which files against the VM, not the key, so the message is what names it."""
+    from orchestrator.backends import REGISTRY
+    from orchestrator.config import validate
+
+    pve_cfg["defaults"] = {"loader": "/usr/share/edk2/ovmf/OVMF_CODE_4M.qcow2"}
+    problems = errors(validate(pve_cfg, REGISTRY))
+    assert "loader" in messages(problems)
+    assert wheres(problems) == ["vms[0]", "vms[1]"]

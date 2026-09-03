@@ -196,12 +196,13 @@ target:
 image:
   source_qcow2: /images/golden.qcow2
   base_volume_name: golden.qcow2   # shared per host, uploaded once
+defaults:                        # optional; folded into every VM omitting the key
+  vcpus: 2
+  memory_mib: 4096
+  firmware: efi                  # efi | bios, default efi
 vms:
   - name: app01
-    vcpus: 2
-    memory_mib: 4096
     disk_gb: 40
-    firmware: efi                  # efi | bios, default efi
     user_data: |                   # optional, passed to cloud-init verbatim
       #cloud-config
       packages: [tmux]
@@ -211,6 +212,12 @@ vms:
         gateway: 192.168.122.1
         nameservers: [192.168.122.1]
 ```
+
+**`defaults` fills in what a VM leaves out.** A value written on the VM
+**replaces** the default rather than merging with it, so the block is flat:
+scalars, strings, booleans and lists, no mappings. `name` and `nics` cannot be
+defaulted -- one is identity, and one whole-list NIC default would give every VM
+the same `ip_cidr`.
 
 The same deployment against Proxmox:
 

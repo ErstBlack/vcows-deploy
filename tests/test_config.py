@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from orchestrator.config import ConfigError, core_schema, load, validate
+from orchestrator.config import ConfigError, core_schema, load, resolve, validate
 from tests.fake_backend import FakeBackend
 
 CONFIG = """\
@@ -286,3 +286,53 @@ def test_one_vm_is_enough(tmp_path, registry):
     text = CONFIG.replace("  - name: app02\n", "")
     cfg, _ = load(write(tmp_path, text), registry)
     assert [vm["name"] for vm in cfg["vms"]] == ["app01"]
+
+
+# -- defaults ---------------------------------------------------------------
+
+
+def test_a_default_fills_what_a_vm_omits_and_never_replaces_what_it_sets(
+    tmp_path, registry
+):
+    """`load` hands back a resolved config, so nothing downstream of it has to
+    know the block exists."""
+    text = CONFIG.replace(
+        "vms:\n  - name: app01\n",
+        "defaults:\n  vcpus: 2\nvms:\n  - name: app01\n    vcpus: 4\n",
+    )
+    cfg, _ = load(write(tmp_path, text), registry)
+    assert [vm["vcpus"] for vm in cfg["vms"]] == [4, 2]
+
+
+@pytest.mark.parametrize(
+    "block, where",
+    [
+        # `name` is identity: every VM would share one, and the operator would
+        # get a duplicate-name error against `vms`.
+        ("defaults:\n  name: app\n", "defaults.name"),
+        ("defaults:\n  nics: []\n", "defaults.nics"),
+        # A mapping is the shape that would need a merge rule, and a per-VM
+        # value replaces.
+        ("defaults:\n  user_data:\n    packages: [tmux]\n", "defaults.user_data"),
+        # The block itself has to be a mapping: `resolve` splats it into every VM.
+        ("defaults:\n  - vcpus\n", "defaults"),
+    ],
+    ids=["name", "nics", "mapping", "not-a-mapping"],
+)
+def test_what_cannot_be_defaulted_is_refused_at_the_key(
+    tmp_path, registry, block, where
+):
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, block + CONFIG), registry)
+    assert [p.where for p in exc.value.problems] == [where]
+
+
+def test_resolve_changes_nothing_it_has_already_changed():
+    """`load` and `validate` both resolve, and the two schema suites call
+    `validate` directly, so the fold has to survive being applied twice."""
+    bare = {"vms": [{"name": "app01"}]}
+    assert resolve(bare) == bare
+
+    once = resolve({"defaults": {"vcpus": 2}, "vms": [{"name": "app01"}]})
+    assert once == {"defaults": {"vcpus": 2}, "vms": [{"name": "app01", "vcpus": 2}]}
+    assert resolve(once) == once

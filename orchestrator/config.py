@@ -15,14 +15,16 @@ keeps this file backend-agnostic, and it produces better errors: a jsonschema
 ``oneOf`` failure is close to unreadable, where a backend check can say "exactly
 one of bridge/network, found both".
 
-There is no ``defaults`` block at v0.1 and so no resolution step. Every VM spells
-out every field. Adding defaults later is backward-compatible -- configs that
-spell everything out keep validating, and making a required field defaultable is
-a relaxation -- so nothing is pre-built for it here.
+A top-level ``defaults`` block holds flat per-VM values -- scalars, strings,
+booleans and lists -- folded into every VM that omits the key, and a per-VM value
+**replaces** rather than merges (``backends/libvirt/schema.py``). Resolution is
+``resolve`` here, so a backend is only ever handed a VM already carrying every
+value it will be judged against, and no backend needs a merge rule of its own.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +92,18 @@ def core_schema(registry: dict[str, Any]) -> dict:
                 "properties": {n: registry[n].config_schema() for n in names},
             },
             "image": IMAGE_SCHEMA,
+            # Flat values only. A mapping would need a merge rule and a per-VM
+            # value replaces, so there is nothing to merge. `name` is identity;
+            # `nics` collides on `ip_cidr` for any second VM, and the useful
+            # form is per-field (issue #239). `{"not": {}}` rather than `False`,
+            # measured: a `False` sub-schema files its error against `defaults`
+            # with no property in the path, so the message would not name the
+            # key the operator has to delete.
+            "defaults": {
+                "type": "object",
+                "additionalProperties": {"not": {"type": "object"}},
+                "properties": {"name": {"not": {}}, "nics": {"not": {}}},
+            },
             "vms": {
                 "type": "array",
                 "minItems": 1,
@@ -153,7 +167,22 @@ def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem
         problems = [_blame_the_filename(p, path) for p in problems]
     if any(p.fatal for p in problems):
         raise ConfigError(problems)
-    return raw, problems
+    return resolve(raw), problems
+
+
+def resolve(cfg: dict) -> dict:
+    """Fold ``defaults`` into every VM. Pure, and idempotent.
+
+    A VM's own value replaces the default rather than merging with it, which is
+    what keeps the block flat: with no nested value there is no merge to get
+    wrong. ``defaults`` stays on the result -- backends read ``vms`` and nothing
+    else, so stripping it would be code with no reader.
+
+    Correct only once the core schema has passed, since it assumes ``defaults``
+    is a mapping and every VM is one. ``validate`` is what enforces that order.
+    """
+    defaults = cfg.get("defaults", {})
+    return {**cfg, "vms": [{**defaults, **vm} for vm in cfg["vms"]]}
 
 
 def _blame_the_filename(problem: Problem, path: Path) -> Problem:
@@ -175,6 +204,38 @@ def _blame_the_filename(problem: Problem, path: Path) -> Problem:
     )
 
 
+#: One VM's key, as ``problems_from`` renders it, and whatever the problem
+#: reaches into below it: ``vms[0].nics[1].mac`` -> ``0``, ``nics``, ``[1].mac``.
+_AT_A_VM_KEY = re.compile(r"vms\[(\d+)\]\.([^.\[]+)(.*)")
+
+
+def _blame_the_defaults(problems: list[Problem], cfg: dict) -> list[Problem]:
+    """Re-point complaints about an inherited value at the key that supplied it.
+
+    Same argument as ``_blame_the_filename``: the operator never wrote the key
+    being blamed. It is also why exact duplicates go -- one bad default is one
+    mistake, and every VM that inherited it produced the identical problem.
+
+    ``cfg`` is the *unresolved* config, so "the VM did not set this" is still a
+    question it can answer.
+    """
+    defaults = cfg.get("defaults")
+    if not defaults:
+        return problems
+    out: list[Problem] = []
+    for problem in problems:
+        found = _AT_A_VM_KEY.fullmatch(problem.where)
+        if found and found[2] in defaults and found[2] not in cfg["vms"][int(found[1])]:
+            problem = Problem(
+                problem.severity,
+                problem.message,
+                where=f"defaults.{found[2]}{found[3]}",
+            )
+        if problem not in out:
+            out.append(problem)
+    return out
+
+
 def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     """Structural validation, then the selected backend's own checks."""
     validator = jsonschema.Draft202012Validator(core_schema(registry))
@@ -184,7 +245,11 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
         # on a broken one piles noise on top of the errors that actually matter.
         return problems
 
-    problems += registry[cfg["backend"]].validate(cfg)
+    # The backend sees a resolved VM and never the block itself; what it says
+    # about a value no VM wrote is then filed against the key that did.
+    problems += _blame_the_defaults(
+        registry[cfg["backend"]].validate(resolve(cfg)), cfg
+    )
 
     seen: set[str] = set()
     for vm in cfg["vms"]:
