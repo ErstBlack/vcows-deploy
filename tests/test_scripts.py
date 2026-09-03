@@ -556,7 +556,7 @@ def test_a_path_tool_with_no_dotted_version_is_reported_rather_than_silent(tmp_p
     """`#95`. The `grep -oE` in `version_of` matched nothing, `pipefail` made the
     whole pipeline status 1, and `set -e` aborted `install_one` before its own
     log line -- so `${found:-version unknown}`, written for exactly this tool,
-    could never fire and `just tools` failed saying nothing."""
+    could never fire and `install-tools.sh` failed saying nothing."""
     tree = _tools_tree(tmp_path, trivy="echo 'trivy, build 2026-08-31'")
     done = _install_tools(tree)
     assert done.returncode == 0, done.stderr
