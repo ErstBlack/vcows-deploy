@@ -48,10 +48,10 @@ overwritten.
 
 **On a Proxmox node**
 
-* An API token, exported as `PROXMOX_VE_API_TOKEN` where you run the container.
-  `preflight` is what tries it against the cluster: it lists the node's VMs,
-  reads both storages and their content types, and lists the `import` content
-  of `import_datastore`. `validate` checks only the token's shape.
+* A credential under `target.proxmox`: an API token, or a `user` and `password`,
+  exactly one of the two. `preflight` is what tries it against the cluster: it
+  lists the node's VMs, reads both storages and their content types, and lists
+  the `import` content of `import_datastore`. `validate` checks only the shape.
 * `import_datastore` must allow the **Import** and **ISO image** content types,
   and `datastore` must allow **Disk image**. Import is off by default on a PVE
   storage and is enabled under Datacenter → Storage → Content; `preflight` names
@@ -138,25 +138,23 @@ podman run --rm \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
 
-On Proxmox there is no key and no `known_hosts` to mount. The token is an
-environment variable:
+On Proxmox there is no key and no `known_hosts` to mount, and no variable to
+export: the credential is in the config, under `target.proxmox`.
 
 ```bash
-export PROXMOX_VE_API_TOKEN='vcows@pve!deploy=<secret>'   # user@realm!tokenid=secret
 podman run --rm \
-  -e PROXMOX_VE_API_TOKEN \
   -v ./lab-a.yaml:/config.yaml:ro,z \
   -v /srv/images:/images:ro,z \
   -v ./runs:/runs:Z \
   vcows-deploy:0.1.0.0 preflight /config.yaml
 ```
 
-A PVE certificate from a private CA goes in the environment too:
-`REQUESTS_CA_BUNDLE`, naming a mounted bundle, which is where `requests` already
-looks. There is deliberately no `ca_file` in the config — one mechanism, set once
-by the container. `insecure: true` under `target.proxmox` skips verification for a
-self-signed certificate, and `validate` warns about it: the token is a bearer
-credential and goes to whatever answers.
+A PVE certificate from a private CA is named the same way: `ca_file` under
+`target.proxmox`, an absolute path to a bundle mounted into the container, which
+vcows hands to `requests` as its `verify`. `insecure: true` skips verification
+instead, for a self-signed certificate, and `validate` warns about it — the
+credential goes to whatever answers. The two together are refused; they are two
+contradictory answers about the same certificate.
 
 **The read-only mounts are `:z` and the run directory is `:Z`.** On an SELinux
 host `:Z` relabels the *host* path with a category private to one container, so
@@ -226,6 +224,8 @@ target:
     node: pve1
     datastore: local-lvm                     # VM disks; must allow "Disk image"
     import_datastore: local                  # golden image and seed ISOs; must allow "Import" and "ISO image"
+    token: 'vcows@pve!deploy=<secret>'       # or user: + password:, exactly one form
+    # ca_file: /run/secrets/pve-ca.pem       # private CA; absolute path, mounted
     # insecure: true                         # self-signed certificate; validate warns
 image:
   source_qcow2: /images/golden.qcow2
@@ -317,9 +317,8 @@ turn autostart off per domain with `virsh autostart --disable <name>`, or clear
 
 > **The config is a secret artifact.** Credentials are cleartext at v0.1,
 > deliberately and temporarily. Do not commit it, and do not ship it as an
-> example. On Proxmox the token is not in the file — it is never written
-> anywhere: not the config, `run.json` or the log — but `user_data`
-> still is.
+> example. That is every backend's credential and `user_data` besides. Nothing
+> copies them onward: neither `run.json` nor the log ever carries one.
 
 ### How the SSH credentials actually reach libvirt
 
@@ -407,7 +406,9 @@ from the log, and is why it is the exception rather than an oversight. Nothing
 else is written to stdout, so `2>/dev/null` silences vcows entirely.
 
 **The log names paths, never contents.** No `user_data`, no seed ISO bytes, no
-key material — `ssh_keyfile` and `known_hosts` appear as the paths they are.
+key material — `ssh_keyfile` and `known_hosts` appear as the paths they are, and
+neither a Proxmox `token` nor a `password` appears at all: the connect line names
+the host and the user, which is what a 401 needs and is not the credential.
 Treat it as less protected than the run directory even so: that directory is
 `0700`, and a container's logs are whatever the host's log driver does with them.
 
@@ -507,7 +508,7 @@ explicit reason rather than quietly passing:
 | | |
 |---|---|
 | `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real libvirt hypervisor, and the boot gate: one VM deployed, booted, read over SSH and destroyed again. |
-| `VCOWS_PVE_ENDPOINT=https://…` **and** `PROXMOX_VE_API_TOKEN` | Runs against a real Proxmox cluster. Both, or the gate answers nothing. |
+| `VCOWS_PVE_ENDPOINT=https://…` **and** `VCOWS_PVE_TOKEN` | Runs against a real Proxmox cluster. Both, or the gate answers nothing. The test composes them into the config it deploys. |
 | `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. Needs podman; buildah cannot substitute. |
 | `python3-libvirt` importable | Pins our literal flag and error constants against the real ABI. |
 | `pycdlib` importable | Builds the seed ISO. |
