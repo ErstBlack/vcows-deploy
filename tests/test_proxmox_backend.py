@@ -87,8 +87,8 @@ def test_prepare_builds_a_seed_per_vm_and_carries_the_image(
         vms=(), artifacts={"image": {"create": True, "volid": "local:import/g.qcow2"}}
     )
     prepared = backend.prepare(pve_cfg, tmp_path, discovered)
-    assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
-    assert prepared.artifacts["image"]["create"] is True
+    assert set(prepared["seed_isos"]) == {"app01", "app02"}
+    assert prepared["image"]["create"] is True
     assert (tmp_path / "app01-seed.iso").is_file()
     assert (tmp_path / "app02-seed.iso").is_file()
 
@@ -100,7 +100,7 @@ def test_prepare_cleans_up_after_nothing(backend, pve_cfg, tmp_path):
         vms=(), artifacts={"image": {"create": False, "volid": "x"}}
     )
     prepared = backend.prepare(pve_cfg, tmp_path, discovered)
-    assert Path(prepared.artifacts["seed_isos"]["app01"]).is_file()
+    assert Path(prepared["seed_isos"]["app01"]).is_file()
 
 
 # -- connect -------------------------------------------------------------
@@ -324,7 +324,7 @@ def test_every_abstract_method_is_reachable_through_the_class(
         discovered = backend.preflight(pve_cfg, session)
         assert discovered.vms == ()
         prepared = backend.prepare(pve_cfg, tmp_path, discovered)
-        assert set(prepared.artifacts["seed_isos"]) == {"app01", "app02"}
+        assert set(prepared["seed_isos"]) == {"app01", "app02"}
         assert set(backend.create(pve_cfg, session, prepared)) == {"app01", "app02"}
         # With a target rather than none, so `destroy` reaches the session it is
         # handed rather than returning on an empty list.

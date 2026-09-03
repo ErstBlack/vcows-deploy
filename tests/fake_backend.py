@@ -21,7 +21,6 @@ from orchestrator.backends.base import (
     Discovered,
     Existing,
     Outcome,
-    Prepared,
 )
 from orchestrator.marker import Marker
 from orchestrator.problems import Problem, Severity
@@ -34,7 +33,7 @@ class FakeSession:
         self.world = world
         self.closed = False
         self.destroyed: list[str] = []
-        #: What `create` read out of the `Prepared` it was handed. A caller that
+        #: What `create` read out of the artifacts dict it was handed. A caller that
         #: builds its own instead of passing `prepare`'s is visible here.
         self.seed: str | None = None
 
@@ -94,26 +93,26 @@ class FakeBackend(Backend):
 
     # -- apply -----------------------------------------------------------
 
-    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered) -> Prepared:
+    def prepare(
+        self, cfg: dict, workdir: Path, discovered: Discovered
+    ) -> dict[str, Any]:
         (workdir / "fake-artifact").write_text("seed\n")
-        return Prepared(
-            artifacts={
-                "seed": str(workdir / "fake-artifact"),
-                # Carried through from preflight, not looked up again.
-                "existing_names": discovered.artifacts["existing_names"],
-            },
-        )
+        return {
+            "seed": str(workdir / "fake-artifact"),
+            # Carried through from preflight, not looked up again.
+            "existing_names": discovered.artifacts["existing_names"],
+        }
 
-    def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
+    def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Put every configured VM into the world, and report what went in.
 
         The real backends define a domain or clone a template here. This one
         appends to the list `preflight` reads, which is what makes a second
         deploy against the same fake see them and skip.
         """
-        # A `Prepared` that is not `prepare`'s is a KeyError here rather than a
+        # An artifacts dict that is not `prepare`'s is a KeyError here rather than a
         # deploy that quietly creates VMs from media nothing built.
-        session.seed = prepared.artifacts["seed"]
+        session.seed = prepared["seed"]
         for vm in cfg["vms"]:
             marker = Marker.for_vm(vm["name"], cfg["deployment"])
             session.world.append(Existing(name=vm["name"], id=marker.id, marker=marker))

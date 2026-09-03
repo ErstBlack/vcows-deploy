@@ -17,7 +17,6 @@ from typing import Any
 
 from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
-from ..base import Prepared
 from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT
 
 # Names are the logical name, undecorated (D16). Maximally predictable for
@@ -29,10 +28,10 @@ def overlay_name(vm_name: str) -> str:
     return f"{vm_name}.qcow2"
 
 
-def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
+def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
     target = cfg["target"]["libvirt"]
-    base = prepared.artifacts["base_volume"]
-    seeds = prepared.artifacts["seed_isos"]
+    base = prepared["base_volume"]
+    seeds = prepared["seed_isos"]
 
     return {
         "pool": target["pool"],

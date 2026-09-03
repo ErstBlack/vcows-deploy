@@ -113,18 +113,6 @@ class Discovered:
     """
 
 
-@dataclass(frozen=True)
-class Prepared:
-    """Whatever ``prepare`` produced for ``create`` to consume.
-
-    Opaque to core, which carries it from one call to the next and reads
-    nothing in it. For both shipped backends it holds the seed ISOs and the one
-    fact preflight had to look up while connected.
-    """
-
-    artifacts: dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class Outcome:
     """What a teardown actually did, per object. The point of the exercise.
@@ -364,12 +352,16 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def prepare(self, cfg: dict, workdir: Path, discovered: Discovered) -> Prepared:
+    def prepare(
+        self, cfg: dict, workdir: Path, discovered: Discovered
+    ) -> dict[str, Any]:
         """Build whatever ``create`` needs, under ``workdir``, and record it.
 
-        For both shipped backends that is the seed ISOs, written into the run
-        directory and kept there so a VM that will not boot can be debugged from
-        the media it was actually given.
+        The dict it returns is opaque to core, which carries it from this call to
+        ``create`` and reads nothing in it. For both shipped backends that is the
+        seed ISOs, written into the run directory and kept there so a VM that
+        will not boot can be debugged from the media it was actually given, plus
+        the one fact preflight had to look up while connected.
 
         **Takes what ``preflight`` found, not a connection.** It needs the
         target's state -- which of the things ``create`` would make already
@@ -379,7 +371,7 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def create(self, cfg: dict, session: Any, prepared: Prepared) -> dict:
+    def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Create every VM in ``cfg`` and return the inventory map.
 
         ``session`` is what ``connect`` yielded. The result is keyed by logical VM

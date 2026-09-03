@@ -23,7 +23,6 @@ from orchestrator.backends.base import (
     Action,
     Backend,
     Discovered,
-    Prepared,
     decide,
 )
 from orchestrator.config import load, vm_names
@@ -107,7 +106,7 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     prepared = backend.prepare(config, workdir, discovered)
-    assert prepared.artifacts["existing_names"] == []
+    assert prepared["existing_names"] == []
 
     # -- create, against a session of its own -------------------------------
     with backend.connect(config) as session:
@@ -164,7 +163,7 @@ def test_prepare_works_from_data_alone(no_libvirt, cfg, tmp_path):
         config, tmp_path, Discovered(vms=(), artifacts={"existing_names": []})
     )
 
-    assert prepared.artifacts["existing_names"] == []
+    assert prepared["existing_names"] == []
     assert backend.sessions == [], "prepare must not have opened a connection"
 
 
@@ -271,7 +270,7 @@ def test_create_renders_first_and_hands_the_values_to_the_session(monkeypatch):
         create_mod, "create", lambda conn, values: ("created", conn, values)
     )
 
-    cfg, prepared = {"deployment": "lab-a"}, Prepared()
+    cfg, prepared = {"deployment": "lab-a"}, {}
     assert LibvirtBackend().create(cfg, "session", prepared) == (
         "created",
         "session",

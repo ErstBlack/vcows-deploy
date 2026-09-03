@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.backends.base import Prepared
 from orchestrator.backends.libvirt import render as render_mod
 from orchestrator.backends.libvirt.render import render
 from orchestrator.marker import Marker
@@ -24,15 +23,13 @@ GOLDEN = Path(__file__).parent / "golden" / "libvirt.tfvars.json"
 def prepared():
     """What `prepare` resolves against the session: the seed ISOs it built, and
     whether the golden image is already on this host."""
-    return Prepared(
-        artifacts={
-            "seed_isos": {
-                "app01": "/run/vcows/lab-a/app01-seed.iso",
-                "app02": "/run/vcows/lab-a/app02-seed.iso",
-            },
-            "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
+    return {
+        "seed_isos": {
+            "app01": "/run/vcows/lab-a/app01-seed.iso",
+            "app02": "/run/vcows/lab-a/app02-seed.iso",
         },
-    )
+        "base_volume": {"name": "golden.qcow2", "create": True, "path": ""},
+    }
 
 
 def dumped(tfvars: dict) -> str:
@@ -122,16 +119,14 @@ def test_configured_address_is_the_primary_nics(cfg, prepared):
 def test_base_volume_when_it_is_already_on_the_host(cfg):
     """Each apply runs against a fresh state, so without this the module would
     try to create an existing volume on every deploy after the first."""
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
-            "base_volume": {
-                "name": "golden.qcow2",
-                "create": False,
-                "path": "/var/lib/libvirt/images/golden.qcow2",
-            },
+    prepared = {
+        "seed_isos": {"app01": "/a.iso", "app02": "/b.iso"},
+        "base_volume": {
+            "name": "golden.qcow2",
+            "create": False,
+            "path": "/var/lib/libvirt/images/golden.qcow2",
         },
-    )
+    }
     base = render(cfg, prepared)["base_volume"]
     assert base == {
         "name": "golden.qcow2",

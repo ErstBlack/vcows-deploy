@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.backends.base import Prepared
 from orchestrator.backends.proxmox.render import render
 from orchestrator.marker import from_description
 
@@ -23,15 +22,13 @@ GOLDEN = Path(__file__).parent / "golden" / "proxmox.tfvars.json"
 def prepared():
     """What `prepare` resolves: the seed ISOs it built, and preflight's answer
     about whether the golden image is already on the cluster."""
-    return Prepared(
-        artifacts={
-            "seed_isos": {
-                "app01": "/runs/lab-a/seed/app01-seed.iso",
-                "app02": "/runs/lab-a/seed/app02-seed.iso",
-            },
-            "image": {"create": True, "volid": "local:import/golden.qcow2"},
+    return {
+        "seed_isos": {
+            "app01": "/runs/lab-a/seed/app01-seed.iso",
+            "app02": "/runs/lab-a/seed/app02-seed.iso",
         },
-    )
+        "image": {"create": True, "volid": "local:import/golden.qcow2"},
+    }
 
 
 def dumped(tfvars: dict) -> str:
@@ -124,12 +121,10 @@ def test_configured_address_is_the_primary_nics(pve_cfg, prepared):
 def test_the_image_is_not_re_uploaded_once_it_is_there(pve_cfg):
     """The apply runs against a fresh state every time, so without `create` it
     would push a multi-GB image on every deploy after the first."""
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": {"app01": "/s/app01.iso", "app02": "/s/app02.iso"},
-            "image": {"create": False, "volid": "local:import/golden.qcow2"},
-        },
-    )
+    prepared = {
+        "seed_isos": {"app01": "/s/app01.iso", "app02": "/s/app02.iso"},
+        "image": {"create": False, "volid": "local:import/golden.qcow2"},
+    }
     image = render(pve_cfg, prepared)["image"]
     assert image["create"] is False
     assert image["volid"] == "local:import/golden.qcow2"
@@ -150,7 +145,7 @@ def test_the_seed_name_is_not_one_proxmox_claims(pve_cfg, prepared):
     import re
 
     pve_cfg["vms"][0]["name"] = "vm-100-cloudinit"
-    prepared.artifacts["seed_isos"]["vm-100-cloudinit"] = "/runs/lab-a/seed/x.iso"
+    prepared["seed_isos"]["vm-100-cloudinit"] = "/runs/lab-a/seed/x.iso"
     for name, vm in render(pve_cfg, prepared)["vms"].items():
         assert vm["seed_name"] == f"{name}-seed.iso"
         assert not re.match(r"^vm-\d+-cloudinit\.iso$", vm["seed_name"])

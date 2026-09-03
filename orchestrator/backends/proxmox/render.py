@@ -24,14 +24,13 @@ from typing import Any
 
 from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
-from ..base import Prepared
 from .schema import BIOS, FIRMWARE_DEFAULT, MACHINE_DEFAULT, OS_TYPE_DEFAULT
 
 
-def render(cfg: dict, prepared: Prepared) -> dict[str, Any]:
+def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
     target = cfg["target"]["proxmox"]
-    image = prepared.artifacts["image"]
-    seeds = prepared.artifacts["seed_isos"]
+    image = prepared["image"]
+    seeds = prepared["seed_isos"]
 
     return {
         "endpoint": target["endpoint"],

@@ -17,7 +17,6 @@ import logging
 
 import pytest
 
-from orchestrator.backends.base import Prepared
 from orchestrator.backends.proxmox import ProxmoxBackend, api
 from orchestrator.backends.proxmox import create as create_mod
 from orchestrator.marker import Marker
@@ -57,12 +56,10 @@ def sources(tmp_path, pve_cfg):
 
 @pytest.fixture
 def prepared(sources):
-    return Prepared(
-        artifacts={
-            "seed_isos": sources,
-            "image": {"create": True, "volid": "local:import/golden.qcow2"},
-        },
-    )
+    return {
+        "seed_isos": sources,
+        "image": {"create": True, "volid": "local:import/golden.qcow2"},
+    }
 
 
 @pytest.fixture
@@ -129,12 +126,10 @@ def test_the_image_is_not_uploaded_when_the_cluster_already_has_it(
 ):
     """The second deploy to a cluster. Re-uploading would be a multi-GB no-op,
     and `render` does not even carry a source path in this case."""
-    prepared = Prepared(
-        artifacts={
-            "seed_isos": sources,
-            "image": {"create": False, "volid": "local:import/golden.qcow2"},
-        },
-    )
+    prepared = {
+        "seed_isos": sources,
+        "image": {"create": False, "volid": "local:import/golden.qcow2"},
+    }
     deployed(pve_cfg, session, prepared)
 
     assert [u["content"] for u in world.uploads] == ["iso", "iso"]
