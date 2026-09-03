@@ -99,7 +99,7 @@ version_of() {
 install_one() {
     local tool="$1" version="$2" tmp file
     tmp="$TMP/$tool"; mkdir -p "$tmp"
-    if installed "$tool" && [ "${FORCE:-0}" != 1 ]; then
+    if installed "$tool"; then
         log "  $tool: already in .tools/bin"
         return
     fi
@@ -119,7 +119,7 @@ install_one() {
     # this arm would install nothing -- measured 2026-09-02: every tool "using
     # /usr/local/bin/...", .tools/bin empty. A worktree owns its own copies
     # (8-9 s, 366 MB, measured) so nothing it runs depends on another checkout.
-    if have "$tool" && [ "${FORCE:-0}" != 1 ] && ! in_linked_worktree; then
+    if have "$tool" && ! in_linked_worktree; then
         local found path
         path="$(command -v "$tool")"
         found="$(version_of "$path")" \
