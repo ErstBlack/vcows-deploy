@@ -29,12 +29,15 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-import jsonschema
-
-from ...cloudinit import check_addressing, seed_name
+from ...cloudinit import (
+    check_addressing,
+    check_vm_structure,
+    nic_checks_are_safe,
+    seed_name,
+)
 from ...imagecheck import check_disk_capacity, check_image_digest
 from ...limits import MAX_DISK_GB, MAX_MEMORY_MIB, MAX_VCPUS
-from ...problems import Problem, problems_from
+from ...problems import Problem
 
 #: PVE validates a VM name as a DNS name, so no underscore -- which libvirt does
 #: allow. ``\Z`` rather than ``$`` for the reason the libvirt schema spells out:
@@ -149,9 +152,9 @@ def validate(cfg: dict) -> list[Problem]:
     seen_macs: dict[str, str] = {}
     for i, vm in enumerate(cfg["vms"]):
         where = f"vms[{i}]"
-        structural = _check_vm_structure(vm, where)
+        structural = check_vm_structure(vm, where, VM_SCHEMA)
         problems += structural
-        if structural and not _nic_checks_are_safe(vm, structural):
+        if structural and not nic_checks_are_safe(vm, structural):
             continue
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
@@ -159,25 +162,6 @@ def validate(cfg: dict) -> list[Problem]:
     problems += check_image_digest(cfg)
     problems += _check_image_name(cfg)
     return problems
-
-
-def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
-    """Whether `_check_nics` can read this VM unguarded.
-
-    Same guard, and the same reasoning, as the libvirt backend's: a nic that is a
-    mapping with one wrongly-typed field passes every container-shape clause, and
-    `check_addressing` would then reach `ipaddress` with a `None` and raise --
-    losing every other problem in the document. The schema's own verdict is
-    consulted first, and it puts the failing path in `where`.
-    """
-    if any(".nics" in p.where for p in structural):
-        return False
-    return (
-        isinstance(vm, dict)
-        and isinstance(vm.get("name"), str)
-        and isinstance(vm.get("nics"), list)
-        and all(isinstance(nic, dict) for nic in vm["nics"])
-    )
 
 
 def _check_token() -> list[Problem]:
@@ -283,11 +267,6 @@ def _check_target(target: dict) -> list[Problem]:
             )
         )
     return problems
-
-
-def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
-    validator = jsonschema.Draft202012Validator(VM_SCHEMA)
-    return problems_from(validator.iter_errors(vm), at=where)
 
 
 def _check_nics(

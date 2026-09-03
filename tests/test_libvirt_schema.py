@@ -483,7 +483,7 @@ def test_a_vm_that_is_not_a_mapping_still_skips_the_nic_checks(cfg):
     backend, and calling `schema.validate` with one anyway raises `TypeError` out
     of `_check_volume_names` -- on master too, for a reason this guard is nowhere
     near. So the predicate is pinned directly, one clause at a time."""
-    safe = schema._nic_checks_are_safe
+    safe = cloudinit.nic_checks_are_safe
     assert safe(cfg["vms"][0], []) is True
     assert safe("app01", []) is False
     assert safe({"name": "app01"}, []) is False
@@ -527,9 +527,9 @@ def test_the_guard_refuses_when_the_schema_failure_is_inside_a_nic(cfg):
     vm = cfg["vms"][0]
     inside = Problem.error("not of type 'string'", where="vms[0].nics[0].ip_cidr")
     outside = Problem.error("less than the minimum", where="vms[0].vcpus")
-    assert schema._nic_checks_are_safe(vm, [outside]) is True
-    assert schema._nic_checks_are_safe(vm, [inside]) is False
-    assert schema._nic_checks_are_safe(vm, [outside, inside]) is False
+    assert cloudinit.nic_checks_are_safe(vm, [outside]) is True
+    assert cloudinit.nic_checks_are_safe(vm, [inside]) is False
+    assert cloudinit.nic_checks_are_safe(vm, [outside, inside]) is False
 
 
 @pytest.mark.parametrize(
@@ -557,7 +557,7 @@ def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing
 
     A blank YAML value is the commonest way in -- `ip_cidr:` with nothing after
     it parses as `None` -- and every trigger here is already caught by the schema
-    `_check_vm_structure` just ran, so the named error is what has to reach the
+    `check_vm_structure` just ran, so the named error is what has to reach the
     operator. Asserted against the whole fatal list, not a substring, because the
     defect was the *loss* of everything else: the composed path is included since
     `config.load` runs it for all four verbs, not only `validate`.

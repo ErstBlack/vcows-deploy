@@ -31,10 +31,11 @@ import ipaddress
 import uuid
 from pathlib import Path
 
+import jsonschema
 import yaml
 
 from .marker import VCOWS_NS, derive_id
-from .problems import Problem
+from .problems import Problem, problems_from
 
 #: Both cloud-init and libvirt find a NoCloud datasource by this volume label.
 VOLUME_LABEL = "cidata"
@@ -245,6 +246,59 @@ def build_all(cfg: dict, workdir: Path) -> dict[str, str]:
         )
         for vm in cfg["vms"]
     }
+
+
+def check_vm_structure(vm: object, where: str, vm_schema: dict) -> list[Problem]:
+    """One VM entry against the backend's own ``VM_SCHEMA``, as Problems at ``where``.
+
+    Shared because the call is identical in every backend and only the schema
+    differs; the schema stays the backend's, since shape is where they disagree.
+    """
+    validator = jsonschema.Draft202012Validator(vm_schema)
+    return problems_from(validator.iter_errors(vm), at=where)
+
+
+def nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
+    """Whether a backend's NIC checks can read this VM unguarded.
+
+    Normally `check_vm_structure` passing is what makes that safe. When it did
+    not pass, the question is narrower: are the fields *these* checks index still
+    the right shape. `check_addressing` reads `vm["nics"]` and, through `mac_of`,
+    `vm["name"]`. A `vcpus` out of range or an unexpected key says nothing about
+    any of them, and skipping anyway costs the operator the edit round trip
+    `config.load`'s every-problem contract rules out.
+
+    **The container's shape is only half the question, and asking only it was a
+    regression.** A nic that is a mapping with one wrongly-typed *field* passes
+    every clause below: `ip_cidr:` left blank in YAML is `None`, `nics` is still
+    a list of dicts, and `check_addressing` then reached `"/" not in raw` in
+    `_parse_interface` with `None` and raised an uncaught `TypeError` that lost
+    every other problem in the document -- the same class of unwind the libvirt
+    `_check_target` wraps `urlsplit` against, added by the same commit that added
+    this guard (#112). So the schema's own verdict is consulted first, and
+    `problems_from` has already computed it: it puts the failing path in `where`
+    (`vms[0].nics[0].ip_cidr`) and `structural` is one VM's problems, so a
+    `.nics` anywhere in it places the failure inside the data these checks
+    index, and the skip is the only answer that does not crash. A `vcpus` out of
+    range is `vms[0].vcpus`, which names no nic, so the case this guard was
+    written for still runs the checks and still reports a duplicate address
+    alongside it.
+
+    ``object`` and not ``dict``: the first clause is the one that matters when a
+    VM is not a mapping at all, and annotating the parameter as the thing it is
+    testing for would make that clause unreachable by declaration.
+
+    One copy for every backend (#179): the guard exists because of #112, and a
+    fix to it was being made twice.
+    """
+    if any(".nics" in p.where for p in structural):
+        return False
+    return (
+        isinstance(vm, dict)
+        and isinstance(vm.get("name"), str)
+        and isinstance(vm.get("nics"), list)
+        and all(isinstance(nic, dict) for nic in vm["nics"])
+    )
 
 
 def check_addressing(
