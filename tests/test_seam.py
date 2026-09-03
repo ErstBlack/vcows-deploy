@@ -25,7 +25,7 @@ from orchestrator.backends.base import (
     Discovered,
     decide,
 )
-from orchestrator.config import load, vm_names
+from orchestrator.config import load
 from tests.fake_backend import FakeBackend
 
 CONFIG = """\
@@ -94,7 +94,9 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
     with backend.connect(config) as session:
         discovered = backend.preflight(config, session)
         decisions, problems = decide(
-            vm_names(config), discovered.vms, config["deployment"]
+            [vm["name"] for vm in config["vms"]],
+            discovered.vms,
+            config["deployment"],
         )
         assert [d.action for d in decisions] == [Action.CREATE, Action.CREATE]
         assert problems == []
@@ -123,7 +125,7 @@ def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
     # of the same name would be a REFUSE here rather than a SKIP.
     with backend.connect(config) as session:
         decisions, _ = decide(
-            vm_names(config),
+            [vm["name"] for vm in config["vms"]],
             backend.preflight(config, session).vms,
             config["deployment"],
         )

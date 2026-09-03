@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from orchestrator.config import ConfigError, core_schema, load, validate, vm_names
+from orchestrator.config import ConfigError, core_schema, load, validate
 from tests.fake_backend import FakeBackend
 
 CONFIG = """\
@@ -39,7 +39,7 @@ def write(tmp_path, text, name="lab-a.yaml"):
 def test_loads_a_valid_config(tmp_path, registry):
     cfg, _ = load(write(tmp_path, CONFIG), registry)
     assert cfg["backend"] == "fake"
-    assert vm_names(cfg) == ["app01", "app02"]
+    assert [vm["name"] for vm in cfg["vms"]] == ["app01", "app02"]
 
 
 def test_load_hands_back_the_warnings_it_computed(tmp_path, registry):
@@ -285,4 +285,4 @@ def test_one_vm_is_enough(tmp_path, registry):
     floor of two would have been indistinguishable from a floor of one."""
     text = CONFIG.replace("  - name: app02\n", "")
     cfg, _ = load(write(tmp_path, text), registry)
-    assert vm_names(cfg) == ["app01"]
+    assert [vm["name"] for vm in cfg["vms"]] == ["app01"]

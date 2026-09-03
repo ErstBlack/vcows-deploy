@@ -44,7 +44,7 @@ from .backends.base import (
     Discovered,
     decide,
 )
-from .config import ConfigError, load, vm_names
+from .config import ConfigError, load
 from .problems import Problem
 
 #: The R5 build manifest, baked into the image at build time: which RPMs and
@@ -332,7 +332,9 @@ def _look(cfg: dict) -> tuple[Discovered, list[Decision], list[Problem]]:
     backend = REGISTRY[cfg["backend"]]
     with backend.connect(cfg) as session:
         discovered = backend.preflight(cfg, session)
-    decisions, policy = decide(vm_names(cfg), discovered.vms, cfg["deployment"])
+    decisions, policy = decide(
+        [vm["name"] for vm in cfg["vms"]], discovered.vms, cfg["deployment"]
+    )
     return discovered, decisions, list(discovered.problems) + policy
 
 

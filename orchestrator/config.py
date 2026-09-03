@@ -194,7 +194,3 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
         seen.add(name)
 
     return problems
-
-
-def vm_names(cfg: dict) -> list[str]:
-    return [vm["name"] for vm in cfg["vms"]]

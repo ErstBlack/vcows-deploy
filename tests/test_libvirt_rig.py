@@ -24,7 +24,6 @@ import pytest
 
 from orchestrator.backends.base import Action, decide
 from orchestrator.backends.libvirt import preflight
-from orchestrator.config import vm_names
 from orchestrator.problems import Severity
 from tests.conftest import gate
 
@@ -98,7 +97,11 @@ def test_an_unmarked_domain_whose_name_we_want_is_refused(rig_cfg, session):
     """vcows will not adopt or overwrite something it did not create."""
     rig_cfg["vms"][0]["name"] = UNMARKED_PROBE
     discovered = preflight.preflight(rig_cfg, session)
-    decisions, _ = decide(vm_names(rig_cfg), discovered.vms, rig_cfg["deployment"])
+    decisions, _ = decide(
+        [vm["name"] for vm in rig_cfg["vms"]],
+        discovered.vms,
+        rig_cfg["deployment"],
+    )
     assert decisions[0].action is Action.REFUSE
     assert "will not adopt or overwrite" in decisions[0].reason
 
