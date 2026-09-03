@@ -13,18 +13,11 @@ import pytest
 
 from orchestrator.backends.proxmox import schema
 from orchestrator.problems import Severity
+from tests.conftest import messages, wheres
 
 
 def errors(problems):
     return [p for p in problems if p.severity is Severity.ERROR]
-
-
-def messages(problems):
-    return " | ".join(str(p) for p in problems)
-
-
-def wheres(problems):
-    return {p.where for p in problems}
 
 
 @pytest.fixture(autouse=True)
@@ -110,21 +103,21 @@ def test_credentials_in_the_endpoint_are_refused(pve_cfg, endpoint):
     pve_cfg["target"]["proxmox"]["endpoint"] = endpoint
     problems = errors(schema.validate(pve_cfg))
     assert "no credentials" in messages(problems)
-    assert wheres(problems) == {"target.proxmox.endpoint"}
+    assert set(wheres(problems)) == {"target.proxmox.endpoint"}
 
 
 def test_a_query_string_is_refused(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://pve.example.com?verify=0"
     problems = errors(schema.validate(pve_cfg))
     assert "no query string" in messages(problems)
-    assert wheres(problems) == {"target.proxmox.endpoint"}
+    assert set(wheres(problems)) == {"target.proxmox.endpoint"}
 
 
 def test_a_path_beyond_the_api_root_is_refused(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://pve.example.com/nodes/pve1"
     problems = errors(schema.validate(pve_cfg))
     assert "path must be empty" in messages(problems)
-    assert wheres(problems) == {"target.proxmox.endpoint"}
+    assert set(wheres(problems)) == {"target.proxmox.endpoint"}
 
 
 def test_an_endpoint_with_no_host_is_refused(pve_cfg):
@@ -133,7 +126,7 @@ def test_an_endpoint_with_no_host_is_refused(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://"
     problems = errors(schema.validate(pve_cfg))
     assert "no host in" in messages(problems)
-    assert wheres(problems) == {"target.proxmox.endpoint"}
+    assert set(wheres(problems)) == {"target.proxmox.endpoint"}
 
 
 def test_an_endpoint_that_is_not_a_url_is_reported_not_raised(pve_cfg):
@@ -143,7 +136,7 @@ def test_an_endpoint_that_is_not_a_url_is_reported_not_raised(pve_cfg):
     pve_cfg["target"]["proxmox"]["endpoint"] = "https://[pve.example.com:8006"
     problems = errors(schema.validate(pve_cfg))
     assert "is not a URL" in messages(problems)
-    assert wheres(problems) == {"target.proxmox.endpoint"}
+    assert set(wheres(problems)) == {"target.proxmox.endpoint"}
 
 
 def test_a_bare_origin_and_the_api_root_are_both_accepted(pve_cfg):
@@ -246,7 +239,7 @@ def test_every_problem_is_reported_not_just_the_first(pve_cfg):
     problems = errors(schema.validate(pve_cfg))
     # Exactly these three: a fourth would mean one typo produced two refusals,
     # which is the round trip this contract exists to avoid.
-    assert wheres(problems) == {
+    assert set(wheres(problems)) == {
         "target.proxmox.endpoint",
         "vms[0].name",
         "vms[1].nics[0].vlan_id",
@@ -259,7 +252,7 @@ def test_a_bad_name_does_not_hide_this_vms_addressing_problem(pve_cfg):
     pve_cfg["vms"][0]["name"] = "app_01"
     pve_cfg["vms"][0]["nics"][0]["gateway"] = "10.0.0.1"
     problems = errors(schema.validate(pve_cfg))
-    assert wheres(problems) == {"vms[0].name", "vms[0].nics[0].gateway"}
+    assert set(wheres(problems)) == {"vms[0].name", "vms[0].nics[0].gateway"}
 
 
 def test_a_vm_that_is_not_a_mapping_is_reported_rather_than_crashing(pve_cfg):

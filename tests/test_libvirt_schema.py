@@ -18,6 +18,7 @@ from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
 from orchestrator.problems import Problem
+from tests.conftest import messages, wheres
 from tests.fake_backend import FakeBackend
 
 
@@ -44,23 +45,8 @@ def registry():
     return {"libvirt": LibvirtSchemaOnly()}
 
 
-def messages(problems) -> str:
-    return "\n".join(str(p) for p in problems)
-
-
 def errors(problems) -> list:
     return [p for p in problems if p.fatal]
-
-
-def wheres(problems) -> list[str]:
-    """What each problem is filed against, in order.
-
-    The half a message cannot carry. `where` is a config path, read by the CLI
-    printout and recorded in `run.json`, and it is what tells an operator which
-    key to edit -- so a check that names the wrong one, or names nothing, sends
-    them to the wrong line of a file the message may not even mention.
-    """
-    return [p.where for p in problems]
 
 
 # -- the canonical config ---------------------------------------------------

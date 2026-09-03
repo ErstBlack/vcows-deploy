@@ -21,7 +21,7 @@ from orchestrator.backends.libvirt import destroy as d
 from orchestrator.backends.libvirt.preflight import disks_of, marker_of
 from orchestrator.marker import Marker
 from orchestrator.problems import Severity
-from tests.conftest import require
+from tests.conftest import require, wheres
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FULL = d.FLOOR | d.UNDEFINE_CHECKPOINTS_METADATA | d.UNDEFINE_TPM
@@ -116,18 +116,6 @@ def target(dom, disks=None):
         marker=marker_of(root),
         disks=disks_of(root) if disks is None else tuple(disks),
     )
-
-
-def wheres(problems) -> list[str]:
-    """What each problem is filed against, in order.
-
-    `where` is the only machine-read field a problem carries: `run.json` records
-    it and `cmd_destroy` prints it beside the message. A host-wide failure files
-    against ``storage``; anything a single target caused files against that
-    target's name, which is what lets an operator tell "this VM was left behind"
-    from "nothing on this host could be accounted for".
-    """
-    return [p.where for p in problems]
 
 
 def test_destroy_precedes_undefine():
