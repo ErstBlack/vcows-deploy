@@ -10,9 +10,9 @@ Two things F11 left open, settled here:
   primary** unless one carries ``primary: true``. Primary means two things: its
   address is the one the inventory reports, and its gateway is the one that
   becomes the guest's default route.
-* A per-VM value **replaces**, never merges. There is no ``defaults`` block at
-  v0.1 so nothing exercises it yet, but the rule is invisible until the first
-  nested field and by then configs exist.
+* A per-VM value **replaces**, never merges. The config's ``defaults`` block is
+  flat for exactly that reason, and core resolves it before this module runs, so
+  every VM reaching here already carries the values it will be judged against.
 
 The split with core is D11: core's ``vms`` schema requires only ``name``, and
 everything about a VM's shape -- especially NICs, whose valid forms are entirely
@@ -54,8 +54,9 @@ MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 #: this is here to refuse.
 SSH_PATH_PATTERN = r"^/[^\s]*\Z"
 
-#: Field-level defaults, not a ``defaults`` block. Each is one value used when a
-#: VM omits the key -- there is no resolution step and no merge semantics.
+#: Backend fallbacks, and not the config's ``defaults`` block -- core has already
+#: resolved that one by the time this module runs. Each is the value used when a
+#: VM, and any default it inherited, leave the key unset.
 FIRMWARE_DEFAULT = "efi"
 MACHINE_DEFAULT = "q35"
 

@@ -855,3 +855,46 @@ def test_an_ordinary_credential_path_passes(cfg, registry, key):
     """A validator that rejects everything passes half a suite."""
     cfg["target"]["libvirt"][key] = "/home/vcows/.ssh/id_ed25519-vcows.pub"
     assert errors(core_validate(cfg, registry)) == []
+
+
+# -- defaults ---------------------------------------------------------------
+
+
+def test_a_default_supplies_a_key_the_vm_omits(cfg, registry):
+    """Through `core_validate`, because resolution is core's and the VM schema
+    that judges the result is this backend's."""
+    del cfg["vms"][0]["vcpus"]
+    cfg["defaults"] = {"vcpus": 2}
+    problems = errors(core_validate(cfg, registry))
+    assert problems == [], messages(problems)
+
+
+def test_a_bad_default_is_reported_once_at_the_default(cfg, registry):
+    """Both VMs inherit it. Blaming each of them names a key the operator never
+    wrote, twice, for one mistake."""
+    for vm in cfg["vms"]:
+        del vm["vcpus"]
+    cfg["defaults"] = {"vcpus": 0}
+    problems = errors(core_validate(cfg, registry))
+    assert wheres(problems) == ["defaults.vcpus"], messages(problems)
+    # Re-pointed, not rewritten: the schema's own words travel with it.
+    assert "minimum" in messages(problems)
+
+
+def test_a_vm_that_wrote_its_own_bad_value_is_blamed_for_it(cfg, registry):
+    """The other half of the re-pointing: a good default beside a VM that set
+    the key itself leaves the blame where the operator can act on it."""
+    del cfg["vms"][1]["vcpus"]
+    cfg["defaults"] = {"vcpus": 2}
+    cfg["vms"][0]["vcpus"] = 0
+    problems = errors(core_validate(cfg, registry))
+    assert wheres(problems) == ["vms[0].vcpus"], messages(problems)
+
+
+def test_an_explicit_null_replaces_the_default_and_then_fails(cfg, registry):
+    """There is no null-means-unset rule. A per-VM value replaces, and `None` is
+    a value -- so it lands on the type check, at the VM that wrote it."""
+    cfg["defaults"] = {"vcpus": 2}
+    cfg["vms"][0]["vcpus"] = None
+    problems = errors(core_validate(cfg, registry))
+    assert wheres(problems) == ["vms[0].vcpus"], messages(problems)
