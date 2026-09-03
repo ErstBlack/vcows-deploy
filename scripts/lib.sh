@@ -98,6 +98,46 @@ need() {
     done
 }
 
+# True in a linked worktree, false in the main checkout and outside a repo. A
+# linked worktree's `--git-dir` is `<main>/.git/worktrees/<name>` while its
+# `--git-common-dir` stays `<main>/.git`; in the main checkout the two answers
+# are the same string. CI clones normally, so it takes the false branch without
+# needing a platform variable read.
+#
+# **Both git calls are assigned on their own line and forgiven.** This file runs
+# `set -e` with `inherit_errexit`, so a bare `$(git ...)` in a directory that is
+# not a repo would kill the caller instead of answering false -- which is what
+# `tests/test_scripts.py`'s `_tree` does on every run: it copies this file into a
+# tmp dir and expects `image_tag` to work there.
+in_linked_worktree() {
+    local common dir
+    common="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    dir="$(git -C "$REPO" rev-parse --git-dir 2>/dev/null)" || return 1
+    [ -n "$common" ] && [ "$common" != "$dir" ]
+}
+
+# The worktree's name, for anything that leaves the tree -- an image tag, a rig
+# test's `deployment`. Empty in the main checkout, in CI and outside a repo, so
+# the checkout that ships names nothing differently. `VCOWS_WORKTREE` overrides,
+# and is sanitised the same way rather than trusted verbatim.
+#
+# Sanitising is lowercase plus `tr -c`: a branch name may carry `/`, `+` or an
+# uppercase letter, none of which a container tag accepts.
+#
+# `tests/conftest.py`'s `WORKTREE` is the same rule for the Python side. Two
+# implementations because neither language can call the other cheaply; one rule.
+worktree_tag() {
+    local name="${VCOWS_WORKTREE:-}"
+    if [ -z "$name" ]; then
+        in_linked_worktree || return 0
+        name="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
+    fi
+    # The `-` is last in the set on purpose: anywhere else `tr` reads it as a
+    # range endpoint and refuses the whole set ("reverse collating sequence
+    # order"). `\n` is in the set so the trailing newline survives.
+    printf '%s\n' "${name,,}" | tr -c 'a-z0-9._\n-' '-'
+}
+
 # The one timestamp format this project writes: RFC 3339, UTC, second precision.
 # It reaches the image as BUILD_DATE and the CVE baseline as `generated`, and a
 # second spelling would make those two look like different clocks.
@@ -117,6 +157,10 @@ containerfile_arg() {
 # The tag `just image` builds and `just test-image` exercises. One definition, so
 # the two recipes cannot disagree about which image is under test.
 #
+# A linked worktree appends `-<worktree_tag>`, because podman's image store is
+# per-machine and not per-checkout: two worktrees building at once would
+# otherwise be building over each other's tag.
+#
 # The version is assigned before it is used rather than interpolated inline.
 # Argument position is a real mechanism -- measured, a substitution in an
 # argument fails open where the same call in an assignment does not -- but it is
@@ -126,13 +170,14 @@ containerfile_arg() {
 # check-extra-masked-returns still flags the argument form, which that option
 # does not cover.
 image_tag() {
-    local version
+    local version suffix
     if [ -n "${VCOWS_IMAGE_TAG:-}" ]; then
         printf '%s\n' "$VCOWS_IMAGE_TAG"
         return
     fi
     version="$(containerfile_arg VCOWS_VERSION)"
-    printf '%s\n' "localhost/vcows-deploy:$version"
+    suffix="$(worktree_tag)"
+    printf '%s\n' "localhost/vcows-deploy:$version${suffix:+-$suffix}"
 }
 
 # The provider version a module pins. Derived rather than hardcoded: a bump

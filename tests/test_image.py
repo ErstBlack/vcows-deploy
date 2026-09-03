@@ -24,7 +24,7 @@ import textwrap
 import pytest
 
 from orchestrator import VERSION
-from tests.conftest import REPO, gate
+from tests.conftest import REPO, WORKTREE, gate
 
 IMAGE = os.environ.get("VCOWS_IMAGE")
 
@@ -345,7 +345,10 @@ def test_containerignore_keeps_a_nested_worktree_out_of_the_build_context(tmp_pa
     shutil.copy(REPO / ".containerignore", ctx / ".containerignore")
     (ctx / "Containerfile").write_text("FROM scratch\nCOPY . /ctx\n")
 
-    tag = "localhost/vcows-containerignore-gate:t"
+    # Named per worktree: the `rmi -f` below is unconditional and podman's image
+    # store is per-machine, so two worktrees running `just test` at once would
+    # delete each other's gate image mid-build.
+    tag = f"localhost/vcows-containerignore-gate:t{'-' + WORKTREE if WORKTREE else ''}"
     try:
         subprocess.run(
             ["podman", "build", "-q", "-t", tag, str(ctx)],

@@ -25,6 +25,18 @@ venv.
 This is not a rig-only concern. `tests/fake_libvirt.py` imports `libvirt` at
 module scope, so a wrong venv breaks collection, not just the hardware tests.
 
+A worktree arrives with its own `.tools` and `.venv`, built by the
+`WorktreeCreate` hook (`.claude/hooks/worktree-create.sh`) before the tree is
+handed to anything, and a creation whose setup fails is aborted rather than
+delivered. So **a worktree without a venv was made by hand**: give it
+`scripts/install-tools.sh` and then `just dev-env`, never `uv sync`. Nothing is
+shared with the main checkout -- no symlinked `.tools`, no copied `.venv`.
+
+Anything that leaves the tree carries the worktree's name: an image tag through
+`worktree_tag` (`scripts/lib.sh`), a rig test's `deployment` through `WORKTREE`
+(`tests/conftest.py`). Both are empty in the main checkout and in CI, and it is a
+convention with no gate behind it.
+
 ## The config is not declarative
 
 `README.md`'s opening section is headed "Read this first" for this reason:

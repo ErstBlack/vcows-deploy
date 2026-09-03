@@ -24,7 +24,9 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,51 @@ REPO = Path(__file__).resolve().parent.parent
 MIRROR = REPO / ".tools" / "tofu-mirror"
 
 TOFU = shutil.which("tofu")
+
+
+def _rev_parse(*args: str) -> str:
+    """One `git rev-parse` answer, or empty when git will not give one.
+
+    Empty covers all three failures the same way -- a non-zero status, no git on
+    PATH, a tree that is not a repo -- because every caller below treats "no
+    answer" as "not a worktree".
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _worktree() -> str:
+    """The linked worktree's branch name, sanitised, or empty.
+
+    `worktree_tag` (`scripts/lib.sh`) is the same rule for the shell side: empty
+    in the main checkout, in CI and outside a repo, because a linked worktree is
+    the only case where `--git-dir` and `--git-common-dir` disagree. Anything
+    this suite creates that outlives the process -- an image tag, a rig test's
+    `deployment` -- appends it when it is non-empty. `VCOWS_WORKTREE` overrides.
+
+    `CONFIG` and `PROXMOX_CONFIG` deliberately keep their literal `lab-a`: they
+    are unit fixtures asserted verbatim across the suite and nothing deploys
+    them.
+    """
+    name = os.environ.get("VCOWS_WORKTREE", "")
+    if not name:
+        common = _rev_parse("--git-common-dir")
+        if not common or common == _rev_parse("--git-dir"):
+            return ""
+        name = _rev_parse("--abbrev-ref", "HEAD")
+    return re.sub(r"[^a-z0-9._-]", "-", name.lower())
+
+
+#: This worktree's name, or empty in the main checkout. See `_worktree`.
+WORKTREE = _worktree()
 
 
 def _parse(raw: str) -> set[str]:
