@@ -74,7 +74,9 @@ jobs:
   # the whole job 2m13s. Generation is 14s and the stats phase ~18s of that, so
   # the loop is about 80s for shard 1's 944 mutants, at 11.7 mutants/second
   # against 58.97 on a 16-core box. The fixed ~35s each shard repeats is the
-  # price of the split, and five of them still finish in a quarter of 8m31s.
+  # price of the split. Measured whole (run 33809956735): shard jobs 1m59s to
+  # 2m44s, the slowest of them queued 37s late, the verdict 19s, and the run
+  # green in 3m45s where the unsharded job alone took 8m31s.
   mutation:
     runs-on: ubuntu-latest
     # `VCOWS_MUTANTS_SHARD=k/5` takes the mutants whose ordinal ends in a digit
