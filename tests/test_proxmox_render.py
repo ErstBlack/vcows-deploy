@@ -7,7 +7,6 @@ possible review of what changed about a deploy.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ import pytest
 from orchestrator.backends.base import Prepared
 from orchestrator.backends.proxmox.render import render
 from orchestrator.marker import from_description
+from tests.conftest import dumped
 
 GOLDEN = Path(__file__).parent / "golden" / "proxmox.tfvars.json"
 
@@ -32,10 +32,6 @@ def prepared():
             "image": {"create": True, "volid": "local:import/golden.qcow2"},
         },
     )
-
-
-def dumped(tfvars: dict) -> str:
-    return json.dumps(tfvars, indent=2, sort_keys=True) + "\n"
 
 
 def test_matches_the_golden_file(pve_cfg, prepared):

@@ -16,14 +16,11 @@ from orchestrator.backends.base import Existing
 from orchestrator.backends.proxmox import api, destroy
 from orchestrator.marker import Marker
 from orchestrator.problems import Severity
+from tests.conftest import session
 from tests.fake_proxmox import FakeProxmox, ResourceException, upid
 
-
-@pytest.fixture(autouse=True)
-def _no_polling_delay(monkeypatch):
-    """proxmoxer's task poller sleeps once per wait. Fine against a cluster,
-    pure latency here."""
-    monkeypatch.setattr(api, "POLL_INTERVAL", 0)
+#: Every test here waits on a fake task. See `conftest._no_polling_delay`.
+pytestmark = pytest.mark.usefixtures("_no_polling_delay")
 
 
 def marker(name: str, deployment: str = "lab-a") -> Marker:
@@ -38,12 +35,6 @@ def vm(name: str, deployment: str = "lab-a", **extra) -> dict:
 
 def target(name: str, node: str = "pve1", vmid: str = "100", disks=()) -> Existing:
     return Existing(name=name, id=f"{node}/{vmid}", marker=marker(name), disks=disks)
-
-
-def session(w: FakeProxmox) -> api.Session:
-    return api.Session(
-        prox=w, node="pve1", datastore="local-lvm", import_datastore="local"
-    )
 
 
 def verbs(w):

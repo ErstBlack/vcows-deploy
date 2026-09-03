@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator.backends.proxmox import api, preflight
+from orchestrator.backends.proxmox import preflight
 from orchestrator.marker import Marker
 from orchestrator.problems import Severity
-from tests.conftest import messages, wheres
+from tests.conftest import messages, session, wheres
 from tests.fake_proxmox import FakeProxmox, ResourceException
 
 STORAGES = [
@@ -25,12 +25,6 @@ def world(**kw) -> FakeProxmox:
     kw.setdefault("storages", STORAGES)
     kw.setdefault("content", {"local": {"import": [], "iso": []}})
     return FakeProxmox(**kw)
-
-
-def session(w: FakeProxmox) -> api.Session:
-    return api.Session(
-        prox=w, node="pve1", datastore="local-lvm", import_datastore="local"
-    )
 
 
 def marked(name: str, deployment: str = "lab-a", **extra) -> dict:

@@ -18,7 +18,7 @@ from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
 from orchestrator.problems import Problem
-from tests.conftest import messages, wheres
+from tests.conftest import errors, messages, wheres
 from tests.fake_backend import FakeBackend
 
 
@@ -43,10 +43,6 @@ class LibvirtSchemaOnly(FakeBackend):
 @pytest.fixture
 def registry():
     return {"libvirt": LibvirtSchemaOnly()}
-
-
-def errors(problems) -> list:
-    return [p for p in problems if p.fatal]
 
 
 # -- the canonical config ---------------------------------------------------
