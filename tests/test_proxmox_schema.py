@@ -4,7 +4,8 @@ Weighted towards what *differs* from the libvirt backend, because the shared hal
 -- addressing -- is tested once in `tests/test_seed_iso.py` and
 `tests/test_libvirt_schema.py` against `cloudinit.check_addressing`, which both
 backends call. What is tested here is the attachment rule, the firmware split,
-the DNS-name rule, and the token, none of which the libvirt backend has.
+the DNS-name rule, and the credential block, none of which the libvirt backend
+has.
 """
 
 from __future__ import annotations
@@ -27,35 +28,68 @@ def wheres(problems):
     return {p.where for p in problems}
 
 
-@pytest.fixture(autouse=True)
-def _token(pve_token):
-    """Every test here wants a valid token unless it is testing the token."""
+# -- the credential ----------------------------------------------------------
 
 
-# -- the token ---------------------------------------------------------------
-
-
-def test_a_missing_token_is_refused_and_says_where_to_put_it(pve_cfg, monkeypatch):
-    monkeypatch.delenv("PROXMOX_VE_API_TOKEN")
+def test_no_credential_at_all_is_refused_at_the_block(pve_cfg):
+    """Filed against `target.proxmox`, not a field: which of the two forms the
+    operator meant is exactly what is missing."""
+    pve_cfg["target"]["proxmox"].pop("token")
     problems = errors(schema.validate(pve_cfg))
     assert len(problems) == 1
-    assert "PROXMOX_VE_API_TOKEN is unset" in problems[0].message
+    assert "exactly one of" in problems[0].message
     assert "user@realm!tokenid=<secret>" in problems[0].message
-    # The variable, not a config path: there is nothing in the file to go and fix.
-    assert problems[0].where == schema.TOKEN_ENV
+    assert problems[0].where == "target.proxmox"
 
 
-def test_a_malformed_token_is_refused_without_echoing_it(pve_cfg, monkeypatch):
+def test_both_credential_forms_at_once_are_refused_without_echoing_either(pve_cfg):
+    """A token beside a password is two answers to one question, and picking
+    either silently is worse than saying so."""
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    pve_cfg["target"]["proxmox"]["password"] = "SUPERSECRETVALUE"  # noqa: S105
+    problems = errors(schema.validate(pve_cfg))
+    assert len(problems) == 1
+    assert "exactly one of" in problems[0].message
+    assert problems[0].where == "target.proxmox"
+    assert "SUPERSECRETVALUE" not in messages(problems)
+
+
+def test_a_user_and_password_are_the_other_accepted_form(pve_cfg):
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    pve_cfg["target"]["proxmox"]["password"] = "hunter2"  # noqa: S105  not a password
+    assert errors(schema.validate(pve_cfg)) == []
+
+
+def test_a_user_without_a_password_is_refused_at_the_password(pve_cfg):
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["user"] = "root@pam"
+    problems = errors(schema.validate(pve_cfg))
+    assert len(problems) == 1
+    assert problems[0].where == "target.proxmox.password"
+    assert "password" in problems[0].message
+
+
+def test_a_password_without_a_user_is_refused_at_the_user_without_echoing_it(pve_cfg):
+    pve_cfg["target"]["proxmox"].pop("token")
+    pve_cfg["target"]["proxmox"]["password"] = "SUPERSECRETVALUE"  # noqa: S105
+    problems = errors(schema.validate(pve_cfg))
+    assert len(problems) == 1
+    assert problems[0].where == "target.proxmox.user"
+    assert "user" in problems[0].message
+    assert "SUPERSECRETVALUE" not in messages(problems)
+
+
+def test_a_malformed_token_is_refused_without_echoing_it(pve_cfg):
     """The refusal must not quote the value. A token pasted with a missing '!'
     is still most of a live credential, and a message naming it puts it in the
     log, in run.json, and in whatever the operator pastes into a ticket."""
-    secret = "vcows@pve-deploy-SUPERSECRETVALUE"  # noqa: S105  not a real token
-    monkeypatch.setenv("PROXMOX_VE_API_TOKEN", secret)
+    pve_cfg["target"]["proxmox"]["token"] = "vcows@pve-deploy-SECRET"  # noqa: S105
     problems = errors(schema.validate(pve_cfg))
     assert len(problems) == 1
-    assert "SUPERSECRETVALUE" not in messages(problems)
+    assert "SECRET" not in messages(problems)
     assert "not in the form" in problems[0].message
-    assert problems[0].where == schema.TOKEN_ENV
+    assert problems[0].where == "target.proxmox.token"
 
 
 def test_a_well_formed_token_splits_into_the_three_fields():
@@ -171,19 +205,48 @@ def test_insecure_warns_but_does_not_refuse(pve_cfg):
     assert "target.proxmox.insecure" in wheres(problems)
 
 
-def test_there_is_no_ca_file_field(pve_cfg):
-    """Measured against bpg/proxmox 0.111.1: the provider has no CA-bundle
-    option, so a ca_file would be honoured by preflight and ignored by the
-    apply. Rejected rather than half-implemented.
+def test_a_ca_file_that_is_here_says_nothing(pve_cfg, tmp_path):
+    """A private CA is the ordinary case on a PVE cluster, and naming its bundle
+    is not a weakening -- unlike `insecure`, which is why only one of them warns."""
+    ca = tmp_path / "ca.pem"
+    ca.write_text("")
+    pve_cfg["target"]["proxmox"]["ca_file"] = str(ca)
+    problems = schema.validate(pve_cfg)
+    assert errors(problems) == []
+    assert "target.proxmox.ca_file" not in wheres(problems)
 
-    Through `config.validate`, because `additionalProperties: False` on
-    TARGET_SCHEMA is enforced by the composed core schema rather than by this
-    backend's own checks.
-    """
+
+def test_a_ca_file_that_is_not_here_warns_but_does_not_refuse(pve_cfg):
+    """It is read on the machine running the deploy -- normally the container,
+    where it is bind-mounted -- and `validate` runs anywhere."""
+    pve_cfg["target"]["proxmox"]["ca_file"] = "/nowhere/ca.pem"
+    problems = schema.validate(pve_cfg)
+    assert errors(problems) == []
+    assert "does not exist here" in messages(problems)
+    assert "target.proxmox.ca_file" in wheres(problems)
+
+
+def test_a_ca_file_beside_insecure_is_refused(pve_cfg, tmp_path):
+    """Two contradictory answers about the certificate. Honouring either one
+    silently is the failure mode: `insecure` wins in `api.connect`, so an
+    operator who added a bundle would get no verification and no warning."""
+    ca = tmp_path / "ca.pem"
+    ca.write_text("")
+    pve_cfg["target"]["proxmox"]["ca_file"] = str(ca)
+    pve_cfg["target"]["proxmox"]["insecure"] = True
+    problems = errors(schema.validate(pve_cfg))
+    assert "contradict each other" in messages(problems)
+    assert wheres(problems) == {"target.proxmox.ca_file"}
+
+
+def test_a_relative_ca_file_is_refused(pve_cfg):
+    """Through `config.validate`, because the pattern on TARGET_SCHEMA is
+    enforced by the composed core schema rather than by this backend's own
+    checks."""
     from orchestrator.backends import REGISTRY
     from orchestrator.config import validate
 
-    pve_cfg["target"]["proxmox"]["ca_file"] = "/etc/pki/ca.pem"
+    pve_cfg["target"]["proxmox"]["ca_file"] = "pki/ca.pem"
     assert "ca_file" in messages(errors(validate(pve_cfg, REGISTRY)))
 
 

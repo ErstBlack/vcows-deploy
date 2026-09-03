@@ -56,16 +56,19 @@ def test_render_does_no_io(pve_cfg, prepared, monkeypatch):
 def test_no_credential_and_no_operator_free_text_is_rendered(
     pve_cfg, prepared, pve_token
 ):
-    """The provider reads PROXMOX_VE_API_TOKEN from its own environment. If the
-    token ever reached the tfvars it would sit in the run directory in plaintext,
-    which is the thing this design exists to avoid.
+    """`api.connect` reads the credential out of `target.proxmox` and nothing
+    copies that block here. If either form reached these values it would sit in
+    the run directory in plaintext, which is the thing this design exists to
+    avoid.
 
     The same goes for `user_data`, which is where an operator's own secrets
     actually end up: it is built into the seed ISO and named nowhere here.
     """
+    pve_cfg["target"]["proxmox"]["password"] = "SUPERSECRETVALUE"  # noqa: S105
     pve_cfg["vms"][0]["user_data"] = "#cloud-config\npassword: hunter2\n"
     rendered = dumped(render(pve_cfg, prepared))
     assert pve_token not in rendered
+    assert "SUPERSECRETVALUE" not in rendered
     assert "hunter2" not in rendered
     assert "user_data" not in rendered
     assert "api_token" not in rendered
