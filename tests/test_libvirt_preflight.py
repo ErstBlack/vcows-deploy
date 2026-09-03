@@ -20,6 +20,7 @@ from orchestrator import cloudinit
 from orchestrator.backends.libvirt import preflight
 from orchestrator.marker import MARKER_XMLNS
 from orchestrator.problems import Severity
+from tests.conftest import wheres
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FIXTURES = Path(__file__).parent / "fixtures" / "libvirt"
@@ -33,17 +34,6 @@ def parsed(name: str):
     from xml.etree import ElementTree as ET
 
     return ET.fromstring(fixture(name))
-
-
-def wheres(problems) -> list[str]:
-    """What each problem is filed against, in order.
-
-    `where` is the only field of a problem anything downstream reads: the CLI
-    prints it beside the message and `run.json` records it. It is also the half a
-    message cannot carry -- "not present" against `image.base_volume_name` and
-    against `target.libvirt.pool` are different instructions to the operator.
-    """
-    return [p.where for p in problems]
 
 
 # -- the marker ------------------------------------------------------------

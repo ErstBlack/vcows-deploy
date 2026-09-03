@@ -114,7 +114,6 @@ def connect(cfg: dict):
 
     host = _endpoint_host(target["endpoint"])
     log.info("connecting to %s as %s", host, user)
-    prox = None
     try:
         # Constructed inside the `try` because password auth fetches a ticket
         # here rather than on first use, so AuthenticationError can be raised by
@@ -135,23 +134,6 @@ def connect(cfg: dict):
         ) from exc
     except ResourceException as exc:
         raise ProxmoxApiError(f"{host}: {exc}") from exc
-    finally:
-        if prox is not None:
-            _close(prox)
-
-
-def _close(prox: Any) -> None:
-    """Best effort. proxmoxer exposes no ``close``, and this is a short-lived CLI.
-
-    Reached through the backend's private session rather than left undone,
-    because a run that opens a connection and never releases its socket is the
-    kind of thing that only shows up under a supervisor that reuses the process.
-    Guarded, because it is private and may move.
-    """
-    try:
-        prox._backend.get_session().close()
-    except Exception as exc:
-        log.debug("could not close the API session: %s", exc)
 
 
 def wait(session: Session, upid: str, what: str) -> None:

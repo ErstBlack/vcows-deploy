@@ -113,6 +113,21 @@ def require(name: str, available: bool, reason: str) -> None:
     pytest.skip(reason)
 
 
+def wheres(problems) -> list[str]:
+    """What each problem is filed against, in order.
+
+    `where` is the only field of a problem anything downstream reads: the CLI
+    prints it beside the message and `run.json` records it. It is also the half a
+    message cannot carry -- "not present" against `image.base_volume_name` and
+    against `target.libvirt.pool` are different instructions to the operator.
+    """
+    return [p.where for p in problems]
+
+
+def messages(problems) -> str:
+    return "\n".join(str(p) for p in problems)
+
+
 def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "gate_missing(reason): a demanded gate whose dependency is absent"
