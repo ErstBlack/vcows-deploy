@@ -290,7 +290,7 @@ def test_a_hand_written_mac_that_collides_with_a_derived_one_is_refused(pve_cfg)
 
 
 def test_a_malformed_nic_does_not_lose_the_other_problems(pve_cfg):
-    """The guard `_nic_checks_are_safe` exists for: a nic whose ip_cidr is blank
+    """The guard `nic_checks_are_safe` exists for: a nic whose ip_cidr is blank
     in YAML arrives as None and would reach `ipaddress` and raise, unwinding past
     every other problem in the document."""
     pve_cfg["vms"][0]["nics"][0]["ip_cidr"] = None

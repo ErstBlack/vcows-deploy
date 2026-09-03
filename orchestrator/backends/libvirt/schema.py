@@ -27,12 +27,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-import jsonschema
-
-from ...cloudinit import check_addressing, seed_name
+from ...cloudinit import (
+    check_addressing,
+    check_vm_structure,
+    nic_checks_are_safe,
+    seed_name,
+)
 from ...imagecheck import check_disk_capacity, check_image_digest
 from ...limits import MAX_DISK_GB, MAX_MEMORY_MIB, MAX_VCPUS
-from ...problems import Problem, problems_from
+from ...problems import Problem
 
 #: Same shape as a deployment name: it becomes a libvirt domain name and the stem
 #: of two volume names. ``\Z``, not ``$``, for the reason SSH_PATH_PATTERN spells
@@ -154,9 +157,9 @@ def validate(cfg: dict) -> list[Problem]:
     seen_macs: dict[str, str] = {}
     for i, vm in enumerate(cfg["vms"]):
         where = f"vms[{i}]"
-        structural = _check_vm_structure(vm, where)
+        structural = check_vm_structure(vm, where, VM_SCHEMA)
         problems += structural
-        if structural and not _nic_checks_are_safe(vm, structural):
+        if structural and not nic_checks_are_safe(vm, structural):
             continue
         problems += _check_firmware(vm, where)
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
@@ -165,46 +168,6 @@ def validate(cfg: dict) -> list[Problem]:
     problems += check_image_digest(cfg)
     problems += _check_volume_names(cfg)
     return problems
-
-
-def _nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
-    """Whether `_check_firmware` and `_check_nics` can read this VM unguarded.
-
-    Normally `_check_vm_structure` passing is what makes that safe. When it did
-    not pass, the question is narrower: are the fields *these* checks index still
-    the right shape. `_check_nics` reads `vm["nics"]` and, through `mac_of`,
-    `vm["name"]`; `_check_firmware` uses `.get` throughout. A `vcpus` out of range
-    or an unexpected key says nothing about any of them, and skipping anyway
-    costs the operator the edit round trip `config.load`'s every-problem
-    contract rules out.
-
-    **The container's shape is only half the question, and asking only it was a
-    regression.** A nic that is a mapping with one wrongly-typed *field* passes
-    every clause below: `ip_cidr:` left blank in YAML is `None`, `nics` is still
-    a list of dicts, and `_check_nics` then reached `"/" not in raw` in
-    `_parse_interface` with `None` and raised an uncaught `TypeError` that lost
-    every other problem in the document -- the same class of unwind `_check_target`
-    wraps `urlsplit` against, added by the same commit that added this guard
-    (#112). So the schema's own verdict is consulted first, and `problems_from`
-    has already computed it: it puts the failing path in `where`
-    (`vms[0].nics[0].ip_cidr`) and `structural` is one VM's problems, so a `.nics`
-    anywhere in it places the failure inside the data these checks index, and the
-    skip is the only answer that does not crash. A `vcpus` out of range is
-    `vms[0].vcpus`, which names no nic, so the case this guard was written for
-    still runs the checks and still reports a duplicate address alongside it.
-
-    ``object`` and not ``dict``: the first clause is the one that matters when a
-    VM is not a mapping at all, and annotating the parameter as the thing it is
-    testing for would make that clause unreachable by declaration.
-    """
-    if any(".nics" in p.where for p in structural):
-        return False
-    return (
-        isinstance(vm, dict)
-        and isinstance(vm.get("name"), str)
-        and isinstance(vm.get("nics"), list)
-        and all(isinstance(nic, dict) for nic in vm["nics"])
-    )
 
 
 def _check_volume_names(cfg: dict) -> list[Problem]:
@@ -327,11 +290,6 @@ def _check_target(target: dict) -> list[Problem]:
                 )
             )
     return problems
-
-
-def _check_vm_structure(vm: dict, where: str) -> list[Problem]:
-    validator = jsonschema.Draft202012Validator(VM_SCHEMA)
-    return problems_from(validator.iter_errors(vm), at=where)
 
 
 def _check_firmware(vm: dict, where: str) -> list[Problem]:
