@@ -172,11 +172,6 @@ class FakePool:
         self.created.append(name)
         return FakeVolume(self, name, xml)
 
-    def storageVolLookupByName(self, name: str) -> FakeVolume:
-        if name not in self.visible:
-            raise lv_error(50, f"no storage vol with matching name '{name}'")
-        return FakeVolume(self, name, self.volumes[name])
-
 
 class FakeStream:
     """A byte sink, which is all the upload path uses one for.
