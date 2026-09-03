@@ -62,11 +62,30 @@ jobs:
   # rose. Red means this change made the suite blinder, which is a question about
   # the change and belongs on the pull request rather than in a monthly job
   # nobody opens.
+  #
+  # Five shards of one run, summed by `mutation-verdict` below. Measured on run
+  # 33800120376, before sharding: `just mutants` took 8m31s, of which generation
+  # was 16s, the stats and clean and forced-fail runs 20s, and the mutant loop
+  # 7m53s over 4983 mutants. The loop is 93% of the job, per-mutant fixed cost is
+  # ~65 ms of warm pytest, and the only lever left is cores -- which on the Free
+  # plan means more runners rather than a bigger one.
   mutation:
     runs-on: ubuntu-latest
-    # Measured on 16 cores: 3835 mutants in 156s. A hosted runner has 4, so a cold
-    # cache is roughly four times that plus the bootstrap. The ceiling is sized
-    # against a wedge rather than a slow run, like `check`'s.
+    # `VCOWS_MUTANTS_SHARD=k/5` takes the mutants whose ordinal ends in a digit
+    # `d` with `d % 5 == k-1`: one glob, no listing step, and the reasoning is in
+    # the header of scripts/mutants.sh. Measured over 5008 mutants on a 16-core
+    # box: 944/1060/1033/999/972 per shard, so the largest shard carries 21% of
+    # the work rather than 20%.
+    #
+    # `fail-fast: false` because a red shard must not cancel the other four. The
+    # verdict needs every shard's numbers, and a cancelled shard reaches it as a
+    # smaller set of numbers, which is to say a better-looking one.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    # Still 30, and still sized against a wedge rather than a slow run, like
+    # `check`'s: a shard is now a fifth of the work, not a fifth of the ceiling.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -101,6 +120,54 @@ jobs:
       - run: ./scripts/install-tools.sh
       - run: just dev-env
       - run: just mutants
+        env:
+          VCOWS_MUTANTS_SHARD: ${{ matrix.shard }}/5
+      # A shard judges nothing, because its numbers mean something only summed
+      # with the other four, and matrix jobs share nothing but artifacts.
+      # `if-no-files-found: error` for the reason `fail-fast: false` is set
+      # above: a shard that reports nothing otherwise reaches the verdict as four
+      # shards that add up to less, which is the vacuous pass scripts/mutants.sh
+      # exists to catch. One day of retention because these files are a few
+      # hundred bytes each and the repository's artifact quota is what disabled
+      # the delivery upload in scheduled.yml.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: mutation-stats-${{ matrix.shard }}
+          path: .cache/mutation-stats/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Where a sharded run becomes a verdict. A job rather than a step because
+  # matrix jobs share nothing but artifacts: each shard holds part of the count
+  # and none of them can apply the gate.
+  #
+  # `just mutants-verdict` sums the five stats files and asserts the sum accounts
+  # for every mutant mutmut generated. That equality is `generation_floor`'s
+  # argument in sharded form -- it is what catches a shard that checked nothing
+  # or an artifact that never arrived, neither of which any single shard can see.
+  #
+  # No `just dev-env` and no uv cache: the verdict is jq over five small files,
+  # and it needs neither the venv nor a mutants/ tree.
+  mutation-verdict:
+    runs-on: ubuntu-latest
+    needs: mutation
+    # Nothing here runs a test -- it is the bootstrap plus jq -- so the ceiling
+    # is sized against a wedge rather than a slow run, like `check`'s.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+        with:
+          pattern: mutation-stats-*
+          merge-multiple: true
+          path: .cache/mutation-stats
+      - run: just mutants-verdict
 
   # The end-to-end gate. It deploys against a libvirtd installed on the runner
   # and asserts against `virsh dumpxml` and `qemu-img info` rather than against
