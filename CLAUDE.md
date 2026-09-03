@@ -97,7 +97,7 @@ Branch off `master`, one commit per issue, `just check` before pushing, one PR,
 squash-merge, and close by number from the commit body (`Closes #NN`). Related
 issues that touch the same file land as one branch rather than piecemeal.
 
-## `.claude/` holds two files with opposite tracking status
+## `.claude/` holds two settings files with opposite tracking status
 
 `.claude/settings.json` is committed: hooks and `permissions.deny`, reviewable
 like every other gate here. `.claude/settings.local.json` is the machine-local
@@ -107,6 +107,13 @@ not by anything in this repo, so `.gitignore` will not tell you and a clean
 
 The consequence is that a change confined to the local file leaves no artifact
 to review and cannot close an issue from a commit body.
+
+`.claude/skills/ty-lsp/` is tracked as well, and it is a plugin rather than a
+skill: the `.claude-plugin/plugin.json` manifest is what makes it one, so its
+place under `skills/` is incidental. It is the source of the `ty` language
+server, and `.lsp.json` resolves the binary from the checkout's own `.venv`
+through `CLAUDE_PROJECT_DIR`, so it never applies to another project and a
+session started in a worktree gets that worktree's venv.
 
 ## `docs/cve-baseline.json` is a differential gate, not a list to append to
 
