@@ -130,12 +130,9 @@ exclude_also = ["if TYPE_CHECKING:"]
 fail_under = 90
 
 [tool.mutmut]
-# Both packages that ship, not just the one. `container/` is small but it is
-# where the entrypoint writes ~/.ssh/config, which is the code an S1 injection
-# finding was filed against -- exactly the place a surviving mutant matters.
-# It also has to be here for a second reason: mutmut runs the suite from a copied
-# tree, and tests/test_entrypoint.py imports `container`, so leaving it out makes
-# collection fail rather than merely skipping it.
+# Both packages that ship. `container/` is `manifest.py` now, and
+# `tests/test_manifest.py` imports `container`, so leaving it out makes
+# collection fail in mutmut's copied tree rather than merely skipping it.
 source_paths = ["orchestrator", "container"]
 # mutmut runs the suite from a copy of the tree at `mutants/`, and only what it
 # copies exists there. It appends `tests/`, `pyproject.toml` and the lock files to
@@ -210,7 +207,7 @@ select = [
     # The 10 hits in `orchestrator/` today are all reviewed and carry a `# noqa`
     # naming the reason: six parse libvirt's own XMLDesc output, two are
     # argv-list subprocess calls, two are internal-invariant asserts.
-    # `container/` carries four more (one S603, two S607, one S606), so the
+    # `container/` carries two more (one S603, one S607), so the
     # scope is what makes the figure reproducible. The rule earns its place by
     # catching the *next* one, not by re-litigating these.
     "S",        # flake8-bandit
