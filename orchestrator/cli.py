@@ -246,6 +246,11 @@ def _record(run: _Run, outcome: str) -> None:
     copy matters because the run directory is what an air-gapped site ships back,
     and "which build did this" is unanswerable from it otherwise. Absent outside
     the image, where there is nothing to copy.
+
+    ``created`` is present on an ``outcome: failed`` record too, and there it is
+    the VMs a create made before it died rather than the whole of what was asked
+    for -- the deploy rolls nothing back, so those are running and `inventory.json`
+    beside it names them.
     """
     if MANIFEST.is_file():
         # Suppressed for the same reason `_guard` suppresses: a failure copying
@@ -411,7 +416,29 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     # before `decide` runs, and holding it open would mean threading it through
     # the pure half of the pipeline to reach the one call that needs it.
     with backend.connect(create_cfg) as session:
-        vms = backend.create(create_cfg, session, prepared)
+        try:
+            vms = backend.create(create_cfg, session, prepared)
+        except BaseException as exc:
+            # A create that dies on the third VM leaves the first two running and
+            # rolls nothing back, and until now the run recorded only the
+            # exception -- so the one artifact naming the VMs that exist did not
+            # exist. `getattr` rather than the backend's own error type, for the
+            # reason `_destroy` gives about `outcome`.
+            partial = getattr(exc, "created", None)
+            if partial:
+                _write_json(run.path / "inventory.json", {"vms": partial})
+                run.extra["created"] = sorted(partial)
+                # Not a refusal: a VM that finished is reported as existing next
+                # time. Only the half-made one leaves an orphan volume, and only
+                # that is refused.
+                log.error(
+                    "%d VM(s) were created before this failed (%s); "
+                    "inventory.json records them, and the next preflight reports "
+                    "what the VM that failed left behind",
+                    len(partial),
+                    ", ".join(sorted(partial)),
+                )
+            raise
 
     # Names, not counts. The message below already computes the set difference and
     # carries an `or 'names differ'` fallback, so the intent was always a set

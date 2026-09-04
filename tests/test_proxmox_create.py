@@ -14,6 +14,7 @@ VM actually boots.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
@@ -361,6 +362,13 @@ def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
     ), "the name rides on the exception: run.json's error field is built from it"
     assert config_of(world)["status"] == "running", "app01 is left created and running"
     assert paths(world, "delete") == [], "nothing is torn down"
+
+    # The leftovers are running and nothing rolls them back, so the account of
+    # them rides on the exception as well: `cli._deploy` writes inventory.json
+    # from this, and without it the run named the failure and nothing else.
+    carrier: Any = raised.value
+    assert list(carrier.created) == ["app01"]
+    assert carrier.created["app01"]["vmid"] == 100
 
     failure = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert failure == [str(raised.value)]

@@ -229,21 +229,31 @@ def create(conn: Any, tfvars: dict) -> dict:
             base_path = upload(conn, pool, base["name"], "qcow2", base["source"]).path()
 
     vms: dict[str, dict] = {}
-    for name, vm in tfvars["vms"].items():
-        with _made(f"seed volume {vm['seed_name']}"):
-            seed = upload(conn, pool, vm["seed_name"], "iso", vm["seed_iso"])
-        with _made(f"overlay volume {vm['overlay_name']}"):
-            disk = overlay(pool, vm, base_path)
-        with _made(f"domain {vm['domain_name']}"):
-            dom = conn.defineXML(domain_xml(vm, disk.path(), seed.path()))
-            # Autostart before start, so a host rebooted between the two brings
-            # the domain back rather than leaving it defined and off.
-            dom.setAutostart(1)
-            dom.create()
-        vms[name] = {
-            "name": dom.name(),
-            "uuid": dom.UUIDString(),
-            "configured_address": vm["configured_address"],
-            "disks": [disk.path(), seed.path()],
-        }
+    try:
+        for name, vm in tfvars["vms"].items():
+            with _made(f"seed volume {vm['seed_name']}"):
+                seed = upload(conn, pool, vm["seed_name"], "iso", vm["seed_iso"])
+            with _made(f"overlay volume {vm['overlay_name']}"):
+                disk = overlay(pool, vm, base_path)
+            with _made(f"domain {vm['domain_name']}"):
+                dom = conn.defineXML(domain_xml(vm, disk.path(), seed.path()))
+                # Autostart before start, so a host rebooted between the two brings
+                # the domain back rather than leaving it defined and off.
+                dom.setAutostart(1)
+                dom.create()
+            vms[name] = {
+                "name": dom.name(),
+                "uuid": dom.UUIDString(),
+                "configured_address": vm["configured_address"],
+                "disks": [disk.path(), seed.path()],
+            }
+    except BaseException as exc:
+        # `vms` is a local and the return is the only thing that carries it out,
+        # so a failure on the third VM lost every record of the two that are
+        # running -- the VMs nothing rolls back and nobody has an inventory for.
+        # Same carrier `destroy` uses for its `Outcome`, read back by
+        # `cli._deploy` with `getattr` so core stays backend-agnostic.
+        carrier: Any = exc
+        carrier.created = vms
+        raise
     return vms

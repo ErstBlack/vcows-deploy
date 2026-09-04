@@ -349,6 +349,44 @@ def test_a_failed_create_still_leaves_a_run_record(
     assert "CreateError" in capsys.readouterr().err
 
 
+def test_a_deploy_that_fails_part_way_records_what_it_created(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """`create` rolls nothing back, so a failure part-way leaves VMs running with
+    no artifact naming them: the record said `failed` and stopped there, and an
+    operator had to read the log to find out what was on the hypervisor. Both
+    backends attach what they got as far as to the exception; core reads it with
+    `getattr` and writes the inventory it would have written anyway."""
+
+    def boom(cfg, session, prepared):
+        exc = RuntimeError("could not define the domain")
+        carrier: Any = exc
+        carrier.created = {
+            vm["name"]: {"name": vm["name"], "configured_address": ""}
+            for vm in cfg["vms"]
+        }
+        raise exc
+
+    monkeypatch.setattr(backend, "create", boom)
+    assert cli.main(["deploy", config]) == 1
+    run = latest_run(tmp_path)
+
+    record = json.loads((run / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert record["created"] == ["app01", "app02"]
+    assert json.loads((run / "inventory.json").read_text()) == {
+        "vms": {
+            "app01": {"name": "app01", "configured_address": ""},
+            "app02": {"name": "app02", "configured_address": ""},
+        }
+    }
+    # Existing, not refused: a VM that finished is reported as existing on the
+    # next preflight, and only the half-made one's orphan volume is refused.
+    err = capsys.readouterr().err
+    assert "2 VM(s) were created before this failed (app01, app02)" in err
+    assert "refus" not in err
+
+
 def test_the_log_lands_beside_the_record(backend, config, tmp_path):
     """The shipped wrapper runs `podman run --rm`, so the container README used
     to point at is gone before anyone can ask it for its logs. `<run>/log` is the
