@@ -649,7 +649,9 @@ def _wrapper_tree(tmp_path: Path, config: bool = True) -> Path:
     return tree
 
 
-def _wrapper(tree: Path, *args: str) -> tuple[subprocess.CompletedProcess, list[str]]:
+def _wrapper(
+    tree: Path, *args: str, **env: str
+) -> tuple[subprocess.CompletedProcess, list[str]]:
     """Run the wrapper; report what podman got, `[]` meaning it was never run.
 
     `< /dev/null` fixes the one input these tests cannot otherwise control:
@@ -657,14 +659,14 @@ def _wrapper(tree: Path, *args: str) -> tuple[subprocess.CompletedProcess, list[
     terminal or not depending on how the suite was invoked.
     """
     argv = " ".join(shlex.quote(a) for a in args)
-    done = _run(tree, f"bash scripts/vcows.sh {argv} < /dev/null")
+    done = _run(tree, f"bash scripts/vcows.sh {argv} < /dev/null", **env)
     recorded = tree / "podman.argv"
     return done, recorded.read_text().splitlines() if recorded.exists() else []
 
 
-def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False):
+def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opts=()):
     """The command line each verb is supposed to build, in order."""
-    argv = ["run", "--rm", "-v", f"{tree}/config.yaml:/config.yaml:ro,z"]
+    argv = ["run", "--rm", *opts, "-v", f"{tree}/config.yaml:/config.yaml:ro,z"]
     if images:
         argv += ["-v", f"{tree}/images:/images:ro,z"]
     if runs:
@@ -780,9 +782,84 @@ def test_install_refuses_a_directory_holding_two_bundles(tmp_path):
     assert argv == [], "podman ran anyway"
 
 
+def test_version_needs_neither_a_config_nor_a_mount(tmp_path):
+    """It reports what is inside the image, so there is nothing of the site's for
+    it to read -- and a site that has run `install` and nothing else has no
+    config for the wrapper to insist on.
+
+    Carries `VCOWS_LOG_LEVEL` all the same. Measured against the built bundle:
+    the arm ran its own `podman run --rm` ahead of the forwarding loop, so
+    `VCOWS_LOG_LEVEL=bogus ./vcows.sh version` printed none of the
+    "ignoring VCOWS_LOG_LEVEL" that `validate` printed first, and the usage
+    text's "every VCOWS_* variable set here is forwarded" was false for one verb.
+    """
+    tree = _wrapper_tree(tmp_path, config=False)
+    done, argv = _wrapper(tree, "version", VCOWS_LOG_LEVEL="DEBUG")
+    assert done.returncode == 0, done.stderr
+    assert argv == ["run", "--rm", "-e", "VCOWS_LOG_LEVEL", PLACEHOLDER, "version"]
+
+
+def test_a_vcows_variable_set_beside_the_wrapper_reaches_the_container(tmp_path):
+    """`VCOWS_LOG_LEVEL` and the `VCOWS_MAX_*` ceilings are read from the
+    container's environment, and the wrapper is the only thing between the
+    operator's shell and it.
+
+    `-e NAME` without a value: podman copies it. Asserted as the whole argv,
+    which is safe because `_run` drops every ambient `VCOWS_*` -- so this is the
+    one variable in the child's environment, and a second `-e` would be a
+    variable the test did not set.
+    """
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, "validate", VCOWS_LOG_LEVEL="DEBUG")
+    assert done.returncode == 0, done.stderr
+    assert argv == _expected(
+        tree, "validate", images=True, opts=["-e", "VCOWS_LOG_LEVEL"]
+    )
+
+
+def test_everything_after_a_bare_dash_dash_is_podman_s(tmp_path):
+    """`--userns=keep-id:uid=4242,gid=0` is the remedy README prescribes for a
+    run directory owned by the wrong UID, and there was no way to pass it
+    through the wrapper. The flags land before the image, which is the only
+    place podman reads them."""
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, "preflight", "--", "--userns=keep-id")
+    assert done.returncode == 0, done.stderr
+    assert argv == _expected(
+        tree, "preflight", images=True, runs=True, opts=["--userns=keep-id"]
+    )
+
+
+def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
+    """`--run-dir` names the mount itself rather than a parent to create under,
+    so the mount *is* the run directory -- the shape README gives as the one
+    that works when the mount is owned by another UID."""
+    tree = _wrapper_tree(tmp_path)
+    done, argv = _wrapper(tree, "deploy", "--run-dir", "d")
+    assert done.returncode == 0, done.stderr
+    assert (tree / "d").is_dir()
+    assert argv == [
+        "run",
+        "--rm",
+        "-v",
+        f"{tree}/config.yaml:/config.yaml:ro,z",
+        "-v",
+        f"{tree}/images:/images:ro,z",
+        "-v",
+        f"{tree}/d:/runs:Z",
+        PLACEHOLDER,
+        "deploy",
+        "/config.yaml",
+        "--run-dir",
+        "/runs",
+    ]
+
+
 #: Every shape of "that is not a command line this understands". `-c` with no
 #: value is the one worth naming: taking `$2` unchecked would mount an empty
-#: path and let podman explain it.
+#: path and let podman explain it. The last three are the new surface: the
+#: container's argparse takes `--run-dir` on deploy and destroy only, and `-r`
+#: and `--run-dir` name different things at the same mount point.
 USAGE_ROWS = [
     pytest.param((), id="no-verb"),
     pytest.param(("nonesuch",), id="unknown-verb"),
@@ -790,6 +867,9 @@ USAGE_ROWS = [
     pytest.param(("deploy", "-c"), id="flag-with-no-value"),
     pytest.param(("deploy", "-y"), id="yes-is-destroy-only"),
     pytest.param(("install", "-c", "config.yaml"), id="install-takes-no-flags"),
+    pytest.param(("version", "-c", "config.yaml"), id="version-takes-no-flags"),
+    pytest.param(("validate", "--run-dir", "d"), id="run-dir-is-not-for-validate"),
+    pytest.param(("deploy", "-r", "x", "--run-dir", "d"), id="run-dir-excludes-runs"),
 ]
 
 

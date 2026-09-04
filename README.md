@@ -118,7 +118,8 @@ code is 1, which reads as a teardown that failed. An air-gapped site ships the
 run directory home as its whole account of what happened; this one has nothing to
 send.
 
-`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above.
+`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above. Through the
+wrapper that is `./vcows.sh deploy -- --userns=keep-id:uid=4242,gid=0`.
 
 ## Using it
 
@@ -134,9 +135,13 @@ send.
 
 It takes the config from `./config.yaml`, the golden images from `./images` and
 writes run records to `./runs`, creating the last two if they are not there.
-`-c`, `-i` and `-r` move any of the three, and `-y` answers `destroy`'s prompt in
-advance. Every path is checked and made absolute before podman runs — a relative
-`-v` source is a *named volume* to podman, not a path.
+`-c`, `-i` and `-r` move any of the three, `--run-dir` replaces `-r` on `deploy`
+and `destroy` by naming that one run's own directory, and `-y` answers
+`destroy`'s prompt in advance. Every path is checked and made absolute before
+podman runs — a relative `-v` source is a *named volume* to podman, not a path.
+`./vcows.sh version` mounts nothing and takes no config. Every `VCOWS_*`
+variable set beside the wrapper is forwarded into the container, and everything
+after a bare `--` is passed to `podman run`.
 
 What it runs is one `podman run` per verb, with no key or `known_hosts` mount:
 both are inline in the config, and vcows writes them to a private temporary

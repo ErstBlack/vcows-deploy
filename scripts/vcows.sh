@@ -25,17 +25,22 @@ usage() {
     cat >&2 <<'EOF'
 usage:
   vcows.sh install
-  vcows.sh validate  [-c FILE] [-i DIR]
-  vcows.sh preflight [-c FILE] [-i DIR] [-r DIR]
-  vcows.sh deploy    [-c FILE] [-i DIR] [-r DIR]
-  vcows.sh destroy   [-c FILE] [-i DIR] [-r DIR] [-y]
+  vcows.sh version
+  vcows.sh validate  [-c FILE] [-i DIR] [-- PODMAN FLAGS]
+  vcows.sh preflight [-c FILE] [-i DIR] [-r DIR] [-- PODMAN FLAGS]
+  vcows.sh deploy    [-c FILE] [-i DIR] [-r DIR | --run-dir DIR] [-- PODMAN FLAGS]
+  vcows.sh destroy   [-c FILE] [-i DIR] [-r DIR | --run-dir DIR] [-y] [-- PODMAN FLAGS]
 
   -c, --config FILE  the deployment config           (default ./config.yaml)
   -i, --images DIR   where the golden images are     (default ./images)
   -r, --runs DIR     where run records are written   (default ./runs)
+      --run-dir DIR  this one run's own directory    (deploy and destroy)
   -y, --yes          destroy without being asked
+  --                 pass everything after it to podman run
 
-install verifies SHA256SUMS and loads the image, and takes no flags.
+install verifies SHA256SUMS and loads the image, version reports what is inside
+it, and neither takes flags nor mounts anything. Every VCOWS_* variable set here
+is forwarded into the container.
 EOF
     exit 2
 }
@@ -77,17 +82,37 @@ main() {
     local verb="$1"
     shift
 
-    if [ "$verb" = install ]; then
-        [ $# -eq 0 ] || usage
-        install
-        return
-    fi
+    local name
+    local -a opts=(--rm)
+
+    # podman copies the value of a bare `-e NAME` from its own environment, so
+    # this forwards whatever is set without the wrapper knowing any of the
+    # names. VCOWS_LOG_LEVEL and the VCOWS_MAX_* ceilings are read from the
+    # container's environment and had no way through before.
+    for name in "${!VCOWS_@}"; do opts+=(-e "$name"); done
+
     case "$verb" in
+        install)
+            [ $# -eq 0 ] || usage
+            install
+            return
+            ;;
+        # No config and no mounts: it answers what is inside the image, which is
+        # the question a site has before it has written a config.
+        version)
+            [ $# -eq 0 ] || usage
+            exec podman run "${opts[@]}" "$IMAGE" version
+            ;;
         validate | preflight | deploy | destroy) ;;
         *) usage ;;
     esac
 
-    local config="config.yaml" images="images" runs="runs" yes=""
+    # `runs` starts empty rather than at its default so that it can be told
+    # apart from `--run-dir`, which is unset: the two name different things --
+    # a directory to write runs *under*, and the run's own directory -- and both
+    # arrive at the same `/runs` mount, so taking both is a contradiction.
+    local config="config.yaml" images="images" runs="" run_dir="" yes=""
+    local -a extra=()
     while [ $# -gt 0 ]; do
         case "$1" in
             -c | --config)
@@ -105,6 +130,19 @@ main() {
                 runs="$2"
                 shift 2
                 ;;
+            --run-dir)
+                [ $# -ge 2 ] || usage
+                # deploy and destroy only, because the container's argparse
+                # accepts it on those two and would refuse it later otherwise.
+                case "$verb" in deploy | destroy) ;; *) usage ;; esac
+                run_dir="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                extra=("$@")
+                break
+                ;;
             -y | --yes)
                 [ "$verb" = destroy ] || usage
                 yes=1
@@ -113,6 +151,9 @@ main() {
             *) usage ;;
         esac
     done
+    if [ -n "$run_dir" ] && [ -n "$runs" ]; then
+        usage
+    fi
 
     # Every path is checked here rather than left to podman, and then made
     # absolute: podman reads a relative `-v` source as a *named volume*, so
@@ -123,6 +164,7 @@ main() {
     fi
     config="$(realpath "$config")"
     local -a mounts=(-v "$config:/config.yaml:ro,z")
+    local -a args=("$verb" /config.yaml)
 
     # `mkdir -p` because a site's first run has neither directory, and a tool
     # that refuses to start until two empty ones exist is a step that gets
@@ -139,18 +181,26 @@ main() {
     mounts+=(-v "$images:/images:ro,z")
     case "$verb" in
         preflight | deploy | destroy)
-            mkdir -p "$runs" || die "$runs cannot be made a directory (-r/--runs)"
-            [ -w "$runs" ] || die "$runs is not a writable directory (-r/--runs)"
-            runs="$(realpath "$runs")"
+            # `--run-dir` mounts the run's own directory at /runs and names it
+            # inside the container, so vcows writes the record into the mount
+            # rather than into a subdirectory of it. That is the shape README
+            # describes, and the one that works under `--user`.
+            local dir="${runs:-runs}" flag="-r/--runs"
+            if [ -n "$run_dir" ]; then
+                dir="$run_dir"
+                flag="--run-dir"
+            fi
+            mkdir -p "$dir" || die "$dir cannot be made a directory ($flag)"
+            [ -w "$dir" ] || die "$dir is not a writable directory ($flag)"
+            dir="$(realpath "$dir")"
             # `:Z` relabels the host path into a category private to one
             # container, which is right for a directory belonging to one run and
             # wrong for the config and the shared golden images above.
-            mounts+=(-v "$runs:/runs:Z")
+            mounts+=(-v "$dir:/runs:Z")
+            [ -z "$run_dir" ] || args+=(--run-dir /runs)
             ;;
     esac
 
-    local -a opts=(--rm)
-    local -a args=("$verb" /config.yaml)
     if [ "$verb" = destroy ]; then
         if [ -n "$yes" ]; then
             args+=(--yes)
@@ -162,6 +212,7 @@ main() {
         fi
     fi
 
+    opts+=("${extra[@]}")
     exec podman run "${opts[@]}" "${mounts[@]}" "$IMAGE" "${args[@]}"
 }
 
