@@ -153,15 +153,37 @@ def test_a_ca_certificate_reaches_proxmoxer_as_a_file_holding_it(
     writes one. Measured in proxmoxer's https backend: `verify_ssl` is handed to
     requests' `verify=` unchanged, and requests takes a CA bundle path there.
 
-    Not cleaned up, deliberately: `cli.main`'s `os.umask(0o077)` makes it 0600
-    and the container is `--rm`, so the file goes with the run.
+    Read inside the session because that is the whole life of the file: it is
+    written for proxmoxer to open by name, and removed on the way out.
     """
     pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
     with api.connect(pve_cfg):
+        written = Path(fake_proxmoxer["verify_ssl"])
+        assert written.read_text() == CA_CERT
+        assert written.suffix == ".pem"
+    assert not written.exists()
+
+
+def test_the_ca_certificate_is_removed_when_the_credential_is_rejected(
+    pve_cfg, monkeypatch, pve_token
+):
+    """A 401 is the likeliest way out of `connect`, and it leaves the session by
+    the `except` rather than the normal exit -- so only a `finally` removes the
+    file on that path."""
+    import proxmoxer
+    from proxmoxer.core import AuthenticationError
+
+    built = {}
+
+    def refuse(host, **kw):
+        built["verify_ssl"] = kw["verify_ssl"]
+        raise AuthenticationError("401 no ticket")
+
+    monkeypatch.setattr(proxmoxer, "ProxmoxAPI", refuse)
+    pve_cfg["target"]["proxmox"]["ca_cert"] = CA_CERT
+    with pytest.raises(api.ProxmoxApiError), api.connect(pve_cfg):
         pass
-    written = Path(fake_proxmoxer["verify_ssl"])
-    assert written.read_text() == CA_CERT
-    assert written.suffix == ".pem"
+    assert not Path(built["verify_ssl"]).exists()
 
 
 def test_insecure_turns_verification_off_and_outranks_a_ca_certificate(

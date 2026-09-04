@@ -19,8 +19,9 @@ them.
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -112,16 +113,20 @@ def connect(cfg: dict):
     # A bool or a path: proxmoxer hands `verify_ssl` to requests' `verify=`
     # unchanged, and requests takes a CA bundle path there as readily as True.
     # The config carries the certificate rather than a path to one, so the file
-    # is written here. `cli.main`'s `os.umask(0o077)` makes it 0600, and the
-    # container is `--rm`, so nothing removes it -- the run takes it away.
+    # is written here. `mkstemp`, which NamedTemporaryFile is built on, creates
+    # it 0600 whatever the umask is, so `cli.main`'s `os.umask(0o077)` is not
+    # what protects it. `delete=False` because requests opens the path by name
+    # after this handle is closed; the `finally` below removes it, rather than
+    # leaving it to the container being `--rm`.
     verify: bool | str = True
+    pem: str | None = None
     ca_cert = target.get("ca_cert")
     if target.get("insecure"):
         verify = False
     elif ca_cert is not None:
         with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as written:
             written.write(ca_cert)
-        verify = written.name
+        verify = pem = written.name
 
     host = _endpoint_host(target["endpoint"])
     log.info("connecting to %s as %s", host, user)
@@ -145,6 +150,13 @@ def connect(cfg: dict):
         ) from exc
     except ResourceException as exc:
         raise ProxmoxApiError(f"{host}: {exc}") from exc
+    finally:
+        if pem is not None:
+            # Suppressed rather than checked: the only thing that removes this
+            # file is this line, so a miss means something outside the process
+            # took it, and failing the run over that would lose the real error.
+            with suppress(FileNotFoundError):
+                os.unlink(pem)
 
 
 def wait(session: Session, upid: str, what: str) -> None:

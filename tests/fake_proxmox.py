@@ -41,6 +41,12 @@ def upid(node: str = "pve1", kind: str = "qmstop", ident: str = "100") -> str:
 #: the only caller that reaches it has already had its ceiling cut to zero.
 MAX_POLLS = 50
 
+#: The `size` a content row reports for a volume no test has given one. The
+#: value is arbitrary: a test that compares it against a local file sets both
+#: ends, and every other test's golden image is not on this machine, so
+#: preflight warns about the local file and never reaches the comparison.
+VOLUME_SIZE = 4096
+
 
 class ResourceException(Exception):
     """Stands in for proxmoxer's. Raised where the real client would raise."""
@@ -101,6 +107,11 @@ class FakeProxmox:
         self.storages = storages if storages is not None else []
         #: storage -> content type -> volids.
         self.content = content or {}
+        #: volid -> the `size` its content row carries, in bytes. Anything not
+        #: named here reports VOLUME_SIZE. None means the row carries no size
+        #: at all, which is the shape preflight warns about rather than reading
+        #: as a match.
+        self.sizes: dict[str, int | None] = {}
         #: Every resolved path, in order. The endpoint assertions read this.
         self.calls: list[tuple[str, tuple[str, ...]]] = []
         #: One entry per upload: the storage, and every parameter the call was
@@ -201,7 +212,7 @@ class FakeProxmox:
             self._raise(self.content_error)
             wanted = kw.get("content")
             store = self.content.get(rest[1], {})
-            return [{"volid": v} for v in store.get(wanted, [])]
+            return [self._content_row(v) for v in store.get(wanted, [])]
 
         # /nodes/{node}/storage/{name}/content/{volid}
         if len(rest) == 4 and rest[0] == "storage" and rest[2] == "content":
@@ -320,6 +331,11 @@ class FakeProxmox:
             }
             for (node, vmid), config in sorted(self.vms.items())
         ]
+
+    def _content_row(self, volid: str) -> dict:
+        """One row of a content listing, as PVE reports it: a volid and a size."""
+        size = self.sizes.get(volid, VOLUME_SIZE)
+        return {"volid": volid} if size is None else {"volid": volid, "size": size}
 
     def _upid(self, node: str, kind: str, ident: str) -> str:
         """Hand out a UPID and remember that it was handed out."""

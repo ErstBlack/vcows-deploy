@@ -199,6 +199,54 @@ def test_an_image_already_there_is_not_re_uploaded(pve_cfg):
     assert d.artifacts["image"]["volid"] == "local:import/golden.qcow2"
 
 
+def present(pve_cfg, tmp_path, local: int, listed: int | None) -> FakeProxmox:
+    """The golden image on the datastore and on this machine, at two sizes."""
+    image = tmp_path / "golden.qcow2"
+    image.write_bytes(b"\0" * local)
+    pve_cfg["image"]["source_qcow2"] = str(image)
+    w = world(content={"local": {"import": ["local:import/golden.qcow2"], "iso": []}})
+    w.sizes["local:import/golden.qcow2"] = listed
+    return w
+
+
+def test_an_image_of_the_same_size_is_reused_without_a_word(pve_cfg, tmp_path):
+    d = preflight.preflight(pve_cfg, session(present(pve_cfg, tmp_path, 64, 64)))
+    assert d.artifacts["image"]["create"] is False
+    assert d.problems == ()
+
+
+def test_an_image_of_the_wrong_size_is_refused_rather_than_reused(pve_cfg, tmp_path):
+    """D30, which the libvirt backend has had since `base_volume`. Matching the
+    listing by name alone reuses a truncated earlier upload, whose header still
+    declares the full virtual size -- so the size is the only thing that catches
+    it, and every disk imported from it would be a copy of it."""
+    d = preflight.preflight(pve_cfg, session(present(pve_cfg, tmp_path, 64, 32)))
+    assert [p.severity for p in d.problems] == [Severity.ERROR]
+    assert "32 bytes in 'local' but 64 bytes locally" in messages(d.problems)
+    assert wheres(d.problems) == ["image.base_volume_name"]
+    # Present is present: there is nothing to upload over it, and the fatal
+    # problem is what stops the deploy.
+    assert d.artifacts["image"]["create"] is False
+
+
+def test_a_listing_that_carries_no_size_warns_rather_than_refusing(pve_cfg, tmp_path):
+    """Nothing can be concluded from an absent size, and refusing on one would
+    turn a shape of PVE's answer this code does not understand into a run that
+    cannot proceed."""
+    d = preflight.preflight(pve_cfg, session(present(pve_cfg, tmp_path, 64, None)))
+    assert [p.severity for p in d.problems] == [Severity.WARNING]
+    assert wheres(d.problems) == ["image.base_volume_name"]
+
+
+def test_an_image_that_is_not_on_this_machine_warns_about_the_local_file(pve_cfg):
+    """`validate` is the offline phase; preflight must not turn a missing local
+    file into a refusal to talk to a healthy cluster."""
+    w = world(content={"local": {"import": ["local:import/golden.qcow2"], "iso": []}})
+    d = preflight.preflight(pve_cfg, session(w))
+    assert [p.severity for p in d.problems] == [Severity.WARNING]
+    assert wheres(d.problems) == ["image.source_qcow2"], "the local file, not PVE's"
+
+
 def test_a_storage_that_cannot_be_listed_is_refused_not_assumed_empty(pve_cfg):
     """Assuming empty means planning an upload that then collides.
 
