@@ -462,8 +462,9 @@ just bundle    # assemble .cache/delivery/
 
 `just bundle` is what produces the artifact that goes on the medium. It writes
 the compressed image, the SBOM and trivy report describing *that* image,
-`vcows.sh` with the archive's own tag substituted in, a `SHA256SUMS` over all
-four, and `image.tar.sha256` — the digest of the uncompressed archive inside the
+`vcows.sh` with the archive's own tag substituted in, `config.example.yaml` and
+`SITE.md` for the site to start from, a `SHA256SUMS` over every one of them, and
+`image.tar.sha256` — the digest of the uncompressed archive inside the
 gzip, so a site can check before or after decompressing. The file is named for the version and commit read out of the
 image itself rather than out of the working tree, so a bundle cannot claim a
 commit it does not contain.

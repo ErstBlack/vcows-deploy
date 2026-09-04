@@ -141,19 +141,27 @@ main() {
     sed "s|@IMAGE@|$tag|" "$REPO/scripts/vcows.sh" > "$out/vcows.sh"
     chmod 0755 "$out/vcows.sh"
 
+    # The template and the site instructions, unmodified. The template is
+    # refused as it stands -- every value a site must supply is a placeholder
+    # the schema rejects -- so a copy that was never edited is stopped by
+    # `validate` rather than at a hypervisor.
+    cp "$REPO/config.example.yaml" "$REPO/SITE.md" "$out/"
+
     # Named explicitly rather than globbed: a glob would depend on the shell
     # expanding words before performing the redirection to avoid hashing the
     # file being written, and a fixed order makes SHA256SUMS itself reproducible.
     ( cd "$out" && sha256sum \
-        "$name" sbom.spdx.json trivy.json image.tar.sha256 vcows.sh > SHA256SUMS )
+        "$name" sbom.spdx.json trivy.json image.tar.sha256 vcows.sh \
+        config.example.yaml SITE.md > SHA256SUMS )
 
     log ""
     log "bundle  $out"
     log "  $name  ($(du -h "$out/$name" | cut -f1 || true))"
     log "  vcows.sh  ($tag)"
+    log "  config.example.yaml, SITE.md"
     log "  sbom.spdx.json, trivy.json, image.tar.sha256, SHA256SUMS"
     log ""
-    log "on receipt:  ./vcows.sh install"
+    log "on receipt:  ./vcows.sh install, then SITE.md"
     log ""
     log "not signed -- see 'Why signing was removed' in docs/ci.md"
 }

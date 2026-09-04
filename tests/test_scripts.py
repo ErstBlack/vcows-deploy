@@ -174,6 +174,11 @@ def _bundle_tree(tmp_path: Path, stamp: str | None) -> Path:
     delivery.
     """
     tree = _tree(tmp_path, "bundle.sh", "vcows.sh")
+    # `_tree` copies `scripts/` and nothing else, and `bundle.sh` copies these
+    # two out of the repository root into the delivery. The real files, so a
+    # rename here fails the bundle rather than passing against a stub.
+    for name in ("config.example.yaml", "SITE.md"):
+        shutil.copy(REPO / name, tree / name)
     scan = tree / ".cache" / "scan"
     scan.mkdir(parents=True)
     _fake_archive(scan / "image.tar", ARCHIVE_REVISION)
@@ -341,6 +346,8 @@ def test_bundle_proceeds_when_the_stamp_matches(tmp_path):
     delivery = tree / ".cache" / "delivery"
     assert sorted(p.name for p in delivery.iterdir()) == [
         "SHA256SUMS",
+        "SITE.md",
+        "config.example.yaml",
         "image.tar.sha256",
         "sbom.spdx.json",
         "trivy.json",
