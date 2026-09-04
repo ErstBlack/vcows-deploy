@@ -723,6 +723,7 @@ def dial(cfg, monkeypatch, opened=None):
             seen["dir"] = here
             seen["dir_mode"] = here.stat().st_mode & 0o777
             seen["known_hosts"] = (here / "known_hosts").read_text()
+            seen["modes"]["known_hosts"] = (here / "known_hosts").stat().st_mode & 0o777
         if opened is not None:
             raise opened
         return conn
@@ -758,7 +759,7 @@ def test_inline_credentials_reach_ssh_as_files_that_live_for_the_session(
     assert seen["text"]["keyfile"] == SSH_KEY
     assert seen["known_hosts"] == KNOWN_HOSTS
     # ssh refuses a group-readable key, and the wrapper has to be runnable.
-    assert seen["modes"] == {"keyfile": 0o600, "command": 0o700}
+    assert seen["modes"] == {"keyfile": 0o600, "command": 0o700, "known_hosts": 0o600}
     assert seen["dir_mode"] == 0o700
     wrapper = seen["text"]["command"]
     assert wrapper.startswith("#!/bin/sh\nexec ssh ")

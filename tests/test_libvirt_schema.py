@@ -835,6 +835,12 @@ def test_one_scheme_serves_every_client_this_tool_has():
     target = {"uri": "qemu+ssh://vcows@vcows/system"}
     assert schema.connection_uri(target) == "qemu+ssh://vcows@vcows/system"
     assert "sshcmd" not in schema.connection_uri(target)
+    # The scheme is fixed here, not merely checked upstream: a config URI that
+    # `_check_target` refused still dials as qemu+ssh if something else lets it through.
+    assert (
+        schema.connection_uri({"uri": "qemu+tcp://vcows@vcows/system"})
+        == "qemu+ssh://vcows@vcows/system"
+    )
 
 
 def test_the_operators_query_is_replaced_never_merged():
