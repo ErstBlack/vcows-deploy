@@ -132,31 +132,28 @@ def test_validate_runs_offline(tmp_path):
     assert "valid" in result.stderr
 
 
-def test_the_entrypoint_writes_the_key_into_the_container(tmp_path):
-    """The half of the credential change that only the image can answer.
+def test_inline_credentials_reach_ssh_and_leave_nothing_behind(tmp_path):
+    """The half of #247 only the image can answer: the wrapper `connect`
+    wrote is executed by libvirt, it runs the image's `ssh`, and the temp
+    directory is gone afterwards with nothing written under `~/.ssh`.
 
-    The config carries the key itself now, so the entrypoint copies it in rather
-    than pointing at a mount. 0600 is the assertion that matters twice over: it
-    is a private key, and `ssh` refuses one any group can read.
-
-    `preflight` is run for its side effect only -- it has no network here and
-    fails at the connection, after the entrypoint has already `execv`d. `sh -c`
-    survives that, because the exec replaces the python process and not the
-    shell that started it.
+    `--network=none`, so `ssh` fails at name resolution -- after the wrapper
+    ran and before the host key or the identity file would matter. `sh -c`
+    so the `ls` runs in the same container after vcows has exited.
     """
     config = tmp_path / "gate.yaml"
     config.write_text(CONFIG.replace(POOL, POOL + INLINE_CREDENTIALS, 1))
     result = run(
         "-c",
-        "/usr/local/bin/vcows-entrypoint preflight /config.yaml >/dev/null 2>&1; "
-        "stat -c '%a %n' ~/.ssh/vcows_key ~/.ssh/vcows_known_hosts ~/.ssh/config",
+        "vcows preflight /config.yaml 2>&1; echo ---; "
+        "ls -d /tmp/vcows-ssh-*/ ~/.ssh 2>/dev/null",
         entrypoint="sh",
         mounts=[(config, "/config.yaml")],
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    modes = dict(line.split()[::-1] for line in result.stdout.split("\n") if line)
-    assert set(modes.values()) == {"600"}, result.stdout
-    assert len(modes) == 3, result.stdout
+    during, after = result.stdout.split("---\n", 1)
+    assert "Could not resolve hostname" in during, during
+    assert "Host key verification" not in during, during
+    assert after == "", after
 
 
 # -- what the image says about itself ---------------------------------------

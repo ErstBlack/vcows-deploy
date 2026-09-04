@@ -200,7 +200,7 @@ needs_proxmox = gate(
 _BEGIN = "-----BEGIN "
 
 #: The two libvirt credentials as a config now carries them: the file's contents,
-#: not a path to it. The suite's only key -- `tests/test_entrypoint.py` and
+#: not a path to it. The suite's only key -- `tests/test_libvirt_preflight.py` and
 #: `tests/test_image.py` import this one rather than writing another.
 SSH_KEY = (
     _BEGIN + "OPENSSH PRIVATE KEY-----\n"
@@ -280,16 +280,12 @@ CONFIG: dict = {
 def _root_logger():
     """Put the root logger back after every test.
 
-    `orchestrator` configures it at package import and `container.entrypoint`
-    configures it again from `main()`, with a different format -- and both
-    *replace* the root handler list rather than adding to it. So a test that runs
-    either one changes what every later test reads off stderr.
-
-    In declaration order this stayed invisible: `test_logging.py`'s own tests call
-    `configure_logging()` before the ones that assert on a line, repairing it by
-    luck. Under a shuffled suite it surfaces as
-    `test_every_line_carries_a_level_and_a_logger` failing because the line
-    carries the entrypoint's `orchestrator.cli:` rather than `%(module)s`'s `cli`.
+    `orchestrator` configures it at package import and `test_logging.py`'s own
+    tests call `configure_logging()` again, and both *replace* the root handler
+    list rather than adding to it. So a test that runs either one changes what
+    every later test reads off stderr; under a shuffled suite that surfaced as
+    `test_every_line_carries_a_level_and_a_logger` reading a line in the wrong
+    format.
 
     Same argument as `_umask` below, and the same remedy: global process state a
     test mutates has to be handed back.

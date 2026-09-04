@@ -278,7 +278,7 @@ def test_nothing_prints(capsys):
     """
     import ast
 
-    sources = [*(REPO / "orchestrator").rglob("*.py"), REPO / "container/entrypoint.py"]
+    sources = list((REPO / "orchestrator").rglob("*.py"))
     offenders = []
     for path in sources:
         for node in ast.walk(ast.parse(path.read_text())):

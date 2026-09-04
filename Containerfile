@@ -175,12 +175,6 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
       > /usr/local/bin/vcows \
  && chmod 0755 /usr/local/bin/vcows
 
-# The entrypoint writes the config's ssh_key and known_hosts into ~/.ssh and a
-# ~/.ssh/config naming them, because libvirt honours neither as a URI parameter
-# and runs ssh. Container glue: cli.py stays out of anyone's home directory, and
-# the copy goes with `--rm`. See container/entrypoint.py for the measurements.
-COPY --chmod=0755 container/entrypoint.py /usr/local/bin/vcows-entrypoint
-
 ENV PYTHONPATH=/opt/vcows:/opt/vcows/vendor \
     PYTHONDONTWRITEBYTECODE=1 \
     VCOWS_MANIFEST=/opt/vcows/manifest.json
@@ -220,5 +214,5 @@ LABEL org.opencontainers.image.title="vcows-deploy" \
 # anyway; the point is that it stays true if either of those changes.
 WORKDIR /
 
-ENTRYPOINT ["/usr/local/bin/vcows-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/vcows"]
 CMD ["--help"]

@@ -330,10 +330,9 @@ ignores `VCOWS_LOG_LEVEL`. An import side effect is wrong for a library and righ
 for an application package. `test_logging` gates it.
 
 *The handler resolves `sys.stderr` when it writes*, not when it is built —
-`orchestrator._Stderr`, duplicated in `container/entrypoint.py`. A bound
-`StreamHandler` configured at import holds the real stderr and writes past any
-later replacement of the stream; measured at 39 failing tests, because that is
-exactly what pytest's `capsys` does.
+`orchestrator._Stderr`. A bound `StreamHandler` configured at import holds the
+real stderr and writes past any later replacement of the stream; measured at 39
+failing tests, because that is exactly what pytest's `capsys` does.
 
 ### Explicitly not built
 
@@ -438,7 +437,7 @@ What remains genuinely untestable on this rig is narrower and worth naming preci
 **Met on 2026-08-29.** Items 7, 9, 10 and 11 above are closed; the full record, including the five defects the run found and what each cost, is in `acceptance.md`. Two of those are worth carrying here because they change what this document said:
 
 - **`preflight` and the apply need different SSH transports.** libvirt does not recognise `sshcmd` at all; the provider's `ssh` dials a hardcoded monolithic `/var/run/libvirt/libvirt-sock` through a forward SELinux refuses, so it cannot reach a split-daemon host. One config, two schemes. The provider's `sshcmd` dialer already tries `virt-ssh-helper` first and falls back to `nc -U`, so the monolithic case needs nothing built.
-- **`ssh_keyfile` and `known_hosts` cannot travel in the URI.** libvirt ignores `known_hosts` (libssh-only), the provider's `ssh` dialer spells it `knownhosts`, `sshcmd` fails on either, and `HOME` is not a lever because both resolve `~` from the passwd entry. Both run `ssh`, so the container's entrypoint writes `~/.ssh/config` instead. R-D still earns its keep: refusing an operator query string is what keeps `no_verify=1` off the connection, and refusing a password keeps a credential out of the rendered tfvars — `connection_uri` replaces the scheme and clears the query, but the netloc travels verbatim.
+- **`ssh_keyfile` and `known_hosts` cannot travel in the URI.** libvirt ignores `known_hosts` (libssh-only), the provider's `ssh` dialer spells it `knownhosts`, `sshcmd` fails on either, and `HOME` is not a lever because both resolve `~` from the passwd entry. Both run `ssh`, so the container's entrypoint writes `~/.ssh/config` instead. R-D still earns its keep: refusing an operator query string is what keeps `no_verify=1` off the connection, and refusing a password keeps a credential out of the rendered tfvars — `connection_uri` replaces the scheme and clears the query, but the netloc travels verbatim. **Corrected 2026-09-04 (#247):** `keyfile=` travels fine on `qemu+ssh`, and the known_hosts copy travels inside a `command=` wrapper, so the entrypoint is gone; the query is still vcows's to assemble and the operator's is still refused.
 
 **D3 remains open.** The run used the stock `Rocky-9-GenericCloud-Base` stand-in, so the real golden artifact is still unverified.
 

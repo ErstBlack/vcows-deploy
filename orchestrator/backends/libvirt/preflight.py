@@ -36,8 +36,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -75,6 +78,50 @@ def _chatter(_ctx: Any, err: Any) -> None:
     log.debug("libvirt: %s", err[2] if isinstance(err, tuple) and len(err) > 2 else err)
 
 
+#: What ``command=`` runs in place of ``ssh``. libvirt scrubs the environment
+#: before it execs this (measured in #247: only PATH/HOME-class variables pass),
+#: so the known_hosts path is written into the script rather than read from it.
+#: libvirt itself adds ``-i <keyfile>``, ``-l <user>``, ``-T -e none`` and the
+#: ``virt-ssh-helper`` remote command. StrictHostKeyChecking stays on: refusing
+#: ``no_verify=1`` in the URI (R-D) would be pointless if the same hole were
+#: opened here. The ServerAlive pair bounds a *dead* tunnel at three minutes
+#: without putting a clock on a live transfer -- D42's other half.
+WRAPPER = (
+    "#!/bin/sh\n"
+    "exec ssh -o UserKnownHostsFile={hosts} -o StrictHostKeyChecking=yes"
+    " -o IdentitiesOnly=yes -o BatchMode=yes"
+    ' -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$@"\n'
+)
+
+
+def _write(path: Path, body: str, mode: int) -> str:
+    """Create ``path`` at ``mode`` from the syscall that makes it, return it.
+
+    The trailing newline is not cosmetic: ``ssh_key: |-`` chomps it, and OpenSSH
+    refuses a key whose last line has no terminator, naming neither.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(body if body.endswith("\n") else body + "\n")
+    return str(path)
+
+
+def ssh_files(target: dict, into: Path) -> dict[str, str]:
+    """The URI parameters that hand ``ssh`` the inline credentials.
+
+    Empty when the config carries neither, so the URI has no query and ``ssh``
+    reads the caller's own ``~/.ssh`` -- the rig tests rely on that.
+    """
+    params: dict[str, str] = {}
+    if key := target.get("ssh_key"):
+        params["keyfile"] = _write(into / "key", key, 0o600)
+    if hosts := target.get("known_hosts"):
+        known = _write(into / "known_hosts", hosts, 0o600)
+        wrapper = WRAPPER.format(hosts=shlex.quote(known))
+        params["command"] = _write(into / "ssh", wrapper, 0o700)
+    return params
+
+
 @contextmanager
 def connect(cfg: dict) -> Iterator[Any]:
     """Open a session and close it on the way out.
@@ -91,21 +138,27 @@ def connect(cfg: dict) -> Iterator[Any]:
     so the operator's terminal is unchanged, and recoverable when something is
     wrong -- this is the only account of a libvirt failure anywhere in the
     process, and `%s` formatting means it costs nothing while DEBUG is off.
+
+    The credentials live in a ``TemporaryDirectory`` (0700, ``mkdtemp``'s
+    default) for exactly as long as the session, and are removed on any exit,
+    including a failed dial. Nothing is written under ``~/.ssh``.
     """
     import libvirt
 
     libvirt.registerErrorHandler(_chatter, None)
-    uri = connection_uri(cfg["target"]["libvirt"])
-    # Derived from config rather than given, so the config does not say what was
-    # actually dialed and nothing else records it. No credential can reach this
-    # line: `_check_target` refuses a password and a query string, and `ssh_key`
-    # never touches the URI -- it goes to ssh through ~/.ssh.
-    log.info("connecting to %s", uri)
-    conn = libvirt.open(uri)
-    try:
-        yield conn
-    finally:
-        conn.close()
+    target = cfg["target"]["libvirt"]
+    with tempfile.TemporaryDirectory(prefix="vcows-ssh-") as tmp:
+        uri = connection_uri(target, ssh_files(target, Path(tmp)))
+        # Derived from config rather than given, so the config does not say what
+        # was actually dialed. The query names two files in a directory of this
+        # process's own, never a credential: `_check_target` refuses a password
+        # and an operator query, and only the key's *path* reaches this line.
+        log.info("connecting to %s", uri)
+        conn = libvirt.open(uri)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 # -- parsing one domain ----------------------------------------------------
