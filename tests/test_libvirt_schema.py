@@ -413,6 +413,24 @@ def test_a_point_to_point_block_has_no_reserved_addresses(cfg, ip_cidr):
     assert not [p for p in schema.validate(cfg) if "host address" in p.message]
 
 
+def test_a_v6_address_is_accepted_with_a_warning_about_the_route(cfg):
+    """`_parse_interface` takes both families, so a v6 `ip_cidr` is well-formed
+    and validates -- and then `_network_config` writes `dhcp6: false` and the
+    one default route as `0.0.0.0/0`, so the guest gets the address and nothing
+    to route it with. README's "IPv4 only, in practice" said that in prose and
+    nothing said it to the operator writing the config."""
+    nic = cfg["vms"][0]["nics"][0]
+    nic["ip_cidr"] = "2001:db8::60/64"
+    nic["gateway"] = "2001:db8::1"
+    nic["nameservers"] = ["2001:db8::1"]
+    problems = schema.validate(cfg)
+    assert errors(problems) == [], messages(problems)
+    # The image warning is the canonical config's own, not this NIC's.
+    inside = [p for p in problems if p.where.startswith("vms[")]
+    assert wheres(inside) == ["vms[0].nics[0].ip_cidr"]
+    assert "dhcp6: false" in inside[0].message
+
+
 def test_gateway_outside_the_subnet_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["gateway"] = "10.0.0.1"
     problems = errors(schema.validate(cfg))

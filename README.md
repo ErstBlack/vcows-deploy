@@ -302,7 +302,8 @@ monitoring check — keeps working.
 **IPv4 only, in practice.** The schema accepts an IPv6 `ip_cidr` and validates it
 correctly, but the generated `network-config` sets `dhcp6: false` and writes the
 default route as `0.0.0.0/0`, so a v6 primary NIC gets its address and no route.
-Give NICs v4 addresses at v0.1.
+`validate` warns on any v6 `ip_cidr` rather than leaving that to this
+paragraph. Give NICs v4 addresses at v0.1.
 
 **`vcpus`, `memory_mib` and `disk_gb` have ceilings** — 512, 4 TiB and 64 TiB —
 so a fat-fingered zero is refused before the run creates anything. They are a
