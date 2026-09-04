@@ -54,23 +54,23 @@ def rig_cfg() -> dict:
 
 
 @pytest.fixture
-def session(rig_cfg):
+def pve_session(rig_cfg):
     with api.connect(rig_cfg) as s:
         yield s
 
 
-def test_the_token_is_accepted(session):
+def test_the_token_is_accepted(pve_session):
     """The first thing that fails against a new cluster, and the one `validate`
     cannot check: it can say the token is well formed, not that it is real."""
-    assert api.cluster_vms(session) is not None
+    assert api.cluster_vms(pve_session) is not None
 
 
-def test_the_token_can_read_a_vms_config(session):
+def test_the_token_can_read_a_vms_config(pve_session):
     """Discovery needs one config read per VM -- it is the only place
     `description` appears, and so the only place a marker can be found. A token
     that can list but not read finds no markers and reports every VM as
     unmarked, which reads as "not ours" and refuses rather than corrupting."""
-    found = api.cluster_vms(session)
+    found = api.cluster_vms(pve_session)
     # Through `require`, not a bare skip: a demanded gate that quietly passes
     # because the cluster was empty is worse than no gate. If you asked for the
     # proxmox gate, an empty cluster means it could not answer the question.
@@ -80,23 +80,25 @@ def test_the_token_can_read_a_vms_config(session):
         "the cluster has no VMs, so there is no config read to exercise",
     )
     first = found[0]
-    config = api.vm_config(session, first["node"], first["vmid"])
+    config = api.vm_config(pve_session, first["node"], first["vmid"])
     assert isinstance(config, dict)
 
 
-def test_the_configured_storages_exist_and_allow_what_we_put_in_them(rig_cfg, session):
+def test_the_configured_storages_exist_and_allow_what_we_put_in_them(
+    rig_cfg, pve_session
+):
     """The `import` content type is not enabled by default. This is the check
     that turns that from a mid-apply provider error into an instruction."""
-    problems = preflight._check_storages(rig_cfg, session)
+    problems = preflight._check_storages(rig_cfg, pve_session)
     assert [p for p in problems if p.severity is Severity.ERROR] == [], "\n".join(
         str(p) for p in problems
     )
 
 
-def test_a_full_preflight_completes_and_creates_nothing(rig_cfg, session):
-    before = {(v["node"], v["vmid"]) for v in api.cluster_vms(session)}
-    discovered = preflight.preflight(rig_cfg, session)
-    after = {(v["node"], v["vmid"]) for v in api.cluster_vms(session)}
+def test_a_full_preflight_completes_and_creates_nothing(rig_cfg, pve_session):
+    before = {(v["node"], v["vmid"]) for v in api.cluster_vms(pve_session)}
+    discovered = preflight.preflight(rig_cfg, pve_session)
+    after = {(v["node"], v["vmid"]) for v in api.cluster_vms(pve_session)}
     assert before == after, "preflight must not create or remove anything"
     for existing in discovered.vms:
         node, _, vmid = existing.id.partition("/")

@@ -70,7 +70,7 @@ def no_libvirt(monkeypatch):
 
 
 @pytest.fixture
-def cfg(tmp_path):
+def seam_cfg(tmp_path):
     p = tmp_path / "lab-a.yaml"
     p.write_text(textwrap.dedent(CONFIG))
     return p
@@ -83,12 +83,12 @@ def test_libvirt_is_actually_blocked(no_libvirt):
         __import__("libvirt")
 
 
-def test_full_pipeline_without_libvirt(no_libvirt, cfg, tmp_path):
+def test_full_pipeline_without_libvirt(no_libvirt, seam_cfg, tmp_path):
     """validate -> preflight -> prepare -> create -> destroy."""
     backend = FakeBackend()
     registry = {"fake": backend}
 
-    config, _ = load(cfg, registry)
+    config, _ = load(seam_cfg, registry)
 
     # -- deploy: everything that touches the target happens here ------------
     with backend.connect(config) as session:
@@ -155,11 +155,11 @@ def test_prepare_is_handed_data_not_a_connection():
     assert list(params) == ["self", "cfg", "workdir", "discovered"]
 
 
-def test_prepare_works_from_data_alone(no_libvirt, cfg, tmp_path):
+def test_prepare_works_from_data_alone(no_libvirt, seam_cfg, tmp_path):
     """No session is constructed anywhere in this test, and prepare still
     produces what `create` is handed."""
     backend = FakeBackend()
-    config, _ = load(cfg, {"fake": backend})
+    config, _ = load(seam_cfg, {"fake": backend})
 
     prepared = backend.prepare(
         config, tmp_path, Discovered(vms=(), artifacts={"existing_names": []})
