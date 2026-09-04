@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 import libvirt
 import pytest
@@ -20,7 +21,7 @@ from orchestrator import cloudinit
 from orchestrator.backends.libvirt import preflight
 from orchestrator.marker import MARKER_XMLNS
 from orchestrator.problems import Severity
-from tests.conftest import wheres
+from tests.conftest import KNOWN_HOSTS, SSH_KEY, wheres
 from tests.fake_libvirt import FakeConnection, FakeDomain, FakePool, lv_error
 
 FIXTURES = Path(__file__).parent / "fixtures" / "libvirt"
@@ -704,22 +705,106 @@ def test_a_disk_of_the_same_name_elsewhere_does_not_clear_the_refusal(cfg, tmp_p
 # -- the connection --------------------------------------------------------
 
 
-def test_preflight_dials_qemu_ssh(cfg, monkeypatch):
-    """What is dialled, not merely that something was.
-
-    libvirt's own C client does not recognise `sshcmd` at all. Handing it one is
-    half of what the acceptance run found, and at a site it presents as
-    `remote_open: transport in URL not recognised` -- loud, fatal, and not
-    obviously about a URI scheme. `connection_uri` now builds one scheme, so this
-    is what pins that the one it builds is the one this client can use.
-    """
-    dialled = []
-    monkeypatch.setattr(libvirt, "open", lambda uri: dialled.append(uri) or conn)
+def dial(cfg, monkeypatch, opened=None):
+    """Run `connect` against a fake `libvirt.open` and return what it saw
+    *while the session was open*: the URI, its parameters, and the files."""
+    seen: dict = {}
     conn = FakeConnection()
 
+    def fake_open(uri):
+        params = dict(parse_qsl(urlsplit(uri).query))
+        seen["uri"] = uri
+        seen["params"] = params
+        seen["files"] = {k: Path(v) for k, v in params.items()}
+        seen["text"] = {k: p.read_text() for k, p in seen["files"].items()}
+        seen["modes"] = {k: p.stat().st_mode & 0o777 for k, p in seen["files"].items()}
+        if seen["files"]:
+            here = next(iter(seen["files"].values())).parent
+            seen["dir"] = here
+            seen["dir_mode"] = here.stat().st_mode & 0o777
+            seen["known_hosts"] = (here / "known_hosts").read_text()
+        if opened is not None:
+            raise opened
+        return conn
+
+    monkeypatch.setattr(libvirt, "open", fake_open)
+    return seen, conn
+
+
+def test_without_credentials_the_uri_is_the_operators_with_no_query(cfg, monkeypatch):
+    """The rig tests pop both fields and rely on the dev box's `~/.ssh/config`
+    alias, so a config carrying neither has to dial exactly this. `sshcmd` is
+    what the acceptance run found libvirt's client does not recognise."""
+    cfg["target"]["libvirt"].pop("ssh_key")
+    cfg["target"]["libvirt"].pop("known_hosts")
+    seen, conn = dial(cfg, monkeypatch)
     with preflight.connect(cfg) as session:
         assert session is conn
-
-    assert dialled == ["qemu+ssh://vcows@vcows/system"]
-    assert "sshcmd" not in dialled[0]
+    assert seen["uri"] == "qemu+ssh://vcows@vcows/system"
     assert conn.closed
+
+
+def test_inline_credentials_reach_ssh_as_files_that_live_for_the_session(
+    cfg, monkeypatch
+):
+    """What is dialled, and what the files looked like while it was. libvirt
+    honours `keyfile=`; `known_hosts=` it does not (#247), so the copy is
+    named inside the `command=` wrapper with host key checking kept on."""
+    seen, _ = dial(cfg, monkeypatch)
+    with preflight.connect(cfg):
+        pass
+    assert seen["uri"].startswith("qemu+ssh://vcows@vcows/system?")
+    assert set(seen["params"]) == {"keyfile", "command"}
+    assert seen["text"]["keyfile"] == SSH_KEY
+    assert seen["known_hosts"] == KNOWN_HOSTS
+    # ssh refuses a group-readable key, and the wrapper has to be runnable.
+    assert seen["modes"] == {"keyfile": 0o600, "command": 0o700}
+    assert seen["dir_mode"] == 0o700
+    wrapper = seen["text"]["command"]
+    assert wrapper.startswith("#!/bin/sh\nexec ssh ")
+    assert f"-o UserKnownHostsFile={seen['dir'] / 'known_hosts'}" in wrapper
+    assert "-o StrictHostKeyChecking=yes" in wrapper
+    assert "-o BatchMode=yes" in wrapper
+    assert wrapper.rstrip().endswith('"$@"')
+    # The image gate's `ls /tmp/vcows-ssh-*/` depends on the prefix.
+    assert seen["dir"].name.startswith("vcows-ssh-")
+    # Gone with the session: the key was only ever in a directory of our own.
+    assert not seen["dir"].exists()
+
+
+def test_a_file_already_there_is_refused_rather_than_truncated(cfg, tmp_path):
+    """`O_EXCL`: the directory is ours and fresh, so anything already at the
+    path is a bug, and overwriting a key in place is the wrong way to find it."""
+    (tmp_path / "key").write_text("theirs\n")
+    with pytest.raises(FileExistsError):
+        preflight.ssh_files(cfg["target"]["libvirt"], tmp_path)
+
+
+def test_the_files_are_removed_when_the_dial_fails(cfg, monkeypatch):
+    seen, _ = dial(cfg, monkeypatch, opened=lv_error(1, "Cannot recv data"))
+    with pytest.raises(libvirt.libvirtError), preflight.connect(cfg):
+        pass
+    assert not seen["dir"].exists()
+
+
+def test_a_chomped_key_gains_the_newline_openssh_wants(cfg, monkeypatch):
+    """`ssh_key: |-` strips it, and OpenSSH refuses a key whose final line has
+    no terminator -- naming neither the config nor the chomping indicator."""
+    cfg["target"]["libvirt"]["ssh_key"] = SSH_KEY.rstrip("\n")
+    seen, _ = dial(cfg, monkeypatch)
+    with preflight.connect(cfg):
+        pass
+    assert seen["text"]["keyfile"] == SSH_KEY
+
+
+def test_a_temp_dir_with_a_space_is_quoted_in_the_wrapper(cfg, tmp_path):
+    """The path is baked into a shell script, so `TMPDIR=/tmp/a b` would
+    otherwise split it. Called directly: `TemporaryDirectory` honours a cached
+    `tempfile.tempdir`, which is not worth fighting for one assertion."""
+    into = tmp_path / "with space"
+    into.mkdir()
+    params = preflight.ssh_files(cfg["target"]["libvirt"], into)
+    assert (
+        f"UserKnownHostsFile='{into / 'known_hosts'}'"
+        in Path(params["command"]).read_text()
+    )
