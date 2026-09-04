@@ -336,3 +336,90 @@ def test_resolve_changes_nothing_it_has_already_changed():
     once = resolve({"defaults": {"vcpus": 2}, "vms": [{"name": "app01"}]})
     assert once == {"defaults": {"vcpus": 2}, "vms": [{"name": "app01", "vcpus": 2}]}
     assert resolve(once) == once
+
+
+# -- naming the VM ----------------------------------------------------------
+
+#: Enough of a per-VM shape to file the two problems the operator actually sees
+#: against a VM: a key that is not in it, and a value out of range.
+VM_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name"],
+    "properties": {
+        "name": {"type": "string"},
+        "disk_gb": {"type": "integer", "maximum": 64},
+    },
+}
+
+
+class PerVmBackend(FakeBackend):
+    """A backend that files problems against a VM, which `FakeBackend` never does.
+
+    Both shipped backends do it through `cloudinit.check_vm_structure`, so this
+    is the same call producing the same `vms[N]` wheres, without either
+    backend's schema in a core test.
+    """
+
+    def validate(self, cfg):
+        from orchestrator.cloudinit import check_vm_structure
+
+        problems = []
+        for i, vm in enumerate(cfg["vms"]):
+            problems += check_vm_structure(vm, f"vms[{i}]", VM_SCHEMA)
+        return problems
+
+
+@pytest.fixture
+def vm_registry():
+    return {"fake": PerVmBackend()}
+
+
+THREE = CONFIG.replace("  - name: app02\n", "  - name: app02\n  - name: app03\n")
+
+
+@pytest.mark.parametrize(
+    "text, where, expect",
+    [
+        (
+            "    storage: fast\n",
+            "vms[2]",
+            "Additional properties are not allowed ('storage' was unexpected)",
+        ),
+        (
+            "    disk_gb: 3000\n",
+            "vms[2].disk_gb",
+            "3000 is greater than the maximum of 64",
+        ),
+    ],
+    ids=["unknown-key", "out-of-range"],
+)
+def test_a_problem_inside_a_vm_names_the_vm(tmp_path, vm_registry, text, where, expect):
+    """`vms[2]` is the address of the entry; `app03` is what the operator called
+    it and what every other tool on the box shows. The report needs both -- and
+    `where` is the half nothing may move, so the name goes in the message."""
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, THREE + text), vm_registry)
+    assert [(p.where, p.message) for p in exc.value.problems] == [
+        (where, f"VM 'app03': {expect}")
+    ]
+
+
+def test_a_vm_with_no_name_is_left_unprefixed(tmp_path, vm_registry):
+    """There is nothing to prefix with, and `name` is the missing key the
+    problem is already about."""
+    text = THREE.replace("  - name: app03\n", "  - vcpus: 2\n")
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text), vm_registry)
+    assert [p.where for p in exc.value.problems] == ["vms[2]"]
+    assert not exc.value.problems[0].message.startswith("VM ")
+
+
+def test_a_default_blamed_problem_is_left_unprefixed(tmp_path, vm_registry):
+    """It is a complaint about the default, not about any one VM that inherited
+    it -- so naming a VM would send the operator to the wrong key."""
+    text = THREE.replace("vms:\n", "defaults:\n  disk_gb: 3000\nvms:\n")
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text), vm_registry)
+    assert [p.where for p in exc.value.problems] == ["defaults.disk_gb"]
+    assert not exc.value.problems[0].message.startswith("VM ")

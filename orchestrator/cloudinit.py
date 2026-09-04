@@ -357,6 +357,21 @@ def check_addressing(
         # VM to reuse that address is not reported until the operator has fixed
         # the gateway and re-run -- the round trip `validate` exists to avoid.
         if iface is not None:
+            if iface.version == 6:
+                # `_network_config` writes `dhcp6: false` and the one default
+                # route as `0.0.0.0/0`, so the address is configured and nothing
+                # routes it. A warning and not an error: only the primary NIC
+                # gets a route at all, so a secondary v6 NIC is no worse off
+                # than a secondary v4 one, and refusing the config would refuse
+                # that too. README's "IPv4 only, in practice" is the long form.
+                problems.append(
+                    Problem.warning(
+                        "the generated network-config sets dhcp6: false and "
+                        "routes only 0.0.0.0/0, so this NIC gets the address "
+                        "and no route",
+                        where=f"{at}.ip_cidr",
+                    )
+                )
             if gateway is not None and gateway not in iface.network:
                 problems.append(
                     Problem.error(

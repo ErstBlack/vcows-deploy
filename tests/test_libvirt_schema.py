@@ -413,6 +413,24 @@ def test_a_point_to_point_block_has_no_reserved_addresses(cfg, ip_cidr):
     assert not [p for p in schema.validate(cfg) if "host address" in p.message]
 
 
+def test_a_v6_address_is_accepted_with_a_warning_about_the_route(cfg):
+    """`_parse_interface` takes both families, so a v6 `ip_cidr` is well-formed
+    and validates -- and then `_network_config` writes `dhcp6: false` and the
+    one default route as `0.0.0.0/0`, so the guest gets the address and nothing
+    to route it with. README's "IPv4 only, in practice" said that in prose and
+    nothing said it to the operator writing the config."""
+    nic = cfg["vms"][0]["nics"][0]
+    nic["ip_cidr"] = "2001:db8::60/64"
+    nic["gateway"] = "2001:db8::1"
+    nic["nameservers"] = ["2001:db8::1"]
+    problems = schema.validate(cfg)
+    assert errors(problems) == [], messages(problems)
+    # The image warning is the canonical config's own, not this NIC's.
+    inside = [p for p in problems if p.where.startswith("vms[")]
+    assert wheres(inside) == ["vms[0].nics[0].ip_cidr"]
+    assert "dhcp6: false" in inside[0].message
+
+
 def test_gateway_outside_the_subnet_is_rejected(cfg):
     cfg["vms"][0]["nics"][0]["gateway"] = "10.0.0.1"
     problems = errors(schema.validate(cfg))
@@ -555,9 +573,14 @@ def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing
     `config.load` runs it for all four verbs, not only `validate`.
     """
     cfg["vms"][0]["nics"][0][field] = value
-    expected = [(f"vms[0].nics[0].{field}", expect)]
-    for problems in (schema.validate(cfg), core_validate(cfg, registry)):
-        assert [(p.where, p.message) for p in errors(problems)] == expected
+    where = f"vms[0].nics[0].{field}"
+    # `config._name_the_vm` is a post-pass over the whole document's problems,
+    # so only the composed path carries the VM's name. Same problem either way.
+    for problems, named in (
+        (schema.validate(cfg), expect),
+        (core_validate(cfg, registry), f"VM 'app01': {expect}"),
+    ):
+        assert [(p.where, p.message) for p in errors(problems)] == [(where, named)]
 
 
 def test_the_deployment_reaches_the_derivation_through_the_schema(cfg):
