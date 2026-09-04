@@ -7,12 +7,28 @@
 # expresses per workflow rather than per job. No third-party actions: the pinned
 # tool downloads in scripts/install-tools.sh verify their own digests, which is
 # the standard the Containerfile already holds itself to.
+#
+# Both events carry the same path filter, spelled out twice because GitHub
+# Actions has no YAML anchors. It keeps everything, drops docs/**, and puts
+# docs/*.json back -- patterns apply in order and a later one overrides an
+# earlier. Not `paths-ignore`, which cannot re-include: the file being put back
+# is docs/mutation-baseline.json, the input `mutation` gates against, so a
+# baseline-only change is exactly the change that must run the job whose verdict
+# it moves. image.yml's own paths list makes that argument for
+# docs/cve-baseline.json.
+#
+# A required check skipped by a path filter never reports, and the pull request
+# waits on it rather than merging. That does not bite here: the account is on
+# the GitHub Free plan, where a private repository gets no rulesets and so no
+# required checks.
 name: ci
 
 on:
-  pull_request: {}
+  pull_request:
+    paths: ['**', '!docs/**', 'docs/*.json']
   push:
     branches: [master]
+    paths: ['**', '!docs/**', 'docs/*.json']
 
   # On demand, for a branch with no PR open yet. `push` is scoped to master
   # so a branch push does not run twice once a PR exists.
