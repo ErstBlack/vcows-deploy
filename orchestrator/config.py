@@ -208,6 +208,10 @@ def _blame_the_filename(problem: Problem, path: Path) -> Problem:
 #: reaches into below it: ``vms[0].nics[1].mac`` -> ``0``, ``nics``, ``[1].mac``.
 _AT_A_VM_KEY = re.compile(r"vms\[(\d+)\]\.([^.\[]+)(.*)")
 
+#: A problem filed anywhere inside one VM, including at the VM itself: an
+#: unknown key renders as ``vms[2]`` with no key below it.
+_AT_A_VM = re.compile(r"vms\[(\d+)\]")
+
 
 def _blame_the_defaults(problems: list[Problem], cfg: dict) -> list[Problem]:
     """Re-point complaints about an inherited value at the key that supplied it.
@@ -236,6 +240,34 @@ def _blame_the_defaults(problems: list[Problem], cfg: dict) -> list[Problem]:
     return out
 
 
+def _name_the_vm(problems: list[Problem], cfg: dict) -> list[Problem]:
+    """Put the VM's own name in the message of anything filed under ``vms[N]``.
+
+    The index is what the document has and the name is what the operator has, so
+    the report carries both -- but the name goes in the **message** and not in
+    ``where``. ``where`` is an address the rest of the tree reads exactly:
+    ``_blame_the_filename`` compares it, ``_blame_the_defaults`` regexes it,
+    ``run.json`` records it, and the suite asserts it. The message is the half
+    only the operator reads, so it is the half that can gain a name for free.
+
+    Runs after ``_blame_the_defaults``, which is why a problem re-pointed at
+    ``defaults.x`` comes out unnamed: it is about the default, not about any one
+    VM that inherited it.
+    """
+    out: list[Problem] = []
+    for problem in problems:
+        found = _AT_A_VM.match(problem.where)
+        vm = cfg["vms"][int(found[1])] if found else None
+        if isinstance(vm, dict) and isinstance(vm.get("name"), str):
+            problem = Problem(
+                problem.severity,
+                f"VM {vm['name']!r}: {problem.message}",
+                where=problem.where,
+            )
+        out.append(problem)
+    return out
+
+
 def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     """Structural validation, then the selected backend's own checks."""
     validator = jsonschema.Draft202012Validator(core_schema(registry))
@@ -243,7 +275,7 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     if problems:
         # Backend validators assume a structurally sound document. Running them
         # on a broken one piles noise on top of the errors that actually matter.
-        return problems
+        return _name_the_vm(problems, cfg)
 
     # The backend sees a resolved VM and never the block itself; what it says
     # about a value no VM wrote is then filed against the key that did.
@@ -258,4 +290,4 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
             problems.append(Problem.error(f"duplicate VM name {name!r}", where="vms"))
         seen.add(name)
 
-    return problems
+    return _name_the_vm(problems, cfg)

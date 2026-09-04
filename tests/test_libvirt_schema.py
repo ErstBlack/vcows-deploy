@@ -555,9 +555,14 @@ def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing
     `config.load` runs it for all four verbs, not only `validate`.
     """
     cfg["vms"][0]["nics"][0][field] = value
-    expected = [(f"vms[0].nics[0].{field}", expect)]
-    for problems in (schema.validate(cfg), core_validate(cfg, registry)):
-        assert [(p.where, p.message) for p in errors(problems)] == expected
+    where = f"vms[0].nics[0].{field}"
+    # `config._name_the_vm` is a post-pass over the whole document's problems,
+    # so only the composed path carries the VM's name. Same problem either way.
+    for problems, named in (
+        (schema.validate(cfg), expect),
+        (core_validate(cfg, registry), f"VM 'app01': {expect}"),
+    ):
+        assert [(p.where, p.message) for p in errors(problems)] == [(where, named)]
 
 
 def test_the_deployment_reaches_the_derivation_through_the_schema(cfg):
