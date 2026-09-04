@@ -145,6 +145,13 @@ def test_an_unusable_ceiling_is_reported_not_taken(monkeypatch, capsys):
         importlib.reload(limits)
 
 
+def test_a_ceiling_of_one_is_taken(monkeypatch):
+    """The floor is `< 1`. One is a positive integer, and a site that caps at a
+    single vCPU gets that cap rather than the default."""
+    monkeypatch.setenv("VCOWS_MAX_VCPUS", "1")
+    assert limits._ceiling("VCOWS_MAX_VCPUS", 512) == 1
+
+
 # -- R-D: the URI is ours to assemble ---------------------------------------
 
 
@@ -589,6 +596,23 @@ def test_two_primaries_are_rejected(cfg):
     assert wheres(problems) == ["vms[0].nics"], "the list, not either nic in it"
 
 
+def test_one_primary_is_not_a_conflict(cfg):
+    """The rule is against two claims, not against the claim: `> 1`, not `>= 1`."""
+    nic = dict(cfg["vms"][0]["nics"][0])
+    nic["ip_cidr"] = "192.168.122.70/24"
+    cfg["vms"][0]["nics"].append(nic)
+    cfg["vms"][0]["nics"][1]["primary"] = True
+    assert errors(schema.validate(cfg)) == []
+
+
+def test_a_nic_without_nameservers_validates(cfg):
+    """`nameservers` is optional and `check_addressing` iterates it, so absent
+    has to read as an empty list. A `None` default is a TypeError out of
+    `validate` for every config that leaves the key out."""
+    del cfg["vms"][0]["nics"][0]["nameservers"]
+    assert errors(schema.validate(cfg)) == []
+
+
 def test_first_nic_is_primary_by_default(cfg):
     nic = dict(cfg["vms"][0]["nics"][0])
     nic["ip_cidr"] = "192.168.122.70/24"
@@ -623,6 +647,15 @@ def test_disk_gb_at_or_above_it_passes(cfg, tmp_path):
     img.write_bytes(qcow2_header(40 * 1024**3))
     cfg["image"]["source_qcow2"] = str(img)
     assert errors(schema.validate(cfg)) == []
+
+
+def test_one_byte_over_disk_gb_is_rejected(cfg, tmp_path):
+    """The comparison is in GiB exactly: an image one byte larger than the
+    overlay asked for is one the overlay cannot back onto."""
+    img = tmp_path / "golden.qcow2"
+    img.write_bytes(qcow2_header(40 * 1024**3 + 1))
+    cfg["image"]["source_qcow2"] = str(img)
+    assert wheres(errors(schema.validate(cfg))) == ["vms[0].disk_gb"]
 
 
 def test_an_unreadable_image_warns_rather_than_failing(cfg):

@@ -129,6 +129,7 @@ def test_network_config_matches_by_mac(iso, cfg):
     nic = net["ethernets"]["nic0"]
     assert nic["match"]["macaddress"] == derive_mac("app01", 0, cfg["deployment"])
     assert nic["dhcp4"] is False
+    assert nic["dhcp6"] is False
     assert nic["addresses"] == ["192.168.122.60/24"]
     # A CIDR, not netplan's `default`: cloud-init 24.4 throws
     # "Address default is not a valid ip address" out of its v2-to-v1 route
