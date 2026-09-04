@@ -65,15 +65,9 @@ Rootless podman. The image sets no `USER`: under rootless podman container root
 *is* the invoking user, which is what makes a bind-mounted run directory work
 without a UID-mapping dance.
 
-**`--user` works, and it needs two things lined up, not one.** Measured with
+**`--user` works, and it needs one thing lined up.** Measured with
 `--user 4242`:
 
-* podman synthesises a passwd entry whose home is `/`, and `/` is not writable.
-  The entrypoint resolves `~` from that entry — not from `HOME`, deliberately,
-  because that is what `ssh` does — so it cannot write into `~/.ssh`, says so,
-  and the connection then fails with `Host key verification failed`. Setting
-  `HOME` does not help. Give it a writable home (`--passwd-entry`) or mount your
-  own config at the passwd home's `.ssh/config`.
 * the run directory mount is owned by the mapped host UID and is `0755`, so uid 4242
   cannot create `runs/<deployment>/<timestamp>` inside it. `deploy` and `destroy`
   stop before connecting, with `vcows: cannot create the run directory
@@ -81,14 +75,17 @@ without a UID-mapping dance.
   `validate` and `preflight` create no run directory and are unaffected, so a
   clean `preflight` says nothing about `deploy`.
 
-The second is a mount owned by the wrong UID, and it has two remedies that are
-**not** equivalent:
+The SSH credentials need no home directory: `connect` writes them under `/tmp`
+for the length of the connection, which any UID can do.
+
+That one thing is a mount owned by the wrong UID, and it has two remedies that
+are **not** equivalent:
 
 * `--userns=keep-id:uid=4242,gid=0` maps your own UID to 4242 inside the
   container, so the mount already has the owner it needs. Nothing on the host
   is chowned, and the run directory comes back owned by you. It sets the
-  container UID itself, so `--user` becomes redundant; the writable home is still
-  needed. Measured with `--passwd-entry`: all four verbs behave.
+  container UID itself, so `--user` becomes redundant. Measured: all four verbs
+  behave.
 * `:U` on the run directory mount chowns that *host* path to the subuid backing
   4242. It also works, and it charges you the output: `./runs/<deployment>` lands
   `drwx------` owned by a subuid, so `ls`, `cat` and `rm -rf` all answer
@@ -142,8 +139,8 @@ advance. Every path is checked and made absolute before podman runs — a relati
 `-v` source is a *named volume* to podman, not a path.
 
 What it runs is one `podman run` per verb, with no key or `known_hosts` mount:
-both are inline in the config now, and the entrypoint writes them into the
-container's own `~/.ssh`, which goes with `--rm`.
+both are inline in the config, and vcows writes them to a private temporary
+directory inside the container for as long as the connection is open.
 
 ```bash
 podman run --rm \
@@ -337,15 +334,15 @@ turn autostart off per domain with `virsh autostart --disable <name>`, or clear
 
 ### How the SSH credentials actually reach libvirt
 
-The client does not accept them in the URI: libvirt's `qemu+ssh` ignores
-`known_hosts`, which is a libssh parameter, and the transport that reaches a
-modern split-daemon host runs `ssh` itself. So the container's entrypoint writes
-the two fields above into `~/.ssh/vcows_key` and `~/.ssh/vcows_known_hosts`, each
-`0600`, plus a `~/.ssh/config` naming them, before handing over to `vcows`. That
-copy lives in the container's own filesystem and goes with `--rm`.
-
-Mount your own `~/.ssh/config` into the container and it is left alone — and
-nothing else is written either, so the key is not copied in at all.
+libvirt's `qemu+ssh` runs `ssh`, honours `keyfile=` in the URI, and ignores
+`known_hosts=` (a libssh parameter). So `connect` writes the two fields into a
+`0700` temporary directory together with a two-line wrapper that runs `ssh` with
+`UserKnownHostsFile` pointing at the copy and `StrictHostKeyChecking=yes`, and
+dials `qemu+ssh://…?keyfile=<key>&command=<wrapper>`. The directory is removed
+when the connection closes, and nothing is written under `~/.ssh`. A config with
+neither field dials with no query, so `ssh` reads your own `~/.ssh` -- mount it
+if that is what you want. `qemu+libssh` was measured and rejected in #247: from
+the Python binding, replies of roughly 4-37 KB never return.
 
 ## The run directory
 
@@ -393,7 +390,7 @@ The level is what distinguishes the kinds of line, where the stream used to:
 
 | Level | Carries |
 |---|---|
-| `DEBUG` | why something was not knowable: libvirt lookup misses, an unreadable pool, a config the entrypoint declined to read |
+| `DEBUG` | why something was not knowable: libvirt lookup misses, an unreadable pool |
 | `INFO` | the report — decision rows, counts, verdicts, the run directory, each object as it is created |
 | `WARNING` | degraded but continuing: a config `Problem`, an advisory, a run directory that could not be made `0700` |
 | `ERROR` | refusals, fatal problems, and the hypervisor's own errors |

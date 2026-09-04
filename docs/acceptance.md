@@ -32,7 +32,7 @@ both:
 |---|---|---|
 | libvirt (preflight) | `qemu+ssh` | **works** — reaches split daemons via `virt-ssh-helper` |
 | libvirt | `qemu+sshcmd` | `remote_open: transport in URL not recognised` |
-| libvirt | `qemu+libssh` | works, and honours both credential parameters |
+| libvirt | `qemu+libssh` | works for small replies, and honours both credential parameters. **Corrected 2026-09-04 (#247):** from the Python binding, replies of roughly 4-37 KB hang (`virNetLibsshSessionHasCachedData` sees only libvirt's own buffer), so it is not used. |
 | provider | `qemu+ssh` | **fails** — dials a hardcoded `/var/run/libvirt/libvirt-sock` that a split-daemon host does not have; given `socket=` the forward is refused, because SELinux does not let `sshd` open a libvirt socket |
 | provider | `qemu+sshcmd` | **works** — runs `ssh` and asks the remote end for `virt-ssh-helper`, falling back to `nc -U` |
 | provider | `qemu+libssh` | `unsupported transport: libssh` |
@@ -63,9 +63,10 @@ never worked:
 * `HOME` is not a lever: OpenSSH and Go's `os/user` both resolve `~` from the
   passwd entry.
 
-What both clients share is that they run `ssh`, so both read `~/.ssh/config`. The
-container entrypoint now writes that file from the two config fields. Nothing
-copies key material; the mounted files stay where they are, read-only.
+**Corrected 2026-09-04 (#247).** `keyfile=` does work on `qemu+ssh`, and
+`command=` can name a wrapper that supplies `UserKnownHostsFile`, so
+`preflight.connect` writes both credentials to a session temporary directory and
+dials them that way. The container entrypoint that wrote `~/.ssh/config` is gone.
 
 ### 3. `libvirt_volume.seed` declared the wrong format
 
