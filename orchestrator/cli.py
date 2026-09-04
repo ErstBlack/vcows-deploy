@@ -284,6 +284,14 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
     to ``main``, which owns the message and the exit code; a failure writing the
     record must not replace it with a worse one.
 
+    **``error`` carries the exception's text verbatim, and only vcows-raised text
+    is credential-free by inspection.** A ``requests`` or ``proxmoxer`` exception
+    string is whatever the library put in it -- a ``ResourceException`` includes
+    the response body -- so a cluster that echoes something back puts it in an
+    artifact the site ships home. Accepted at this likelihood rather than
+    filtered, and stated here so the channel is on record rather than assumed
+    closed.
+
     **The log goes into the run directory too**, because the shipped wrapper runs
     ``podman run --rm`` and the container whose logs held it is gone by the time
     anyone asks. The handler's lifecycle is here rather than in ``_run_dir``
