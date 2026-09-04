@@ -19,6 +19,7 @@ questions, in the order their answers are needed:
 from __future__ import annotations
 
 import logging
+import os
 
 from ...cloudinit import seed_name
 from ...marker import Marker, MarkerError, from_description
@@ -175,6 +176,8 @@ def _image(cfg: dict, session: api.Session, problems: list[Problem]) -> dict:
     ``create`` false once it is there. The volume id is what the module's
     ``import_from`` needs when it is not uploading, and it is PVE's own string
     for the file rather than one built here.
+
+    A name match is not enough on its own, which is what ``_verified`` is for.
     """
     wanted = cfg["image"]["base_volume_name"]
     try:
@@ -196,8 +199,62 @@ def _image(cfg: dict, session: api.Session, problems: list[Problem]) -> dict:
         volid = str(item.get("volid", ""))
         if volid.rsplit("/", 1)[-1] == wanted:
             log.info("golden image already present as %s", volid)
+            problems += _verified(cfg, session, item)
+            # `create: False` and the volid whatever the size says: the file is
+            # there, so there is nothing to upload over it, and a fatal problem
+            # is what stops the deploy rather than a plan to re-upload.
             return {"create": False, "volid": volid}
     return {"create": True, "volid": f"{session.import_datastore}:import/{wanted}"}
+
+
+def _verified(cfg: dict, session: api.Session, item: dict) -> list[Problem]:
+    """D30 in this backend's terms: a present image is verified, not trusted.
+
+    The twin of libvirt's ``base_volume``, which compares a present base
+    volume's physical size with the local file. An interrupted upload leaves a
+    truncated qcow2 whose header still declares the full virtual size, so
+    matching the listing by name alone reuses it -- and every disk imported from
+    it is a copy of a broken image. The comparison catches a different image
+    under the same name as well.
+    """
+    name = cfg["image"]["base_volume_name"]
+    source = cfg["image"]["source_qcow2"]
+    try:
+        local = os.stat(source).st_size
+    except OSError as exc:
+        return [
+            Problem.warning(
+                f"golden image {source!r} is not readable ({exc.strerror}), so the "
+                f"copy already on the host cannot be verified against it.",
+                where="image.source_qcow2",
+            )
+        ]
+
+    size = item.get("size")
+    if size is None:
+        return [
+            Problem.warning(
+                f"volume {name!r} reports no size, so it cannot be checked "
+                f"against {source!r}.",
+                where="image.base_volume_name",
+            )
+        ]
+    if size != local:
+        # The procedure offered is the non-destructive one, as it is in
+        # `base_volume`: a name this datastore does not hold uploads alongside
+        # the old file and nothing already imported from it is touched.
+        return [
+            Problem.error(
+                f"volume {name!r} is {size} bytes in "
+                f"{session.import_datastore!r} but {local} bytes locally. That is "
+                f"either a truncated upload or a different image under the same "
+                f"name; either way every disk imported from it would be a copy of "
+                f"it. Set image.base_volume_name to a name this datastore does not "
+                f"hold and re-run: the new image uploads alongside the old one.",
+                where="image.base_volume_name",
+            )
+        ]
+    return []
 
 
 def _orphan_seeds(
