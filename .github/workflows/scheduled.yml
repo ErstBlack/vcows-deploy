@@ -67,18 +67,22 @@ jobs:
       - run: just dev-env
       - run: just image
       - run: just scan
-      - run: just bundle
-      # The one step that makes the rest of this job worth running. Until now
-      # `just scan` wrote trivy.json, the SBOM and the archive into the runner's
-      # .cache/ and the runner deleted them, so the monthly rebuild proved
-      # something and recorded nothing -- which removes the reason to run it
-      # monthly, namely diffing this month's SBOM against last month's across an
-      # unpinned `dnf -y install` layer.
+      # The step that would make the rest of this job worth running, and the
+      # reason `just bundle` no longer runs above it. `just scan` writes
+      # trivy.json, the SBOM and the archive into the runner's .cache/ and the
+      # runner deletes them, so the monthly rebuild proves something and records
+      # nothing -- which removes the reason to run it monthly, namely diffing
+      # this month's SBOM against last month's across an unpinned
+      # `dnf -y install` layer.
       #
       # A `uses:`, so `workflows_carry_no_logic` in scripts/lint.sh still passes:
       # it inspects run/script/before_script/after_script and not uses.
       # Disabled until release: each upload is a full delivery bundle and the
-      # repository's artifact storage quota filled. Drop the `if` to re-enable.
+      # repository's artifact storage quota filled. Re-enabling is two edits,
+      # not one -- drop the `if`, and restore `- run: just bundle` above this
+      # step, or the upload finds no .cache/delivery/ and fails on
+      # `if-no-files-found: error`. Building a bundle nothing collects is the
+      # minutes this job was spending on nothing.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: false
         with:
