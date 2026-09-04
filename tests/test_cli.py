@@ -220,9 +220,28 @@ def test_the_backend_is_handed_the_config_on_every_call(backend, config, monkeyp
 # -- deploy -----------------------------------------------------------------
 
 
-def test_deploy_runs_the_whole_pipeline(no_libvirt, backend, config, tmp_path):  # noqa: F811
+def test_deploy_runs_the_whole_pipeline(
+    no_libvirt,  # noqa: F811
+    backend,
+    config,
+    tmp_path,
+    monkeypatch,
+):
+    handed: list[dict] = []
+    real_connect = backend.connect
+
+    def connect(cfg):
+        handed.append(cfg)
+        return real_connect(cfg)
+
+    monkeypatch.setattr(backend, "connect", connect)
     assert cli.main(["deploy", config]) == 0
     run = latest_run(tmp_path)
+
+    # Both sessions were opened against the config: `_look`'s against the whole
+    # document and `create`'s against the VMs being created and nothing else.
+    assert [c["deployment"] for c in handed] == ["lab-a", "lab-a"]
+    assert [vm["name"] for vm in handed[1]["vms"]] == ["app01", "app02"]
 
     # What prepare built, kept so a VM that will not boot can be debugged from
     # the media it was actually given rather than from a rebuild.
