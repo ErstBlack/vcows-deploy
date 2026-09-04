@@ -176,18 +176,27 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
  && chmod 0755 /usr/local/bin/vcows
 
 ENV PYTHONPATH=/opt/vcows:/opt/vcows/vendor \
-    PYTHONDONTWRITEBYTECODE=1 \
-    VCOWS_MANIFEST=/opt/vcows/manifest.json
+    PYTHONDONTWRITEBYTECODE=1
 
 # Last, so it describes the finished image. Everything above is already in place
 # by the time `rpm -qa` runs.
-COPY container/manifest.py /tmp/manifest.py
-RUN VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}" \
+#
+# Bind-mounted rather than COPYed: a COPY is its own layer, so the script shipped
+# in the delivered image and the `rm -f` that followed it only added a whiteout on
+# top. The mount exists for the duration of this RUN and leaves nothing behind.
+# `source_revision` (scripts/lib.sh) lists `container` among the paths the
+# `-dirty` suffix is computed over, so the file is still covered by that check.
+#
+# `z` is not optional under SELinux -- measured on an enforcing host: without it
+# the build container's MCS categories do not match the checkout's and python3
+# gets `Permission denied` on the mounted path. It relabels one file, shared, and
+# podman skips it where SELinux is disabled.
+RUN --mount=type=bind,source=container/manifest.py,target=/tmp/manifest.py,z \
+    VCOWS_VERSION="${VCOWS_VERSION}" GIT_SHA="${GIT_SHA}" BUILD_DATE="${BUILD_DATE}" \
     BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}" \
     PROXMOXER_VERSION="${PROXMOXER_VERSION}" \
     PROXMOXER_SHA256="${PROXMOXER_SHA256}" \
-    python3 /tmp/manifest.py > /opt/vcows/manifest.json \
- && rm -f /tmp/manifest.py
+    python3 /tmp/manifest.py > /opt/vcows/manifest.json
 
 # The base image labels every one of these, so an image that overrides none of
 # them self-identifies to a third party as an RESF product (F16).
