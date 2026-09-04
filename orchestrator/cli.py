@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import VERSION
+from . import LOG_DATEFMT, LOG_FORMAT, VERSION
 from .backends import REGISTRY
 from .backends.base import (
     Action,
@@ -145,10 +145,6 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
                 path,
                 stat.S_IMODE(path.stat().st_mode),
             )
-    # The join key. A `podman logs` dump weeks after delivery has no other way to
-    # say which run.json it belongs to -- the container is gone, and the record
-    # the site ships home names a directory this process never otherwise states.
-    log.info("run directory %s", path)
     return path
 
 
@@ -282,7 +278,22 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
     the least chance of saying it -- writes one too. The exception then continues
     to ``main``, which owns the message and the exit code; a failure writing the
     record must not replace it with a worse one.
+
+    **The log goes into the run directory too**, because the shipped wrapper runs
+    ``podman run --rm`` and the container whose logs held it is gone by the time
+    anyone asks. The handler's lifecycle is here rather than in ``_run_dir``
+    because this is what brackets a verb's body, and closing it in a ``finally``
+    is what stops one open file per run from leaking. ``validate`` and
+    ``preflight`` write no run directory and so pass through neither.
     """
+    handler = logging.FileHandler(run.path / "log")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    # The join key, logged from here so it lands in both streams: it is the only
+    # line that names the directory the file itself sits in, and the record a
+    # site ships home is otherwise unattributable to any stderr dump beside it.
+    log.info("run directory %s", run.path)
     try:
         return body()
     except BaseException as exc:
@@ -304,6 +315,9 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
                     unwritable.strerror,
                 )
         raise
+    finally:
+        root.removeHandler(handler)
+        handler.close()
 
 
 # -- validate ---------------------------------------------------------------
