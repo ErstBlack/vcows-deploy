@@ -846,6 +846,9 @@ def test_the_operators_query_is_replaced_never_merged():
     uri = schema.connection_uri(target, {"keyfile": "/t/key", "command": "/t/ssh"})
     assert uri == "qemu+ssh://vcows@vcows/system?keyfile=/t/key&command=/t/ssh"
     assert "no_verify" not in uri
+    assert schema.connection_uri(target, {"keyfile": "/t/a b/key"}) == (
+        "qemu+ssh://vcows@vcows/system?keyfile=/t/a%20b/key"
+    )
 
 
 # -- the credentials, through the composed core schema ----------------------

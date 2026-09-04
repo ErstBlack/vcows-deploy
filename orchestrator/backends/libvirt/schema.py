@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from ...cloudinit import (
     check_addressing,
@@ -143,12 +143,16 @@ def connection_uri(target: dict, params: dict[str, str] | None = None) -> str:
 
     R-D's refusal of an operator-supplied query still matters: it is what keeps
     ``no_verify=1`` off the connection, and the operator's query is *replaced*
-    here, never merged. ``safe="/"`` keeps the paths readable in the log line.
+    here, never merged. ``safe="/"`` keeps the paths readable in the log line,
+    and ``quote_via=quote`` rather than ``urlencode``'s default ``quote_plus``
+    is what makes a space travel as ``%20``: libvirt's URI parser unescapes
+    ``%XX`` and does not read ``+`` as a space, so a ``TMPDIR`` with one in it
+    would otherwise name a file that does not exist.
     **The netloc travels verbatim**, which is why a password is refused in
     ``_check_target`` rather than stripped here.
     """
     parts = urlsplit(target["uri"])
-    query = urlencode(params or {}, safe="/")
+    query = urlencode(params or {}, safe="/", quote_via=quote)
     return urlunsplit(parts._replace(scheme="qemu+ssh", query=query))
 
 
