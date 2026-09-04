@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from ...cloudinit import (
     check_addressing,
@@ -46,7 +46,7 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z"
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
 #: A PEM private key's opening line. ``ssh_key`` carries the key itself, so this
-#: asks whether it opens like one -- the container entrypoint writes it to a file
+#: asks whether it opens like one -- ``preflight.connect`` writes it to a file
 #: and hands the file to ``ssh``, which otherwise fails with ``invalid format``
 #: and names no config field. It also catches the value an operator reaches for
 #: by habit, a *public* key, which is not a secret and authenticates nothing.
@@ -121,8 +121,9 @@ TARGET_SCHEMA: dict[str, Any] = {
         # Must already exist. Creating a pool is a host-level mutation on someone
         # else's hypervisor; preflight refuses when it is missing or inactive.
         "pool": {"type": "string", "minLength": 1},
-        # The credentials themselves, not paths to them. The container copies
-        # each into its own ~/.ssh, which goes with `--rm`.
+        # The credentials themselves, not paths to them. `preflight.connect`
+        # writes each to a private temporary file for the length of the
+        # connection.
         "ssh_key": {"type": "string", "pattern": SSH_KEY_PATTERN},
         # No pattern: a known_hosts line is `host algo base64` with any
         # algorithm name, so non-empty is the whole of what can be said.
@@ -131,28 +132,24 @@ TARGET_SCHEMA: dict[str, Any] = {
 }
 
 
-def connection_uri(target: dict) -> str:
-    """The URI vcows dials. One scheme, for every client this tool has left.
+def connection_uri(target: dict, params: dict[str, str] | None = None) -> str:
+    """The URI vcows dials: the operator's, scheme fixed and query replaced.
 
-    It used to build two. The second was the go-libvirt provider's
-    ``qemu+sshcmd``, and with the provider gone the same ``qemu+ssh`` serves
-    preflight, create and destroy -- all three are libvirt's own C client, which
-    does not recognise ``sshcmd`` at all (``remote_open: transport in URL not
-    recognised``) and reaches a modern split-daemon host through
-    ``virt-ssh-helper``.
+    ``params`` is what ``preflight.connect`` wrote for ``ssh`` -- ``keyfile=``
+    and ``command=`` -- or nothing, in which case there is no query and ``ssh``
+    reads the caller's own ``~/.ssh``. ``known_hosts=`` is not a ``qemu+ssh``
+    parameter (libssh only; #247 measured libssh and rejected it), so the
+    known_hosts copy travels inside the ``command=`` wrapper instead.
 
-    **No query string, deliberately.** libvirt's ``qemu+ssh`` ignores
-    ``known_hosts`` -- it is libssh/libssh2 only -- so no spelling of the
-    credential parameters does anything here. Both ends run ``ssh``, so the
-    credentials reach it through ``~/.ssh/config``, which the container's
-    entrypoint writes from ``ssh_key`` and ``known_hosts``. R-D's refusal of
-    an operator-supplied query string still matters: it is what keeps
-    ``no_verify=1`` off the connection. **The netloc, by contrast, travels
-    verbatim** -- only the scheme and the query are replaced here -- which is why
-    a password is refused in ``_check_target`` rather than stripped here.
+    R-D's refusal of an operator-supplied query still matters: it is what keeps
+    ``no_verify=1`` off the connection, and the operator's query is *replaced*
+    here, never merged. ``safe="/"`` keeps the paths readable in the log line.
+    **The netloc travels verbatim**, which is why a password is refused in
+    ``_check_target`` rather than stripped here.
     """
     parts = urlsplit(target["uri"])
-    return urlunsplit(parts._replace(scheme="qemu+ssh", query=""))
+    query = urlencode(params or {}, safe="/")
+    return urlunsplit(parts._replace(scheme="qemu+ssh", query=query))
 
 
 def validate(cfg: dict) -> list[Problem]:
@@ -250,33 +247,29 @@ def _check_target(target: dict) -> list[Problem]:
         )
     if parts.query:
         # The single most important check here. `no_verify=1` disables SSH host
-        # key checking, and neither `keyfile=` nor `known_hosts=` is a parameter
-        # vcows would otherwise be setting: `connection_uri` replaces the scheme
-        # and clears the query, and the credentials reach ssh through
-        # `~/.ssh/config` instead. So an operator query string is not overriding
-        # vcows -- it is the only thing on the connection nothing else checks.
+        # key checking, and `connection_uri` replaces the operator's query with
+        # the one `connect` builds from the credential files, so a query here is
+        # not overriding vcows -- it is the only thing on the connection nothing
+        # else checks.
         problems.append(
             Problem.error(
-                f"URI must carry no query string, got {parts.query!r}. Neither "
-                f"client reads credentials from it -- both run ssh, so "
-                f"ssh_key and known_hosts travel via ~/.ssh/config, which "
-                f"the container entrypoint writes. Setting it here can only "
-                f"weaken the connection: no_verify=1 disables host key "
-                f"verification.",
+                f"URI must carry no query string, got {parts.query!r}. vcows "
+                f"assembles the query itself from ssh_key and known_hosts; "
+                f"setting it here can only weaken the connection: no_verify=1 "
+                f"disables host key verification.",
                 where=where,
             )
         )
     if parts.password is not None:
         # The query string is not the only way credentials reach the URI, and
         # this one survives further: `connection_uri` replaces the scheme and
-        # clears the query but leaves the netloc alone, so a password reaches
+        # the query but leaves the netloc alone, so a password reaches
         # `preflight.connect`'s "connecting to %s" line whole.
         problems.append(
             Problem.error(
-                "URI must carry no password. Neither client would use it -- both "
-                "run ssh, so credentials travel via ~/.ssh/config, which the "
-                "container entrypoint writes from ssh_key and known_hosts. "
-                "It would be logged in plaintext with the connection.",
+                "URI must carry no password. ssh does not read one, and it would "
+                "be logged in plaintext with the connection: connection_uri "
+                "replaces the query but leaves the netloc alone. Use ssh_key.",
                 where=where,
             )
         )

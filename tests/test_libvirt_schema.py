@@ -18,7 +18,7 @@ from orchestrator.config import core_schema
 from orchestrator.config import validate as core_validate
 from orchestrator.marker import VCOWS_NS
 from orchestrator.problems import Problem
-from tests.conftest import KNOWN_HOSTS, SSH_KEY, errors, messages, wheres
+from tests.conftest import errors, messages, wheres
 from tests.fake_backend import FakeBackend
 
 
@@ -837,25 +837,14 @@ def test_one_scheme_serves_every_client_this_tool_has():
     assert "sshcmd" not in schema.connection_uri(target)
 
 
-def test_credentials_never_reach_the_uri():
-    """libvirt's `qemu+ssh` ignores `known_hosts` -- it is libssh/libssh2 only --
-    so a URI carrying the credential parameters would be a silently ignored
-    promise. They arrive through ~/.ssh/config instead."""
-    uri = schema.connection_uri(
-        {
-            # A query string the validator would have refused, because the only
-            # thing `query=""` does is strip one. Fed a clean URI this test could
-            # not fail: `connection_uri` never *adds* credentials, so deleting the
-            # strip passed it.
-            "uri": "qemu+ssh://vcows@vcows/system?no_verify=1",
-            "ssh_key": SSH_KEY,
-            "known_hosts": KNOWN_HOSTS,
-        }
-    )
-    assert "?" not in uri
-    assert "keyfile" not in uri and "known_hosts" not in uri
-    # R-D still earns its keep: refusing an operator query string is what keeps
-    # no_verify=1 off the connection.
+def test_the_operators_query_is_replaced_never_merged():
+    """R-D: the query is vcows's to assemble. Fed `no_verify=1`, the result
+    carries only what `connect` handed over -- with files, their two
+    parameters; without, nothing at all."""
+    target = {"uri": "qemu+ssh://vcows@vcows/system?no_verify=1"}
+    assert schema.connection_uri(target) == "qemu+ssh://vcows@vcows/system"
+    uri = schema.connection_uri(target, {"keyfile": "/t/key", "command": "/t/ssh"})
+    assert uri == "qemu+ssh://vcows@vcows/system?keyfile=/t/key&command=/t/ssh"
     assert "no_verify" not in uri
 
 
