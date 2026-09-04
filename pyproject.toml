@@ -144,7 +144,10 @@ source_paths = ["orchestrator", "container"]
 # licenses/proxmoxer/PROVENANCE.md -- the second record of the wheel's pinned
 # version and digest. Without it that test raises FileNotFoundError under
 # mutmut and takes the whole run down before it reports anything.
-also_copy = ["docs", "Containerfile", "licenses"]
+# `config.example.yaml` for the same reason: `tests/test_config.py` loads the
+# shipped template to prove it is refused, and a copy without it reports "cannot
+# read" against the path instead of the placeholders.
+also_copy = ["docs", "Containerfile", "licenses", "config.example.yaml"]
 # `tests/test_scripts.py` runs `scripts/*.sh` under bash and symlinks the repo's
 # `.venv` into a scratch tree, and neither `scripts/` nor `.venv` exists under
 # `mutants/`. Copying them is the wrong fix: mutmut mutates Python inside

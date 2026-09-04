@@ -1,0 +1,79 @@
+# vcows-deploy: copy this file to config.yaml and replace every <...>.
+#
+# It is deliberately not deployable. Every placeholder below is refused by
+# `./vcows.sh validate`, which runs offline and names each one, so a copy that
+# was never edited fails before it can reach a hypervisor.
+#
+# The config is a secret artifact: at v0.1 it carries every credential and every
+# user_data in cleartext. Do not commit the copy you edit.
+#
+# It is also not declarative. Deleting a VM from here does not delete the VM --
+# `deploy` creates what is missing and never removes, and `./vcows.sh destroy`
+# is the only teardown.
+
+schema_version: 1                # the only accepted value
+deployment: <lab-a>              # optional; defaults to this file's stem, and every marker carries it
+backend: libvirt                 # libvirt | proxmox
+
+# Exactly one key, matching `backend` above.
+target:
+  libvirt:
+    uri: qemu+ssh://<user>@<hypervisor>/system   # qemu+ssh only; no query string, no password
+    pool: <images>                               # a storage pool that already exists and is active
+    ssh_key: |                                   # the key itself, not a path to it
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      <the private key>
+      -----END OPENSSH PRIVATE KEY-----
+    known_hosts: |                               # the host key line itself
+      <hypervisor> ssh-ed25519 <base64>
+
+  # Proxmox instead of the block above: uncomment this one, delete that one, and
+  # set `backend: proxmox`.
+  # proxmox:
+  #   endpoint: https://<pve>:8006     # https, host[:port], no path, no credentials
+  #   node: <pve1>                     # which node to create on; single-node at v0.1
+  #   datastore: <local-lvm>           # VM disks; must allow "Disk image"
+  #   import_datastore: <local>        # golden image and seed ISOs; must allow "Import" and "ISO image"
+  #   token: '<vcows@pve!deploy=secret>'   # this, or user and password, and never both forms
+  #   user: <vcows@pve>                # the other form
+  #   password: <secret>               # with user, never with token
+  #   ca_cert: |                       # the PEM itself, for a PVE certificate from a private CA
+  #     -----BEGIN CERTIFICATE-----
+  #     <the certificate>
+  #     -----END CERTIFICATE-----
+  #   insecure: true                   # skip verification instead, for a self-signed certificate
+
+image:
+  source_qcow2: /images/<golden.qcow2>   # absolute, and inside the container: the ./images mount
+  base_volume_name: <golden.qcow2>       # shared per host, uploaded once, an overlay per VM
+  sha256: <64 hex digits>                # optional; checked against source_qcow2 before the upload
+
+defaults:                          # optional; folded into every VM that omits the key
+  vcpus: 2                         # flat values only, and a VM's own value replaces rather than merges
+  memory_mib: 4096                 # name and nics cannot be defaulted
+  firmware: efi
+
+vms:
+  - name: <app01>                  # libvirt domain name; on Proxmox a DNS name, so no underscore
+    vcpus: 2
+    memory_mib: 4096
+    disk_gb: 40
+    firmware: efi                  # efi | bios; not changeable after the VM is created
+    # machine: q35                 # optional machine type
+    # loader: /usr/share/edk2/ovmf/OVMF_CODE.fd          # libvirt only: host-specific UEFI firmware
+    # loader_format: raw           # libvirt only: raw | qcow2, matching the loader above
+    # nvram_template: /usr/share/edk2/ovmf/OVMF_VARS.fd  # libvirt only: the vars template to copy
+    # os_type: l26                 # Proxmox only; it owns its OVMF, so the three keys above are refused
+    user_data: |                   # optional; handed to cloud-init verbatim and never interpreted
+      #cloud-config
+      packages: [tmux]
+    nics:                          # the first is primary unless one says otherwise
+      - network: <default>         # libvirt: exactly one of network or bridge
+        # bridge: <br0>            # the other form, and the only one Proxmox has
+        ip_cidr: <192.168.122.60/24>
+        gateway: <192.168.122.1>
+        nameservers: [<192.168.122.1>]
+        # mac: <52:54:00:11:22:33> # optional; derived from deployment, VM name and index otherwise
+        # model: virtio            # optional device model
+        # primary: true            # optional; makes this NIC's gateway the default route
+        # vlan_id: 42              # Proxmox only, 1-4094

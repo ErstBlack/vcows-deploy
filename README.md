@@ -118,7 +118,8 @@ code is 1, which reads as a teardown that failed. An air-gapped site ships the
 run directory home as its whole account of what happened; this one has nothing to
 send.
 
-`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above.
+`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above. Through the
+wrapper that is `./vcows.sh deploy -- --userns=keep-id:uid=4242,gid=0`.
 
 ## Using it
 
@@ -134,9 +135,13 @@ send.
 
 It takes the config from `./config.yaml`, the golden images from `./images` and
 writes run records to `./runs`, creating the last two if they are not there.
-`-c`, `-i` and `-r` move any of the three, and `-y` answers `destroy`'s prompt in
-advance. Every path is checked and made absolute before podman runs — a relative
-`-v` source is a *named volume* to podman, not a path.
+`-c`, `-i` and `-r` move any of the three, `--run-dir` replaces `-r` on `deploy`
+and `destroy` by naming that one run's own directory, and `-y` answers
+`destroy`'s prompt in advance. Every path is checked and made absolute before
+podman runs — a relative `-v` source is a *named volume* to podman, not a path.
+`./vcows.sh version` mounts nothing and takes no config. Every `VCOWS_*`
+variable set beside the wrapper is forwarded into the container, and everything
+after a bare `--` is passed to `podman run`.
 
 What it runs is one `podman run` per verb, with no key or `known_hosts` mount:
 both are inline in the config, and vcows writes them to a private temporary
@@ -457,8 +462,9 @@ just bundle    # assemble .cache/delivery/
 
 `just bundle` is what produces the artifact that goes on the medium. It writes
 the compressed image, the SBOM and trivy report describing *that* image,
-`vcows.sh` with the archive's own tag substituted in, a `SHA256SUMS` over all
-four, and `image.tar.sha256` — the digest of the uncompressed archive inside the
+`vcows.sh` with the archive's own tag substituted in, `config.example.yaml` and
+`SITE.md` for the site to start from, a `SHA256SUMS` over every one of them, and
+`image.tar.sha256` — the digest of the uncompressed archive inside the
 gzip, so a site can check before or after decompressing. The file is named for the version and commit read out of the
 image itself rather than out of the working tree, so a bundle cannot claim a
 commit it does not contain.

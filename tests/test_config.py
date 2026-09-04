@@ -6,7 +6,9 @@ import textwrap
 
 import pytest
 
+from orchestrator.backends import REGISTRY
 from orchestrator.config import ConfigError, core_schema, load, resolve, validate
+from tests.conftest import REPO
 from tests.fake_backend import FakeBackend
 
 CONFIG = """\
@@ -423,3 +425,20 @@ def test_a_default_blamed_problem_is_left_unprefixed(tmp_path, vm_registry):
         load(write(tmp_path, text), vm_registry)
     assert [p.where for p in exc.value.problems] == ["defaults.disk_gb"]
     assert not exc.value.problems[0].message.startswith("VM ")
+
+
+def test_the_shipped_template_cannot_be_deployed_unedited():
+    """`config.example.yaml` travels in the delivery bundle beside the wrapper,
+    so the failure it has to be safe against is a site copying it to
+    `config.yaml` and running `deploy` without editing it.
+
+    Every value a site must supply is a `<...>` placeholder the schema refuses.
+    Measured: `validate` reports `deployment` and `image.sha256` as fatal, and
+    with those two corrected it goes on to refuse `vms[0].name` and all three
+    NIC addresses -- two here rather than six only because a jsonschema failure
+    stops the load before the backend's own checks run. A placeholder that
+    starts validating is a placeholder to change, never a schema to loosen.
+    """
+    with pytest.raises(ConfigError) as exc:
+        load(REPO / "config.example.yaml", REGISTRY)
+    assert [p.where for p in exc.value.problems] == ["deployment", "image.sha256"]
