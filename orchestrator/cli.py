@@ -51,7 +51,7 @@ from .problems import Problem
 #: which git revision produced this container. Absent outside the image, where
 #: there is nothing to record -- a checkout is not a release, and inventing a
 #: manifest for one would make the two indistinguishable.
-MANIFEST = Path(os.environ.get("VCOWS_MANIFEST", "/opt/vcows/manifest.json"))
+MANIFEST = Path("/opt/vcows/manifest.json")
 
 #: Every line vcows writes goes through here: prefixed, level-tagged, on stderr.
 #: The one exception is `_confirm`'s prompt -- see its docstring.

@@ -176,8 +176,7 @@ RUN printf '#!/bin/sh\nexec /usr/bin/python3 -m orchestrator.cli "$@"\n' \
  && chmod 0755 /usr/local/bin/vcows
 
 ENV PYTHONPATH=/opt/vcows:/opt/vcows/vendor \
-    PYTHONDONTWRITEBYTECODE=1 \
-    VCOWS_MANIFEST=/opt/vcows/manifest.json
+    PYTHONDONTWRITEBYTECODE=1
 
 # Last, so it describes the finished image. Everything above is already in place
 # by the time `rpm -qa` runs.
