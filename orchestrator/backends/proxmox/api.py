@@ -171,6 +171,17 @@ def wait(session: Session, upid: str, what: str) -> None:
     """
     from proxmoxer.tools import Tasks
 
+    # One line before the wait rather than one per poll: `Tasks.blocking_status`
+    # polls inside itself and reports nothing back, and reimplementing its loop
+    # here to narrate it would duplicate the timeout and stop semantics `wait`
+    # depends on. What this says is how long the silence can legitimately last.
+    log.debug(
+        "%s: waiting on task %s, polling every %ss for up to %ss",
+        what,
+        upid,
+        POLL_INTERVAL,
+        TASK_TIMEOUT,
+    )
     status = Tasks.blocking_status(
         session.prox, upid, timeout=TASK_TIMEOUT, polling_interval=POLL_INTERVAL
     )

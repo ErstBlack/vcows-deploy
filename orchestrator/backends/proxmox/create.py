@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -79,6 +80,10 @@ def upload(
     which is why the Containerfile installs it and nothing in this package names
     it.
     """
+    # Before the POST, not after: proxmoxer sends the whole file in one request
+    # that answers nothing until the last byte is in, so this line and the size
+    # on it are all an operator has while a multi-GB image goes over the wire.
+    log.info("uploading %s (%s MiB)", file_name, os.path.getsize(path) // 1024**2)
     fh = io.FileIO(path)
     fh.name = file_name  # type: ignore[misc]
     params: dict[str, Any] = {"content": content, "filename": fh}
