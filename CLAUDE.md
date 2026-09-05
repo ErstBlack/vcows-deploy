@@ -165,3 +165,8 @@ surface than the defect warrants is itself a problem.
 | `just check` | lint, typecheck, test |
 | `just image`, `just scan`, `just bundle` | Build, scan against the baseline, assemble the delivery bundle |
 | `scripts/vcows.sh` | The five-verb wrapper a site runs; `bundle` substitutes the archive's tag for its `@IMAGE@` and ships it |
+
+Three tiers: the Stop hook runs lint and typecheck every turn, `just check`
+adds the suite and is run by hand before a push, and `just mutants` and
+`just smoke-libvirt` run only in CI -- a local green does not cover a new
+mutation survivor.

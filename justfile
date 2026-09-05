@@ -63,7 +63,11 @@ typecheck:
 test *ARGS:
     .venv/bin/python -m pytest --cov -q -rs {{ARGS}}
 
-# What a developer runs before pushing, and what CI's `check` job runs.
+# The middle of three tiers. The Stop hook runs lint and typecheck every turn,
+# `just check` adds the suite and is what a developer runs by hand before
+# pushing, and CI's `check` job runs it too. `just mutants` and
+# `just smoke-libvirt` run only in CI, so a local green does not cover a new
+# mutation survivor.
 check: lint typecheck test
 
 # Deploy against a real libvirtd under TCG, assert against what libvirtd created,
