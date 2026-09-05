@@ -1,7 +1,9 @@
 # vcows-deploy -- GitLab CI. Written against uv 0.12.7 and just 1.46.0, for a
 # self-hosted instance the project has not moved to yet.
 # **Never executed.** It is syntax-checked and its recipes are exercised
-# by the GitHub pipeline, which is not the same as having run.
+# by the GitHub pipeline, which is not the same as having run. Nothing here
+# about GitLab's own behaviour -- the artifact size limit, `parallel`, `needs`,
+# cache -- comes from a run; it is from GitLab's documentation.
 #
 # It runs exactly the recipes .github/workflows/*.yml run; scripts/lint.sh
 # asserts that neither file contains anything else. When the move happens,
@@ -20,8 +22,7 @@
 #                tarball plus a 7 MB SBOM and a 2.3 MB report). Below that, the
 #                `image` and `rebuild-scan` jobs do all their work and then lose
 #                the artifact their own `artifacts:` comments call what makes the
-#                rest of the job worth running. Never executed, so this is from
-#                GitLab's documentation, not from a run.
+#                rest of the job worth running.
 # Every job is tagged. An untagged job on an instance with no matching runner
 # hangs pending forever instead of failing, which is the worst of both.
 
@@ -64,19 +65,18 @@ check:
     - just check
 
 # Mutation testing: does the suite notice when a line is wrong, not merely run it?
-# `just check` enforces a 90% coverage floor and 964 of these mutants live in code
-# that floor calls covered.
+# `just check` enforces a 90% coverage floor, and the survivors in
+# docs/mutation-baseline.json all sit in code that floor calls covered.
 #
 # A gate rather than a report. `mutmut run` exits 0 whatever it finds -- measured:
-# 3835 mutants, 964 surviving, exit 0 -- so scripts/mutants.sh compares against
+# exit 0 with 964 survivors -- so scripts/mutants.sh compares against
 # docs/mutation-baseline.json and fails only when a number rose.
 mutation:
   stage: check
   # Five shards of one run, summed by `mutation-verdict` below. `parallel: 5`
   # sets CI_NODE_INDEX to 1..5 and CI_NODE_TOTAL to 5 -- GitLab's index is
   # 1-based, which is why scripts/mutants.sh's `k` is. Measured over 5008 mutants
-  # on a 16-core box: 944/1060/1033/999/972 per shard. Never executed here, so
-  # the parallel and needs behaviour is from GitLab's documentation.
+  # on a 16-core box: 944/1060/1033/999/972 per shard.
   #
   # Measured unsharded on a hosted GitHub runner: 8m31s, of which the mutant loop
   # is 7m53s. The ceiling is sized against a wedge, not a slow run.
@@ -109,8 +109,7 @@ mutation:
 # argument in sharded form, which is what catches a shard that checked nothing or
 # an artifact that never arrived.
 #
-# `needs: [mutation]` pulls every parallel job's artifacts. Never executed, so
-# that is from GitLab's documentation rather than from a run.
+# `needs: [mutation]` pulls every parallel job's artifacts.
 mutation-verdict:
   stage: check
   needs: [mutation]
@@ -203,10 +202,9 @@ rebuild-scan:
   tags: [podman]
   timeout: 30m
   # No cache, unlike `image` above, and deliberately -- the note in
-  # .github/workflows/scheduled.yml carries the measurement. This file has never
-  # been executed, so its own numbers are unknown; it follows the GitHub side
-  # rather than reasoning independently, which is this file's relationship to
-  # that one throughout.
+  # .github/workflows/scheduled.yml carries the measurement. This file follows
+  # the GitHub side rather than reasoning independently, which is its
+  # relationship to that one throughout.
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $REBUILD_SCAN == "1"
   script:
