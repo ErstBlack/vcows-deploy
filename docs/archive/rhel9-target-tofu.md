@@ -1,8 +1,8 @@
 # Archived: the RHEL 9 checks that were about the OpenTofu module
 
-Three checks lifted out of `docs/rhel9-target.md` whose subject was `main.tf`
-and the `dmacvicar/libvirt` provider. That module is gone, so none of this is a
-work order; the firmware measurements are what makes it worth keeping.
+Two checks lifted out of `docs/rhel9-target.md` whose subject was `main.tf`
+and the `dmacvicar/libvirt` provider. That module is gone, so neither is a work
+order; the firmware measurements are what makes them worth keeping.
 
 ---
 
@@ -91,17 +91,4 @@ libvirt's own handling all differ — which is why the destroy half was worth
 asserting separately rather than assuming. It passed first time, on CI run
 33430036395: the provider's destroy removes a raw `.fd` varstore on libvirt
 10.0.0. What is still unmeasured is a 9.x daemon, not the format.
-
----
-
-### C8 — the module's device and machine choices on older QEMU
-
-**Needs any 9.x.** Each of these is one line in `main.tf` that has only ever been
-validated against QEMU 10.2.2:
-
-* `type_machine` passthrough — an alias like `q35` resolves to whatever
-  `pc-q35-*` the target has. Confirm it defines.
-* `discard = "unmap"` on the overlay driver (added in S10).
-* `rngs = [{ model = "virtio", backend = { random = "/dev/urandom" } }]` (added
-  in S10).
 

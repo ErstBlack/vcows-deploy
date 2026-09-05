@@ -54,7 +54,7 @@ notice the line being wrong? The mutant, killed and survivor numbers are in
 `docs/mutation-baseline.json` and nowhere else, so there is one place to correct
 when they move.
 
-It is a gate and not a report, which took work. **`mutmut run` exits 0 whatever
+It is a gate and not a report. **`mutmut run` exits 0 whatever
 it finds**, so a job that merely called it would have been green forever, the
 vacuous pass this repo names elsewhere. `scripts/mutants.sh` therefore compares
 against the baseline and fails only when `survived` or `no_tests` rises, the same
@@ -153,7 +153,7 @@ with **no whitespace stripping** and is case-sensitive, so `rig,image` is correc
 and `rig, image` silently demands only `rig`. The closed set of names is `KNOWN`
 in `tests/test_gates.py`, and README's "Test gates" says what each one needs.
 
-CI supplies three of the six. `image` is demanded in the image job, which builds
+CI supplies four of the six. `image` is demanded in the image job, which builds
 the image and has podman; `smoke` is demanded by `scripts/smoke-libvirt.sh`,
 which builds the host it asserts about; `libvirt` and `pycdlib` are satisfied
 everywhere, because `scripts/os-deps.sh` installs `python3-libvirt` in every job
@@ -171,13 +171,11 @@ review already recorded once.
 `pyproject.toml`'s `fail_under = 90` blocks every developer run and the `check`
 job with it.
 
-**Nothing is omitted.** `container/manifest.py` was, because `packages()` shells
-out to `rpm -qa` and `main()` is the assembly around it, and mutation testing
-then found 127 mutants in the file that no test reached at all — more than the
-rest of both packages put together. `tests/test_manifest.py` fakes
-`subprocess.run` and drives all three;
-`test_image.test_the_build_manifest_records_what_shipped` is still what asserts
-the file real `rpm` produced, behind the image gate.
+**Nothing is omitted**, including `container/manifest.py`, which shells out to
+`rpm -qa` and only runs inside the image. `tests/test_manifest.py` fakes
+`subprocess.run` and drives `packages()` and `main()`;
+`test_image.test_the_build_manifest_records_what_shipped` asserts what real `rpm`
+produced, behind the image gate.
 
 The floor sits below the measured figure on purpose, because the figure depends
 on which gates ran: the rig, proxmox and image tests skip on the `check` job and

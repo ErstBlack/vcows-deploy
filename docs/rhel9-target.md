@@ -109,6 +109,19 @@ still open. Re-run the definition of done end to end — pool, upload, overlay,
 cloud-init, domain, boot, reachable address, destroy by marker — and record it the
 way `docs/archive/acceptance.md` records the first one, defects included.
 
+### C8 — the device and machine choices, on older QEMU
+
+**Needs any 9.x.** Three lines of `create.DOMAIN_XML`
+(`orchestrator/backends/libvirt/create.py`) have only ever been validated against
+QEMU 10.2.2:
+
+* `machine='{machine}'` passthrough — an alias like `q35` resolves to whatever
+  `pc-q35-*` the target has. Confirm it defines.
+* `discard='unmap'` on the overlay's `<driver>`.
+* `<rng model='virtio'>` backed by `/dev/urandom`.
+
+`virsh define` then `virsh dumpxml` answers all three; no boot and no KVM needed.
+
 ## What a RHEL 9 host still will not settle
 
 **D3, the real golden artifact.** Both runs to date used the stock
