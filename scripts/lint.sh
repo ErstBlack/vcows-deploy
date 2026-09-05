@@ -211,4 +211,9 @@ main() {
     log "all gates pass"
 }
 
-main "$@"
+# Guarded so the file can be sourced: tests/test_scripts.py sources it and calls
+# workflows_carry_no_logic on its own, rather than running all six gates to read
+# one gate's summary line.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

