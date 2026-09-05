@@ -4,6 +4,7 @@
 #   scripts/mutants.sh                    fail on anything worse than the baseline
 #   scripts/mutants.sh --write-baseline   record what is there now as accepted
 #   scripts/mutants.sh --verdict DIR      judge the summed stats of a sharded run
+#   scripts/mutants.sh --survivors [GLOB] list the last run's survivors, classified
 #
 # **`mutmut run` exits 0 whatever it finds.** Measured: 3835 mutants, 964 of them
 # surviving, exit code 0. A pipeline step that just called it would be green
@@ -296,12 +297,101 @@ verdict() {
         "rerun 'just mutants' locally to list them: this job has the shards' numbers and no mutants/ tree."
 }
 
+# The survivors of the last run, per module, each with the tokens that changed
+# and a verdict on them: `text` when every changed token is a string literal,
+# `none-swap` when an argument became None, `dropped` when one went away, `logic`
+# otherwise. Only `logic` needs a hand read; the two argument kinds do too when
+# the argument feeds a call rather than a message. Read from mutants/*.meta and the mutated sources, not `mutmut show`,
+# which is one process per mutant. GLOB is fnmatch'd against the dotted module,
+# as in 'orchestrator.cli' or '*libvirt*'. A string diff over-counts `text`: a
+# dict key or jsonschema keyword is a string a test can pin.
+survivors() {
+    need_venv
+    [ -d "$REPO/mutants" ] || die "no mutants/ tree -- run 'just mutants' first"
+    "$REPO/.venv/bin/python" - "$REPO/mutants" "${1:-*}" <<'PY'
+import ast, difflib, fnmatch, io, json, sys, tokenize
+from pathlib import Path
+
+root, glob = Path(sys.argv[1]), sys.argv[2]
+SURVIVED, TIMEOUT = {0}, {36, -24, 24, 152, 255}
+
+def bodies(path):
+    src = path.read_text()
+    lines = src.splitlines()
+    out = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and "__mutmut_" in node.name:
+            fn = lines[node.lineno - 1 : node.end_lineno]
+            # The def line stays, since a default argument can be mutated, minus
+            # the name, which differs by construction.
+            fn[0] = fn[0].replace(node.name, node.name.rsplit("__mutmut_", 1)[0])
+            out[node.name] = tokens("\n".join(fn))
+    return out
+
+SKIP = {tokenize.NEWLINE, tokenize.NL, tokenize.ENDMARKER, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT}
+
+def tokens(text):
+    return [(t.type, t.string) for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type not in SKIP]
+
+def classify(orig, mut):
+    da, db = [], []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, orig, mut, autojunk=False).get_opcodes():
+        if op != "equal":
+            da += orig[i1:i2]
+            db += mut[j1:j2]
+    # Punctuation moves with a dropped argument and says nothing on its own.
+    da = [t for t in da if t[1] not in ",()"]
+    db = [t for t in db if t[1] not in ",()"]
+    if db == [(tokenize.NAME, "None")] and da:
+        kind = "none-swap"
+    elif da and not db:
+        kind = "dropped"
+    elif da + db and all(t == tokenize.STRING for t, _ in da + db):
+        kind = "text"
+    else:
+        kind = "logic"
+    return kind, " ".join(s for _, s in da), " ".join(s for _, s in db)
+
+total = {}
+for meta in sorted(root.rglob("*.py.meta")):
+    module = ".".join(meta.relative_to(root).with_suffix("").with_suffix("").parts)
+    if not fnmatch.fnmatch(module, glob):
+        continue
+    codes = json.load(meta.open())["exit_code_by_key"]
+    hits = [(k, c) for k, c in codes.items() if c in SURVIVED or c in TIMEOUT]
+    if not hits:
+        continue
+    fns = bodies(meta.with_suffix(""))
+    rows, counts = [], {}
+    for key, code in hits:
+        name = key.rsplit(".", 1)[-1]
+        orig = fns[name.rsplit("__mutmut_", 1)[0] + "__mutmut_orig"]
+        kind, a, b = classify(orig, fns[name])
+        if code in TIMEOUT:
+            kind = "timeout"
+        counts[kind] = counts.get(kind, 0) + 1
+        rows.append(f"  {kind:<9} {name}\n            - {a}\n            + {b}")
+    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+    print(f"{module}  {len(hits)} survived  ({summary})")
+    print("\n".join(rows))
+    for k, v in counts.items():
+        total[k] = total.get(k, 0) + v
+if not total:
+    sys.exit(f"no survivors matched '{glob}'" if glob != "*" else "no survivors -- or no run has finished yet")
+print("total:", ", ".join(f"{k} {v}" for k, v in sorted(total.items())), f"of {sum(total.values())}")
+PY
+}
+
 main() {
     need jq
 
     # Before anything that needs a venv: the verdict job installs none.
     if [ "${1:-}" = "--verdict" ]; then
         verdict "${2:-}"
+        return
+    fi
+    if [ "${1:-}" = "--survivors" ]; then
+        survivors "${2:-}"
         return
     fi
 
@@ -339,7 +429,7 @@ main() {
     fi
 
     judge "$total" "$survived" "$no_tests" \
-        "'mutmut results' lists them; 'mutmut show <name>' prints the diff."
+        "'just mutants-survivors' lists and classifies them."
 }
 
 main "$@"

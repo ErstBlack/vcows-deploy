@@ -122,6 +122,12 @@ mutants *ARGS:
 mutants-verdict:
     ./scripts/mutants.sh --verdict .cache/mutation-stats
 
+# The last run's survivors per module, each with its changed tokens and a
+# text / none-swap / dropped / logic verdict, so what needs a test is read off rather than
+# decoded by hand. Optional GLOB narrows to a dotted module, as in '*libvirt*'.
+mutants-survivors *GLOB:
+    ./scripts/mutants.sh --survivors {{GLOB}}
+
 # Machine-local recipes, if this box has any. `import?` is silent when the file
 # is absent, which is every CI runner; what a box keeps there is its own
 # business and never lands in this repository.
