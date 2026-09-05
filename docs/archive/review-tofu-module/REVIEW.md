@@ -34,7 +34,7 @@ byte-for-byte.
 
 ### Lens 1 — did it do what the plan said?
 
-`docs/plans/issue-90-variables-tf.md` §5 asks for the `qemu+ssh://` →
+`docs/archive/plans/issue-90-variables-tf.md` §5 asks for the `qemu+ssh://` →
 `qemu+sshcmd://` correction plus one clause naming preflight and citing
 `schema.py:198-211`. The diff is that one line and nothing else. Nothing in the
 diff the plan does not describe.
@@ -89,7 +89,7 @@ state.
 
 ### Lens 1 — did it do what the plan said?
 
-`docs/plans/issue-78.md` §5 asks for one `assert` block inside
+`docs/archive/plans/issue-78.md` §5 asks for one `assert` block inside
 `run "the_module_renders_what_the_acceptance_run_settled"`, immediately after the
 sizing block that ends at `:68`, plus a comment saying why it is its own block
 and why the smoke gate cannot carry it. Measured cost in the plan: **+15 / −0**.
@@ -159,7 +159,7 @@ re-measured here (`grep -n "domain type='qemu'"` → `391`). `#78`'s body says
 
 ### Lens 1 — did it do what the plan said?
 
-`docs/plans/issue-87.md` §5, item by item. Everything in the diff maps to a
+`docs/archive/plans/issue-87.md` §5, item by item. Everything in the diff maps to a
 planned item, but **five items cost more than the plan estimated and one moved a
 clause the plan placed differently.** Both are listed here rather than buried.
 
@@ -453,7 +453,7 @@ filtered to live files:
   deliberately and writes `type = "qemu"` into its own copy of the module
   (`:148-160`); the assertion would be false by construction, and its existing
   `<domain type='qemu'` check passes whether `main.tf` says `kvm` or `qemu`.
-  Settled twice in `docs/plans/issue-78.md` §5 and not reopened.
+  Settled twice in `docs/archive/plans/issue-78.md` §5 and not reopened.
 * **L-F2 — "read the domain type back through `outputs.tf`."** Puts a value in
   the inventory contract that nothing consumes, to buy an assertion the tftest
   gives for free.
@@ -465,7 +465,7 @@ filtered to live files:
   This is the one failure in that run block whose consequence is silent-wrong
   rather than a wrong number, so it gets its own message.
   `docs/review-2026-08-31/verify/CD-mediums.md:398` proposes the fold; it is
-  superseded by `docs/plans/issue-78.md` §5.
+  superseded by `docs/archive/plans/issue-78.md` §5.
 * **L-F5 — "change `render.py:61` to emit `qemu+ssh://`."** That is the
   acceptance-run defect the `sshcmd` decision exists to fix, measured on the rig
   and recorded at `schema.py:198-214` and `docs/findings.md:410`.

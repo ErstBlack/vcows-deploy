@@ -1,7 +1,7 @@
 # Issue #87 — gate machinery: seven test-surface gaps found by mutation
 
 Lane `lane/tofu-module`. Reverified at `aed962d`. Transcripts:
-`docs/review-tofu-module/reverify/RX-D{1,2,5,6,7,8,10}.txt`.
+`docs/archive/review-tofu-module/reverify/RX-D{1,2,5,6,7,8,10}.txt`.
 
 Numbering follows the issue body and keeps its stated order: **RX-D2 before
 RX-D1**, then RX-D5, RX-D8, RX-D6, RX-D7, RX-D10.
@@ -618,7 +618,7 @@ Whole-issue gate, run once at the end:
   post-apply read-back failure that needs a real libvirtd. Do not claim the one
   closes the other (§4.4).
 * **RX-D3 / issue #78**, the domain type. Same lane, its own plan
-  (`docs/plans/issue-78.md`), because it is a medium and these seven are lows.
+  (`docs/archive/plans/issue-78.md`), because it is a medium and these seven are lows.
 * **RX-D9**, the three undemanded gate names. Refuted against `docs/ci.md:52-58`
   and `CLAUDE.md:110`; settled.
 * **`VCOWS_GATES` whitespace semantics.** Documented, not a defect.
