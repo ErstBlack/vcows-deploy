@@ -25,11 +25,8 @@ from tests.fake_backend import FakeBackend
 
 
 class LibvirtSchemaOnly(FakeBackend):
-    """Stage-2 harness: the real schema behind the rest of the fake backend.
-
-    There is no libvirt `Backend` subclass, but the schema still has to be
-    proven against the registry composition rather than only in isolation.
-    """
+    """The real schema behind the rest of the fake backend, so it is proven
+    against the registry composition rather than only in isolation."""
 
     def __init__(self):
         super().__init__(name="libvirt")
