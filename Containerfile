@@ -42,11 +42,9 @@
 #
 # **`:10` floats across minors, so the digest needs a periodic look.** The tag
 # is not a stable pointer: it resolved to 10.0 (published 2025-06-06), then 10.1
-# (2025-11-16), and now 10.2 (2026-05-26) -- roughly a five-to-six month cadence,
-# with no 10.3 published as of 2026-08-30. Pinning by digest freezes whichever
-# minor `:10` named when somebody last looked, and Rocky maintains only the
-# current minor. Checked 2026-08-30: `:10` resolves to exactly the digest below,
-# so this pin is current, on the current minor, and nothing needs doing.
+# (2025-11-16), then 10.2 (2026-05-26) -- roughly a five-to-six month cadence.
+# Pinning by digest freezes whichever minor `:10` named when somebody last
+# looked, and Rocky maintains only the current minor. The digest below is 10.2's.
 #
 # The monthly scheduled.yml rebuild cannot notice when that stops being true --
 # it builds from this ARG, so it re-pulls the same layer and re-scans it against
