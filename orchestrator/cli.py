@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import VERSION
+from . import LOG_DATEFMT, LOG_FORMAT, VERSION
 from .backends import REGISTRY
 from .backends.base import (
     Action,
@@ -145,10 +145,6 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
                 path,
                 stat.S_IMODE(path.stat().st_mode),
             )
-    # The join key. A `podman logs` dump weeks after delivery has no other way to
-    # say which run.json it belongs to -- the container is gone, and the record
-    # the site ships home names a directory this process never otherwise states.
-    log.info("run directory %s", path)
     return path
 
 
@@ -250,6 +246,11 @@ def _record(run: _Run, outcome: str) -> None:
     copy matters because the run directory is what an air-gapped site ships back,
     and "which build did this" is unanswerable from it otherwise. Absent outside
     the image, where there is nothing to copy.
+
+    ``created`` is present on an ``outcome: failed`` record too, and there it is
+    the VMs a create made before it died rather than the whole of what was asked
+    for -- the deploy rolls nothing back, so those are running and `inventory.json`
+    beside it names them.
     """
     if MANIFEST.is_file():
         # Suppressed for the same reason `_guard` suppresses: a failure copying
@@ -282,7 +283,30 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
     the least chance of saying it -- writes one too. The exception then continues
     to ``main``, which owns the message and the exit code; a failure writing the
     record must not replace it with a worse one.
+
+    **``error`` carries the exception's text verbatim, and only vcows-raised text
+    is credential-free by inspection.** A ``requests`` or ``proxmoxer`` exception
+    string is whatever the library put in it -- a ``ResourceException`` includes
+    the response body -- so a cluster that echoes something back puts it in an
+    artifact the site ships home. Accepted at this likelihood rather than
+    filtered, and stated here so the channel is on record rather than assumed
+    closed.
+
+    **The log goes into the run directory too**, because the shipped wrapper runs
+    ``podman run --rm`` and the container whose logs held it is gone by the time
+    anyone asks. The handler's lifecycle is here rather than in ``_run_dir``
+    because this is what brackets a verb's body, and closing it in a ``finally``
+    is what stops one open file per run from leaking. ``validate`` and
+    ``preflight`` write no run directory and so pass through neither.
     """
+    handler = logging.FileHandler(run.path / "log")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    # The join key, logged from here so it lands in both streams: it is the only
+    # line that names the directory the file itself sits in, and the record a
+    # site ships home is otherwise unattributable to any stderr dump beside it.
+    log.info("run directory %s", run.path)
     try:
         return body()
     except BaseException as exc:
@@ -304,6 +328,9 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
                     unwritable.strerror,
                 )
         raise
+    finally:
+        root.removeHandler(handler)
+        handler.close()
 
 
 # -- validate ---------------------------------------------------------------
@@ -397,7 +424,29 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     # before `decide` runs, and holding it open would mean threading it through
     # the pure half of the pipeline to reach the one call that needs it.
     with backend.connect(create_cfg) as session:
-        vms = backend.create(create_cfg, session, prepared)
+        try:
+            vms = backend.create(create_cfg, session, prepared)
+        except BaseException as exc:
+            # A create that dies on the third VM leaves the first two running and
+            # rolls nothing back, and until now the run recorded only the
+            # exception -- so the one artifact naming the VMs that exist did not
+            # exist. `getattr` rather than the backend's own error type, for the
+            # reason `_destroy` gives about `outcome`.
+            partial = getattr(exc, "created", None)
+            if partial:
+                _write_json(run.path / "inventory.json", {"vms": partial})
+                run.extra["created"] = sorted(partial)
+                # Not a refusal: a VM that finished is reported as existing next
+                # time. Only the half-made one leaves an orphan volume, and only
+                # that is refused.
+                log.error(
+                    "%d VM(s) were created before this failed (%s); "
+                    "inventory.json records them, and the next preflight reports "
+                    "what the VM that failed left behind",
+                    len(partial),
+                    ", ".join(sorted(partial)),
+                )
+            raise
 
     # Names, not counts. The message below already computes the set difference and
     # carries an `or 'names differ'` fallback, so the intent was always a set

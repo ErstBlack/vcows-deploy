@@ -169,21 +169,32 @@ def create(session: api.Session, tfvars: dict) -> dict:
             )
 
     vms: dict[str, dict] = {}
-    for key, vm in tfvars["vms"].items():
-        with _made(f"seed {vm['seed_name']}"):
-            seed_id = upload(session, "iso", vm["seed_iso"], vm["seed_name"], "")
-        # Asked for per VM rather than once, because the VM created a moment ago
-        # has taken the previous answer. Inside `_made` like every other call
-        # here: a cluster that cannot answer must say which VM it was asked for.
-        with _made(f"vmid for {vm['vm_name']}"):
-            vmid = str(session.prox.cluster.nextid.get())
-        with _made(f"vm {vm['vm_name']} ({vmid})"):
-            create_vm(session, vmid, vm, image_id, seed_id)
-        vms[key] = {
-            "name": vm["vm_name"],
-            "vmid": int(vmid),
-            "node": session.node,
-            "configured_address": vm["configured_address"],
-            "disks": [seed_id],
-        }
+    try:
+        for key, vm in tfvars["vms"].items():
+            with _made(f"seed {vm['seed_name']}"):
+                seed_id = upload(session, "iso", vm["seed_iso"], vm["seed_name"], "")
+            # Asked for per VM rather than once, because the VM created a moment
+            # ago has taken the previous answer. Inside `_made` like every other
+            # call here: a cluster that cannot answer must say which VM it was
+            # asked for.
+            with _made(f"vmid for {vm['vm_name']}"):
+                vmid = str(session.prox.cluster.nextid.get())
+            with _made(f"vm {vm['vm_name']} ({vmid})"):
+                create_vm(session, vmid, vm, image_id, seed_id)
+            vms[key] = {
+                "name": vm["vm_name"],
+                "vmid": int(vmid),
+                "node": session.node,
+                "configured_address": vm["configured_address"],
+                "disks": [seed_id],
+            }
+    except BaseException as exc:
+        # `vms` is a local and the return is the only thing that carries it out,
+        # so a failure on the third VM lost every record of the two that are
+        # running -- the VMs nothing rolls back and nobody has an inventory for.
+        # Same carrier `destroy` uses for its `Outcome`, read back by
+        # `cli._deploy` with `getattr` so core stays backend-agnostic.
+        carrier: Any = exc
+        carrier.created = vms
+        raise
     return vms

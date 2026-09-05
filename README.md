@@ -92,31 +92,14 @@ are **not** equivalent:
   `Permission denied`, and reading back the `run.json` an air-gapped site ships
   home takes `podman unshare`.
 
-**`--run-dir` on that same mount writes no record at all.** The run-directory
-bullet above is the default path, where vcows creates a subdirectory inside the mount
-and cannot. `--run-dir /runs` names the mount itself, which already exists and is
-empty, so nothing stops it — only the `0700` is refused, and that is deliberately
-a warning. The run goes ahead and dies on the first thing it writes:
-
-```
-2026-08-31T22:44:12.104Z WARNING cli        cannot make /runs 0700; it stays 0755. This
-run's seed ISOs carry user_data verbatim, and anyone who can read that directory
-can read them.
-2026-08-31T22:44:12.106Z ERROR   cli        this run left no record -- /runs/run.json
-could not be written (Permission denied). The failure below is reported on this
-stream only.
-2026-08-31T22:44:12.107Z ERROR   cli        PermissionError: [Errno 13] Permission
-denied: '/runs/run.json'
-```
-
-No `run.json` and no `manifest.json` are written. **`deploy` and `destroy` are
-not symmetric here.** Everything `deploy` puts in the run directory — the seed
-ISOs — it writes before it creates anything through the backend, so it fails
-with nothing created on the hypervisor. `destroy` writes nothing until the
-teardown is over, so the VMs are gone, no record says they were, and the exit
-code is 1, which reads as a teardown that failed. An air-gapped site ships the
-run directory home as its whole account of what happened; this one has nothing to
-send.
+**`--run-dir` on that same mount stops before either verb does anything.** The
+run-directory bullet above is the default path, where vcows creates a
+subdirectory inside the mount and cannot. `--run-dir /runs` names the mount
+itself, which already exists and is empty, so nothing stops it there — the
+`0700` is refused and that is deliberately only a warning. The run then stops
+opening `<run>/log`, before it connects and before either verb touches the
+hypervisor, with `PermissionError: [Errno 13] Permission denied: '/runs/log'` on
+stderr and nothing written.
 
 `--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above. Through the
 wrapper that is `./vcows.sh deploy -- --userns=keep-id:uid=4242,gid=0`.
@@ -376,8 +359,10 @@ find runs/ -mindepth 2 -maxdepth 2 -type d -mtime +30 -exec rm -rf {} +
 ## The log
 
 **Every line vcows writes is a log line** — timestamped, level-tagged, on
-**stderr**. There is no second channel: `podman logs <id>` is the whole of it and
-no mount is required.
+**stderr**, and `deploy` and `destroy` write the same lines to `<run>/log` beside
+`run.json`. The shipped wrapper runs `podman run --rm`, so the container is gone
+by the time anyone asks it for its logs; the file in the run directory is the
+copy that survives, and it ships home with the rest of the record.
 
 ```
 2026-08-31T22:44:12.104Z INFO    preflight  connecting to qemu+ssh://vcows@hv1/system
@@ -416,8 +401,8 @@ the traceback is what a bug report needs, and an air-gapped site cannot re-run
 to get it later.
 
 Timestamps are UTC, matching the run directory's name. The first `run directory`
-line is the join key that ties a `podman logs` dump to the `run.json` an
-air-gapped site ships home.
+line is the join key: `<run>/log` now sits beside the `run.json` it describes, so
+it is what ties a stderr dump captured elsewhere back to the record.
 
 **The one exception is the `destroy` confirmation prompt.** `input()` writes it
 to stdout with no trailing newline so the cursor stays where you type, and it is

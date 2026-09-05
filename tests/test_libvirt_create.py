@@ -12,6 +12,8 @@ hypervisor; ``tests/test_libvirt_rig.py`` is where a domain actually boots.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from orchestrator.backends.base import Discovered
@@ -404,6 +406,13 @@ def test_a_define_failure_names_the_vm_and_rolls_nothing_back(
         "could not create domain app02: XML error: something in app02"
     ), "the name rides on the exception: run.json's error field is built from it"
     assert raised.value.get_error_code() == 1, "and the code survives the rewrite"
+
+    # The leftovers are running and nothing rolls them back, so the account of
+    # them rides on the exception as well: `cli._deploy` writes inventory.json
+    # from this, and without it the run named the failure and nothing else.
+    carrier: Any = raised.value
+    assert list(carrier.created) == ["app01"]
+    assert carrier.created["app01"]["name"] == "app01"
 
     failure = [r for r in caplog.records if r.levelname == "ERROR"]
     assert [r.getMessage() for r in failure] == [str(raised.value)]

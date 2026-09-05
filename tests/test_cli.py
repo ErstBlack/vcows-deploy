@@ -15,6 +15,7 @@ records both.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import stat
 import textwrap
@@ -348,6 +349,86 @@ def test_a_failed_create_still_leaves_a_run_record(
     assert "CreateError" in capsys.readouterr().err
 
 
+def test_a_deploy_that_fails_part_way_records_what_it_created(
+    backend, config, tmp_path, monkeypatch, capsys
+):
+    """`create` rolls nothing back, so a failure part-way leaves VMs running with
+    no artifact naming them: the record said `failed` and stopped there, and an
+    operator had to read the log to find out what was on the hypervisor. Both
+    backends attach what they got as far as to the exception; core reads it with
+    `getattr` and writes the inventory it would have written anyway."""
+
+    def boom(cfg, session, prepared):
+        exc = RuntimeError("could not define the domain")
+        carrier: Any = exc
+        carrier.created = {
+            vm["name"]: {"name": vm["name"], "configured_address": ""}
+            for vm in cfg["vms"]
+        }
+        raise exc
+
+    monkeypatch.setattr(backend, "create", boom)
+    assert cli.main(["deploy", config]) == 1
+    run = latest_run(tmp_path)
+
+    record = json.loads((run / "run.json").read_text())
+    assert record["outcome"] == "failed"
+    assert record["created"] == ["app01", "app02"]
+    assert json.loads((run / "inventory.json").read_text()) == {
+        "vms": {
+            "app01": {"name": "app01", "configured_address": ""},
+            "app02": {"name": "app02", "configured_address": ""},
+        }
+    }
+    # Existing, not refused: a VM that finished is reported as existing on the
+    # next preflight, and only the half-made one's orphan volume is refused.
+    err = capsys.readouterr().err
+    assert "2 VM(s) were created before this failed (app01, app02)" in err
+    assert "refus" not in err
+
+
+def test_the_log_lands_beside_the_record(backend, config, tmp_path):
+    """The shipped wrapper runs `podman run --rm`, so the container README used
+    to point at is gone before anyone can ask it for its logs. `<run>/log` is the
+    copy that ships home, and it carries its own join key."""
+    assert cli.main(["deploy", config]) == 0
+    run = latest_run(tmp_path)
+
+    body = (run / "log").read_text()
+    assert f"run directory {run}" in body, "the join key names the file's own dir"
+    assert "created 2 VM(s)" in body
+    # `LOG_FORMAT` and `LOG_DATEFMT`, not logging's default: a `Formatter` given
+    # no datefmt still writes a stamp, so only its shape says which one ran.
+    assert re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z ", body.splitlines()[0])
+    # Removed as well as closed. Left attached, a closed `FileHandler` opens the
+    # file again on the next record -- the next run's lines in the last run's log.
+    # By file, not by type: pytest's own logging plugin parks a `FileHandler` on
+    # /dev/null there, and it is not ours.
+    assert str(run / "log") not in [
+        getattr(h, "baseFilename", "") for h in logging.getLogger().handlers
+    ]
+
+
+def test_a_failed_deploys_log_carries_the_error_line(
+    backend, config, tmp_path, monkeypatch
+):
+    """Both backends' `_made` logs the resource it could not create at ERROR and
+    then raises, so that line is inside the verb's body and reaches the file.
+    The exception itself is reported by `main`, outside `_guard`, and travels in
+    `run.json`'s `error` instead."""
+
+    def boom(*a, **k):
+        cli.log.error("could not create domain app02: XML error")
+        raise RuntimeError("app02")
+
+    monkeypatch.setattr(backend, "create", boom)
+    assert cli.main(["deploy", config]) == 1
+
+    body = (latest_run(tmp_path) / "log").read_text()
+    assert "ERROR" in body
+    assert "could not create domain app02: XML error" in body
+
+
 def test_a_run_record_that_could_not_be_written_says_so(
     backend, config, tmp_path, monkeypatch, capsys
 ):
@@ -525,6 +606,31 @@ def test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence(
     assert "PermissionError" not in err
     assert "cannot create the run directory" in err
     assert str(wanted) in err, "the absolute path the operator can act on"
+
+
+@pytest.mark.parametrize("argv", [["deploy"], ["destroy", "--yes"]])
+def test_a_run_dir_that_cannot_hold_the_log_stops_before_the_body(
+    backend, config, tmp_path, capsys, argv
+):
+    """`--run-dir` naming the mount itself: it exists and is empty, and its mode
+    has no group or other bits, so neither the not-empty refusal nor the `0700`
+    chmod stops it. `_guard` opening `<run>/log` does, before the body runs --
+    which is the improvement, because `destroy` used to tear the VMs down and
+    only then discover it could not write its record.
+
+    Unwritable by mode, like the mkdir test above: the suite does not run as root.
+    """
+    given = tmp_path / "unwritable"
+    given.mkdir(mode=0o500)
+    try:
+        assert cli.main([argv[0], config, "--run-dir", str(given), *argv[1:]]) == 1
+        assert backend.sessions == [], "the body never ran, so nothing connected"
+        assert list(given.iterdir()) == [], "no log, and no run.json either"
+        err = capsys.readouterr().err
+        assert f"Permission denied: '{given / 'log'}'" in err
+    finally:
+        # `tmp_path` cleanup cannot unlink out of a directory it cannot write.
+        given.chmod(0o700)
 
 
 def test_a_run_dir_that_is_already_private_is_not_chmodded(
