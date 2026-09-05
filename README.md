@@ -330,8 +330,8 @@ libvirt's `qemu+ssh` runs `ssh`, honours `keyfile=` in the URI, and ignores
 dials `qemu+ssh://…?keyfile=<key>&command=<wrapper>`. The directory is removed
 when the connection closes, and nothing is written under `~/.ssh`. A config with
 neither field dials with no query, so `ssh` reads your own `~/.ssh` -- mount it
-if that is what you want. `qemu+libssh` was measured and rejected in #247: from
-the Python binding, replies of roughly 4-37 KB never return.
+if that is what you want. `qemu+libssh` was measured and rejected: from the
+Python binding, replies of roughly 4-37 KB never return.
 
 ## The run directory
 
@@ -377,7 +377,7 @@ Four fixed-width columns: **when**, **how bad**, **which module**, and the
 message. Timestamps are UTC with milliseconds, because a preflight puts several
 lines in the same second.
 
-The level is what distinguishes the kinds of line, where the stream used to:
+The level is what distinguishes the kinds of line:
 
 | Level | Carries |
 |---|---|

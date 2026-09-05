@@ -1,13 +1,12 @@
 """Shared fixtures, and the gates the suite shares.
 
-**A gate that quietly passes because it did not run is worse than no gate**, and in
-aggregate that is what a bare `pytest -q` does: skips, exit 0, with nothing
-saying what was never looked at. `VCOWS_GATES` is the opt-in that turns a
-named gate's skip into a failure -- `VCOWS_GATES=rig`, or `all` for every one of
-them. Named rather than only `all` because the gates differ in what they need: a
-missing `pycdlib` is a fixable local omission, while `rig` and `image` need
-hardware and a build, and a run proving one gate was checked should not have to
-fail on the others too.
+**A gate that quietly passes because it did not run is worse than no gate**, and
+that is what a bare `pytest -q` does in aggregate: skips, exit 0, nothing saying
+what was never looked at. `VCOWS_GATES` turns a named gate's skip into a failure
+-- `VCOWS_GATES=rig`, or `all` for every one. Named rather than only `all`
+because the gates differ in what they need: a missing `pycdlib` is a fixable
+local omission, while `rig` and `image` need hardware and a build, and a run
+proving one gate was checked should not fail on the others.
 
 The config below is the canonical one: two VMs covering both firmware branches
 (libvirt-selected and explicitly pinned) and both MAC branches (derived and
@@ -36,9 +35,9 @@ REPO = Path(__file__).resolve().parent.parent
 def _rev_parse(*args: str) -> str:
     """One `git rev-parse` answer, or empty when git will not give one.
 
-    Empty covers all three failures the same way -- a non-zero status, no git on
-    PATH, a tree that is not a repo -- because every caller below treats "no
-    answer" as "not a worktree".
+    Empty covers all three failures the same way -- non-zero status, no git on
+    PATH, a tree that is not a repo -- because every caller treats "no answer" as
+    "not a worktree".
     """
     try:
         done = subprocess.run(
@@ -59,11 +58,10 @@ def _worktree() -> str:
     in the main checkout, in CI and outside a repo, because a linked worktree is
     the only case where `--git-dir` and `--git-common-dir` disagree. Anything
     this suite creates that outlives the process -- an image tag, a rig test's
-    `deployment` -- appends it when it is non-empty. `VCOWS_WORKTREE` overrides.
+    `deployment` -- appends it when non-empty. `VCOWS_WORKTREE` overrides.
 
-    `CONFIG` and `PROXMOX_CONFIG` deliberately keep their literal `lab-a`: they
-    are unit fixtures asserted verbatim across the suite and nothing deploys
-    them.
+    `CONFIG` and `PROXMOX_CONFIG` keep their literal `lab-a`: they are unit
+    fixtures asserted verbatim across the suite and nothing deploys them.
     """
     name = os.environ.get("VCOWS_WORKTREE", "")
     if not name:
@@ -94,10 +92,10 @@ def demanded(name: str) -> bool:
 def gate(name: str, available: bool, reason: str):
     """A skip, or -- when this gate was demanded -- a failure carrying the reason.
 
-    The failure is raised from `pytest_runtest_setup` rather than by letting the
-    test run into whatever error the missing dependency produces: a rig test
-    without `VCOWS_RIG_URI` would otherwise fail somewhere inside libvirt, which
-    says nothing about the gate.
+    Raised from `pytest_runtest_setup` rather than letting the test run into
+    whatever error the missing dependency produces: a rig test without
+    `VCOWS_RIG_URI` would otherwise fail inside libvirt, which says nothing about
+    the gate.
     """
     if available:
         return pytest.mark.skipif(False, reason=reason)
@@ -121,7 +119,7 @@ def wheres(problems) -> list[str]:
     """What each problem is filed against, in order.
 
     `where` is the only field of a problem anything downstream reads: the CLI
-    prints it beside the message and `run.json` records it. It is also the half a
+    prints it beside the message and `run.json` records it. It is the half a
     message cannot carry -- "not present" against `image.base_volume_name` and
     against `target.libvirt.pool` are different instructions to the operator.
     """
@@ -133,11 +131,7 @@ def messages(problems) -> str:
 
 
 def errors(problems) -> list:
-    """The fatal half of a problem list.
-
-    `Problem.fatal` is `severity is Severity.ERROR`, which is what the two schema
-    suites spelled two different ways for the same set.
-    """
+    """The fatal half of a problem list."""
     return [p for p in problems if p.fatal]
 
 
@@ -158,11 +152,10 @@ def _no_polling_delay(monkeypatch):
     """proxmoxer's task poller sleeps once per wait. Fine against a cluster,
     pure latency here.
 
-    Opt-in rather than autouse: `POLL_INTERVAL` is what
-    `test_proxmox_backend.py` reads to assert `wait` passes it through, so
-    zeroing it for the whole suite would make that gate agree with itself
-    whatever the value is. The two modules that wait on fake tasks name it in
-    their `pytestmark`.
+    Opt-in rather than autouse: `test_proxmox_backend.py` reads `POLL_INTERVAL`
+    to assert `wait` passes it through, so zeroing it suite-wide would make that
+    gate agree with itself whatever the value is. The two modules that wait on
+    fake tasks name it in their `pytestmark`.
     """
     monkeypatch.setattr(api, "POLL_INTERVAL", 0)
 
@@ -182,7 +175,7 @@ def pytest_runtest_setup(item) -> None:
 #: endpoint says where, and a token to reach it with. Read from the environment
 #: because the rig test *composes* the config it deploys -- a harness building a
 #: config out of its environment is not the product reading a credential from
-#: one, which `target.proxmox` is now the only source of.
+#: one, and `target.proxmox` is the product's only source.
 PVE_ENDPOINT = os.environ.get("VCOWS_PVE_ENDPOINT")
 needs_proxmox = gate(
     "proxmox",
@@ -193,14 +186,13 @@ needs_proxmox = gate(
 
 #: Half a PEM header, kept in a name of its own so the other half can never join
 #: it at compile time. Adjacent literals and `"a" + "b"` are both constant-folded
-#: into the `.pyc`, and `gitleaks dir` walks the filesystem -- `__pycache__`
-#: included -- so the whole header reappeared there even though no source file
-#: held one. Measured: three findings, all in `.pyc` files, none in `.py`.
-#: Concatenating through a name is not folded, so nothing on disk carries it.
+#: into the `.pyc`, and `gitleaks dir` walks `__pycache__` too: a whole header no
+#: `.py` file holds gives three findings there. Concatenating through a name is
+#: not folded, so nothing on disk carries it.
 _BEGIN = "-----BEGIN "
 
-#: The two libvirt credentials as a config now carries them: the file's contents,
-#: not a path to it. The suite's only key -- `tests/test_libvirt_preflight.py` and
+#: The two libvirt credentials as a config carries them: the file's contents, not
+#: a path to it. The suite's only key -- `tests/test_libvirt_preflight.py` and
 #: `tests/test_image.py` import this one rather than writing another.
 SSH_KEY = (
     _BEGIN + "OPENSSH PRIVATE KEY-----\n"
@@ -209,7 +201,7 @@ SSH_KEY = (
 )
 KNOWN_HOSTS = "vcows ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleNotAKey\n"
 
-#: A CA certificate as `target.proxmox.ca_cert` now carries one. Written whole,
+#: A CA certificate as `target.proxmox.ca_cert` carries one. Written whole,
 #: unlike SSH_KEY above: a certificate is the public half, and gitleaks' rules
 #: are about private keys.
 CA_CERT = (
@@ -280,12 +272,10 @@ CONFIG: dict = {
 def _root_logger():
     """Put the root logger back after every test.
 
-    `orchestrator` configures it at package import and `test_logging.py`'s own
-    tests call `configure_logging()` again, and both *replace* the root handler
-    list rather than adding to it. So a test that runs either one changes what
-    every later test reads off stderr; under a shuffled suite that surfaced as
-    `test_every_line_carries_a_level_and_a_logger` reading a line in the wrong
-    format.
+    `orchestrator` configures it at package import and `test_logging.py` calls
+    `configure_logging()` again, and both *replace* the root handler list rather
+    than adding to it, so a test that runs either changes what every later test
+    reads off stderr.
 
     Same argument as `_umask` below, and the same remedy: global process state a
     test mutates has to be handed back.
@@ -301,10 +291,8 @@ def _root_logger():
 def _umask():
     """Put the process umask back after every test.
 
-    `cli.main` sets 0o077, and the tests call it in-process -- so without this the
-    first CLI test quietly changes the mode of every file every later test writes,
-    which is the kind of ordering dependency that shows up as one unexplained
-    failure months later.
+    `cli.main` sets 0o077 and the tests call it in-process, so without this the
+    first CLI test changes the mode of every file every later test writes.
     """
     before = os.umask(0o022)
     os.umask(before)
@@ -318,9 +306,9 @@ def cfg() -> dict:
     return copy.deepcopy(CONFIG)
 
 
-#: The Proxmox counterpart of CONFIG above, deliberately exercising what differs
-#: rather than mirroring it: a NIC attaches to a bridge and only a bridge, one VM
-#: carries a VLAN tag, and firmware is a choice with no host paths beside it.
+#: The Proxmox counterpart of CONFIG above, exercising what differs rather than
+#: mirroring it: a NIC attaches to a bridge and only a bridge, one VM carries a
+#: VLAN tag, and firmware is a choice with no host paths beside it.
 PROXMOX_CONFIG: dict = {
     "schema_version": 1,
     "deployment": "lab-a",
@@ -387,8 +375,7 @@ def pve_cfg() -> dict:
 def pve_token() -> str:
     """The token `PROXMOX_CONFIG` carries, for the tests that assert on its value.
 
-    Every Proxmox verb now reads it out of the config, so the fixture sets
-    nothing: it hands back the one string a test asserts is absent from a log
-    line or a rendered values dict.
+    Sets nothing: it hands back the one string a test asserts is absent from a
+    log line or a rendered values dict.
     """
     return PROXMOX_CONFIG["target"]["proxmox"]["token"]

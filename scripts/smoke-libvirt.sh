@@ -18,7 +18,7 @@
 # what was sent -- a document that agrees with itself is what the fake already
 # proves.
 #
-# **The assertions live in `tests/test_libvirt_smoke.py`, not here** (`#122`).
+# **The assertions live in `tests/test_libvirt_smoke.py`, not here.**
 # This script builds the host and drives the create and the teardown; that file
 # says what the result has to look like, behind `VCOWS_GATES=smoke`. Every
 # constant below is exported for it, and it is invoked twice -- once with the
@@ -26,9 +26,8 @@
 # subjects.
 #
 # **No guest is booted and no guest address is observed.** The domain reaches
-# firmware and stops there; nothing here needs it to reach a login prompt. The
-# defect class `docs/archive/acceptance.md` records -- guests healthy on the wrong
-# addresses -- is not what this gate covers.
+# firmware and stops there; nothing here needs it to reach a login prompt. Guests
+# healthy on the wrong address are not what this gate covers.
 #
 # ## No /dev/kvm
 #
@@ -90,7 +89,7 @@ MAC="52:54:00:be:a8:60"
 # The firmware pin, in one place: the values file below is substituted from these
 # and the assertions read them back, so the two cannot drift apart. Ubuntu's `ovmf`
 # ships raw .fd builds and all four of its /usr/share/qemu/firmware descriptors
-# declare "raw" -- measured, CI run 33374623746.
+# declare "raw" -- measured.
 LOADER="/usr/share/OVMF/OVMF_CODE_4M.fd"
 NVRAM_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
 
@@ -102,10 +101,9 @@ WORK=""
 
 vsh() { virsh -c "$URI" "$@"; }
 
-# Kept when the assertions left, because host provisioning still reads virsh
-# output back: `storage_pool` and `default_network` both decide whether an
-# already-active object is the failure it looks like. `absent` went with the
-# assertions -- nothing below needs the negative form.
+# Host provisioning reads virsh output back: `storage_pool` and
+# `default_network` both decide whether an already-active object is the failure
+# it looks like.
 contains() { grep -qF -- "$2" <<<"$1"; }
 
 # The constants above, over the environment, because tests/test_libvirt_smoke.py
@@ -183,36 +181,24 @@ prepare() {
     #
     # One VM, `firmware = "efi"` with a raw .fd loader and varstore template
     # pinned beside it -- the app02 shape from tests/golden/libvirt.tfvars.json
-    # in RHEL's format rather than Fedora's. That is the branch #75 died on, and
-    # the branch the delivery target takes (schema.py's loader comment -- "RHEL
-    # ships a raw .fd"). Before #75 it had never been applied against a real
-    # libvirtd anywhere: not here, not on the rig, not in the acceptance run.
+    # in RHEL's format rather than Fedora's, which is the branch the delivery
+    # target takes (schema.py's loader comment -- "RHEL ships a raw .fd").
     #
-    # **This replaced the autoselect shape** -- loader, loader_format and
-    # nvram_template all null, app01's -- and the swap gives up real coverage,
-    # recorded here because nothing else records it. Nothing anywhere now
-    # exercises libvirt selecting a firmware from the host's own descriptors and
-    # materialising a varstore from no template. What vcows *emits* on that
-    # branch is still pinned offline (test_libvirt_create.py's
+    # **The autoselect shape is not covered** -- loader, loader_format and
+    # nvram_template all null, app01's. Nothing anywhere exercises libvirt
+    # selecting a firmware from the host's own descriptors and materialising a
+    # varstore from no template. What vcows *emits* on that branch is pinned
+    # offline (test_libvirt_create.py's
     # `test_autoselected_firmware_pins_nothing`); what libvirtd does with it is
-    # pinned by nothing. The trade taken: the branch given up has no known defect
-    # and the Fedora acceptance run applied it, while the branch taken here had a
-    # live one. Carrying both means two VMs in one create, and
-    # DOMAIN/OVERLAY_VOL/SEED_VOL/MAC/MARKER_ID are script globals that four
-    # functions key off -- roughly +60 lines against a -3/+2 fix. If autoselect
-    # later needs its own CI coverage, that is its own change.
+    # pinned by nothing. The trade: the branch not covered has no known defect,
+    # while this one has had a live defect. Carrying both means two VMs in one
+    # create, and DOMAIN/OVERLAY_VOL/SEED_VOL/MAC/MARKER_ID are script globals
+    # that four functions key off -- roughly +60 lines. If autoselect needs its
+    # own CI coverage, that is its own change.
     #
-    # A qcow2 pin cannot substitute on this runner class, and the reason changed
-    # with #107. It used to be that beside `firmware = "efi"` libvirt validates
-    # the pin against the host's descriptors rather than deferring to it, and
-    # every Ubuntu descriptor declares raw, so a qcow2 pin was refused at define
-    # with "Unable to find 'efi' firmware that is compatible with the current
-    # configuration" (CI runs 33374365926, 33374623746). That measurement is what
-    # produced #107, and `create.firmware_xml` emits no `firmware` attribute
-    # beside a pin, so it no longer applies. What remains is simpler and was
-    # always true: Ubuntu ships no qcow2 OVMF build for this to point at -- every
-    # descriptor declaring raw is the evidence -- so there is no qcow2 file here
-    # to pin.
+    # A qcow2 pin cannot substitute on this runner class: Ubuntu ships no qcow2
+    # OVMF build for one to point at -- every descriptor declaring raw is the
+    # evidence -- so there is no qcow2 file here to pin.
     sed -e "s|@WORK@|$WORK|g" \
         -e "s|@LOADER@|$LOADER|g" \
         -e "s|@NVRAM_TEMPLATE@|$NVRAM_TEMPLATE|g" \
@@ -341,17 +327,15 @@ storage_pool() {
     fi
     # `pool-build` creates the target directory. Usually a no-op -- the package
     # ships /var/lib/libvirt/images -- and not optional: a dir pool whose target
-    # is missing refuses to start, and that refusal is what the first run of this
-    # job hit.
+    # is missing refuses to start.
     vsh pool-build "$POOL" >/dev/null 2>&1 || true
-    # The reason has to reach the log. The first spelling of this discarded
-    # pool-start's stderr and died with "defined but will not start", which named
-    # the symptom and cost a CI round trip to get behind.
+    # The reason has to reach the log: discarding pool-start's stderr leaves
+    # only "defined but will not start", which names the symptom and nothing else.
     # Not `vsh pool-info | grep -q`. lib.sh sets `pipefail`, `grep -q` exits on
     # the first match, and virsh then dies of SIGPIPE with 141 -- so the pipeline
-    # reports failure exactly when the grep succeeded. Measured on the third CI
-    # run, where an already-active network was reported as one that would not
-    # start. Every readback here goes through a variable for that reason.
+    # reports failure exactly when the grep succeeded. Measured: an already-active
+    # network reported as one that would not start. Every readback here goes
+    # through a variable for that reason.
     if ! err="$(vsh pool-start "$POOL" 2>&1)"; then
         state="$(vsh pool-info "$POOL" 2>&1 | tr -s ' ' || true)"
         if ! contains "$state" 'State: running'; then
@@ -400,14 +384,13 @@ inputs() {
         -volid CIDATA -joliet -rock "$WORK/cidata"
 }
 
-# #107, and the one property in this file that is about libvirt rather than about
-# what vcows renders. The fix for #107 is that a pinned loader is emitted with no
-# `firmware = "efi"` beside it -- `create.firmware_xml`'s exclusivity -- because
-# autoselection does not defer to a pin: it validates the pin against the host's
-# own firmware descriptors and refuses a format they do not carry. That fix is
-# only worth anything while omitting the attribute actually keeps a pin out of
-# that validation, which is a property of libvirt and not of anything this repo
-# controls.
+# The one property in this file that is about libvirt rather than about what
+# vcows renders. A pinned loader is emitted with no `firmware = "efi"` beside it
+# -- `create.firmware_xml`'s exclusivity -- because autoselection does not defer
+# to a pin: it validates the pin against the host's own firmware descriptors and
+# refuses a format they do not carry. That is only worth anything while omitting
+# the attribute actually keeps a pin out of that validation, which is a property
+# of libvirt and not of anything this repo controls.
 #
 # Nothing else can stand guard over it:
 #
@@ -417,28 +400,28 @@ inputs() {
 #   * `virsh dumpxml` cannot carry it either. libvirt fills `firmware='efi'` back
 #     into the stored XML when the pin matches a descriptor it can name, so the
 #     raw .fd fixture below dumps with the attribute present even though nothing
-#     sent it -- an `absent` on it FAILs against the raw pin (CI run
-#     33436774063) and passes against a qcow2 one (run 33437247928). Nothing in
-#     that capture distinguishes "vcows sent it" from "libvirt deduced it".
+#     sent it -- an `absent` on it FAILs against the raw pin and passes against a
+#     qcow2 one. Nothing in that capture distinguishes "vcows sent it" from
+#     "libvirt deduced it".
 #   * This gate's own fixture cannot carry it, because the format this runner's
 #     descriptors refuse is qcow2 and the fixture pins raw. Swapping it would
-#     give up the raw .fd branch, which is #75's and the delivery target's shape;
-#     carrying both means a second VM in the create, which the values above price
-#     at roughly +60 lines because DOMAIN and four other globals are keyed off by
+#     give up the raw .fd branch, which is the delivery target's shape; carrying
+#     both means a second VM in the create, which the values above price at
+#     roughly +60 lines because DOMAIN and four other globals are keyed off by
 #     four functions.
 #
 # So this defines one throwaway domain directly, out of band of the create, with
-# the shape `create.firmware_xml` now renders: a qcow2 loader and no `firmware`
-# attribute, on a host whose four descriptors all declare raw. Before #107 that same
-# configuration was refused at define with "Unable to find 'efi' firmware that is
-# compatible with the current configuration" (runs 33374365926, 33374623746).
+# the shape `create.firmware_xml` renders: a qcow2 loader and no `firmware`
+# attribute, on a host whose four descriptors all declare raw. With the attribute
+# beside it, that same configuration is refused at define with "Unable to find
+# 'efi' firmware that is compatible with the current configuration" -- measured.
 # `define` is the whole test -- no start, no boot, no KVM -- because define is
 # where the descriptor match happens.
 #
 # The refusal is loud rather than silent, so this is early notice and not the
 # only line of defence. It earns its place because the notice arrives in CI
 # instead of at a site, and because a libvirt that changes this behaviour is the
-# one thing that reopens #107 without anyone touching this repo.
+# one thing that breaks the exclusivity without anyone touching this repo.
 probe_pinned_loader_escapes_autoselection() {
     local err="" defined=0
     # Ubuntu ships no qcow2 OVMF build -- that is the same fact its descriptors
@@ -458,15 +441,15 @@ probe_pinned_loader_escapes_autoselection() {
   </os>
   <!-- Not decoration: libvirt refuses a UEFI x86_64 domain without it, with
        "unsupported configuration: UEFI requires ACPI on this architecture"
-       (measured, CI run 33438506248). apic follows it here for the same reason
-       main.tf emits both. -->
+       (measured). apic follows it here for the same reason
+       create.DOMAIN_XML emits both. -->
   <features><acpi/><apic/></features>
 </domain>
 XML
     # The error text is logged rather than asserted on. A define that fails for
     # an unrelated reason -- a machine type this qemu does not carry, say --
-    # would otherwise read as a #107 regression, and the log is what tells the
-    # two apart.
+    # would otherwise read as a firmware regression, and the log is what tells
+    # the two apart.
     if err="$(vsh define "$WORK/probe.xml" 2>&1)"; then
         defined=1
     else
@@ -474,7 +457,7 @@ XML
     fi
     vsh undefine --nvram "$PROBE_DOMAIN" >/dev/null 2>&1 || true
     # The probe itself stays here rather than moving to pytest with the rest of
-    # the assertions (#122): it converts two firmware images, writes a domain and
+    # the assertions: it converts two firmware images, writes a domain and
     # defines it, which is host work of exactly the kind this script owns. Only
     # the verdict crosses, and TestApplied carries it with the rationale above.
     export VCOWS_SMOKE_PROBE_DEFINED="$defined"
@@ -604,8 +587,9 @@ main() {
     default_network
     inputs
 
-    # Out of band of the create, and before it, so a libvirt that reopened #107
-    # is named as such rather than surfacing as a define failure.
+    # Out of band of the create, and before it, so a libvirt that stopped
+    # behaving this way is named as such rather than surfacing as a define
+    # failure.
     log "probing whether a pinned loader escapes firmware autoselection"
     probe_pinned_loader_escapes_autoselection
 
@@ -614,8 +598,8 @@ main() {
     # Both statuses are captured rather than left to `set -e`, and that is
     # deliberate: an aborting assertion phase would skip the destroy below, so a
     # single failed needle would leave the runner with a defined domain and cost
-    # the destroy assertions too. This is what the ok/FAIL accumulator bought,
-    # and pytest already reports every failure within a phase.
+    # the destroy assertions too. pytest already reports every failure within a
+    # phase.
     log "what libvirtd created"
     # The <os> block, live and stored, so a needle that misses in CI is readable
     # from the job log: pytest truncates the document before it reaches <os>.

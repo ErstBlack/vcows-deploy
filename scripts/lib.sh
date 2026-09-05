@@ -13,8 +13,8 @@
 set -euo pipefail
 # A `die` inside `$(helper)` has to stop the caller. Command substitutions do not
 # inherit errexit, so without this every guard one call level down is inert:
-# containerfile_arg's die exited only its own subshell and `tag="$(image_tag)"`
-# carried on with `localhost/vcows-deploy:` at status 0.
+# containerfile_arg's die would exit only its own subshell and
+# `tag="$(image_tag)"` would carry on with `localhost/vcows-deploy:` at status 0.
 shopt -s inherit_errexit
 IFS=$'\n\t'
 
@@ -137,14 +137,12 @@ containerfile_arg() {
 # per-machine and not per-checkout: two worktrees building at once would
 # otherwise be building over each other's tag.
 #
-# The version is assigned before it is used rather than interpolated inline.
-# Argument position is a real mechanism -- measured, a substitution in an
-# argument fails open where the same call in an assignment does not -- but it is
-# not the one that produced `localhost/vcows-deploy:` here. containerfile_arg's
-# die is two levels down, and at two levels both forms fail open; `shopt -s
-# inherit_errexit` (:21) is what closes it. The assignment stays because
-# check-extra-masked-returns still flags the argument form, which that option
-# does not cover.
+# The version is assigned before it is used rather than interpolated inline. A
+# substitution in an argument position fails open where the same call in an
+# assignment does not, but containerfile_arg's die is two levels down and at two
+# levels both forms fail open -- `shopt -s inherit_errexit` above is what closes
+# it. The assignment stays because check-extra-masked-returns still flags the
+# argument form, which that option does not cover.
 image_tag() {
     local version suffix
     if [ -n "${VCOWS_IMAGE_TAG:-}" ]; then
@@ -162,12 +160,11 @@ image_tag() {
 #
 # The set is every path that reaches the image. That is the Containerfile's COPY
 # sources, plus the Containerfile and .containerignore themselves: those two
-# decide the base digest, the whole dnf install list and every OCI label.
-# Leaving them out let a build
-# from an edited Containerfile record a clean 40-hex SHA for a commit that did
-# not describe the image, which is the exact failure the suffix exists to catch.
-# Both path filters already treat them as image inputs, so this also stops the
-# two mechanisms disagreeing.
+# decide the base digest, the whole dnf install list and every OCI label. Left
+# out, a build from an edited Containerfile records a clean 40-hex SHA for a
+# commit that does not describe the image -- the exact failure the suffix exists
+# to catch. Both path filters already treat them as image inputs, so this also
+# stops the two mechanisms disagreeing.
 #
 # Paths that cannot reach the image -- docs/, tests/ -- stay out on purpose. A
 # suffix that fires for everything means nothing.

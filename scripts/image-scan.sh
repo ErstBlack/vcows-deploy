@@ -7,14 +7,12 @@
 # **Differential, not absolute.** A gate that fails on HIGH would be red from the
 # first run and stay red on findings no pipeline can fix -- only a version bump
 # can. An always-red gate gets muted within a month, and then it is green by
-# neglect, which is the failure this repo already has a
-# name for. So docs/cve-baseline.json holds what has been looked at and accepted,
+# neglect. So docs/cve-baseline.json holds what has been looked at and accepted,
 # and this fails only on what is new. Red means new.
 #
 # **One real archive, not a process substitution.** `trivy --input <(podman save
 # ...)` hands trivy a FIFO, and a tar in a pipe is not seekable, so it works
-# until it doesn't. The archive is written once and read by trivy, syft, and
-# whatever signs it later.
+# until it doesn't. The archive is written once and read by trivy and syft.
 #
 # syft is here because manifest.py runs `rpm -qa`, which sees only what dnf
 # installed.
@@ -50,8 +48,7 @@ save_archive() {
 # The floors are structural, not vulnerability counts: an image with genuinely
 # zero CVEs must still pass. What cannot legitimately happen is a report with no
 # results section at all, or an SBOM with no packages for an image that carries
-# several hundred. Measured at the pins that shipped the Go binaries: 3 Results,
-# 456 packages.
+# several hundred. Measured: 3 Results, 456 packages.
 scan_floor() {
     local report="$1" sbom="$2" results packages
     results="$(jq '(.Results // []) | length' "$report")"
@@ -72,11 +69,11 @@ main() {
     report="$out/trivy.json"
     sbom="$out/sbom.spdx.json"
 
-    # **The verdict has to outlive this process.** Everything this script writes
-    # -- archive at :92, report and SBOM at :95-96 -- is on disk and complete
-    # before the baseline is read at :128, so a passing .cache/scan and a failing
-    # one are byte-identical apart from what is inside trivy.json, and nothing
-    # reads that for a verdict. README.md's "Delivering it" documents `just scan`
+    # **The verdict has to outlive this process.** The archive, the report and
+    # the SBOM are all on disk and complete before the baseline is read, so a
+    # passing .cache/scan and a failing one are byte-identical apart from what is
+    # inside trivy.json, and nothing reads that for a verdict. README.md's
+    # "Delivering it" documents `just scan`
     # and `just bundle` as separate commands, so the second routinely runs in a
     # different shell, where an exit status is not available to be asked. The
     # answer therefore has to be a file, in the directory that is already the
@@ -122,8 +119,7 @@ main() {
 
     # One read of the baseline, answering all three questions asked of it. jq's
     # `-` is set difference; `found` arrives sorted from `unique` and `.accepted`
-    # is stored sorted, so both lists come out in the order the old sort-and-comm
-    # pair produced.
+    # is stored sorted, so both lists come out sorted.
     delta="$(jq -c --argjson found "$found" '{
         new:      ($found - .accepted),
         gone:     (.accepted - $found),
@@ -144,20 +140,19 @@ main() {
     # report is well-formed and simply about something else.
     #
     # **A proportion, and the proportion is measured.** trivy emits one Results
-    # entry per analyser x target. The measurement below was taken while the
-    # image still carried the Go binaries: three entries in two disjoint
-    # families, os-pkgs over the rocky layer and lang-pkgs over the binaries.
-    # rocky shared no id with either binary, so an analyser that stopped running
-    # took 45 or 56 of the 100 with it -- a large slice, and never the whole
-    # set. `* 3` first fires at 34 of 100: below the 45 an emptied gobinary
-    # analyser cost, and 33 clear of the 1 a real scan reported. Halving was
-    # measured and rejected -- it first fires at 51, above the 45 it exists to
-    # catch. Multiplication rather than `accepted / 3` so the firing point does
-    # not depend on how integer division rounds.
+    # entry per analyser x target: three entries in two disjoint families,
+    # os-pkgs over the rocky layer and lang-pkgs over the Go binaries. rocky
+    # shares no id with either binary, so an analyser that stops running takes 45
+    # or 56 of 100 with it -- a large slice, and never the whole set. `* 3` first
+    # fires at 34 of 100: below the 45 an emptied gobinary analyser costs, and 33
+    # clear of the 1 a real scan reported. Halving was measured and rejected --
+    # it first fires at 51, above the 45 it exists to catch. Multiplication
+    # rather than `accepted / 3` so the firing point does not depend on how
+    # integer division rounds.
     #
     # Proportional rather than a constant, so trimming the baseline is not also
-    # a threshold edit. Those numbers were measured at 100 accepted ids. At the
-    # 99 that remain after CVE-2026-58055 -- a rocky id, so it came out of both
+    # a threshold edit. Those numbers are at 100 accepted ids. At the 99 that
+    # remain without CVE-2026-58055 -- a rocky id, so it comes out of both
     # partial losses -- the same two scenarios are 44 and 55, and the firing
     # point is still 34, because `-gt` makes 33 * 3 = 99 not enough.
     gone="$(jq -r '.gone[]' <<<"$delta")"
@@ -173,14 +168,14 @@ main() {
     log "no findings outside the baseline"
 
     # The last act of a passing run, and the only thing that writes this file.
-    # It holds `sha256sum image.tar` output -- one line, one format bundle.sh
-    # already produces at :119 -- so the verdict is bound to the bytes it was
-    # reached about and cannot be inherited by an archive a later run wrote. No
+    # It holds `sha256sum image.tar` output -- one line, the format bundle.sh
+    # already produces -- so the verdict is bound to the bytes it was reached
+    # about and cannot be inherited by an archive a later run wrote. No
     # timestamp: delivering an older image on purpose is legitimate, so an age
     # limit would refuse a bundle for a reason that is not the CVE verdict.
     #
-    # --write-baseline returns at :116, above this and below the rm, so
-    # recording what is there now never authorises a bundle.
+    # --write-baseline returns above this and below the rm, so recording what is
+    # there now never authorises a bundle.
     ( cd "$out" && sha256sum image.tar ) > "$out/PASSED"
 }
 

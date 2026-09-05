@@ -6,9 +6,8 @@ questions, in the order their answers are needed:
 
 1. **Which VMs exist, and which are ours.** Cluster-wide, because a VM migrated
    after vcows created it is still ours -- see ``api.cluster_vms``.
-2. **Is the golden image already uploaded.** The apply runs against a fresh,
-   empty state every time, so without this it would re-upload a multi-GB image on
-   every deploy after the first. Exactly the role libvirt's ``base_volume`` plays.
+2. **Is the golden image already uploaded.** Without this a deploy re-uploads a
+   multi-GB image every time. Exactly the role libvirt's ``base_volume`` plays.
 3. **Do the two storages allow the content types this backend needs.** The
    ``import`` type in particular is *not* enabled by default on a PVE storage,
    and the failure without this check lands mid-apply.
@@ -137,8 +136,8 @@ def _check_storages(cfg: dict, session: api.Session) -> list[Problem]:
 
     **The ``import`` content type is the one that bites.** It is not enabled by
     default on a PVE storage; it is added under Datacenter -> Storage. Without
-    this check the run gets as far as uploading and fails inside the apply, with
-    a provider error rather than an instruction.
+    this check the run gets as far as uploading and fails mid-apply with a PVE
+    error rather than an instruction.
     """
     target = cfg["target"]["proxmox"]
     problems: list[Problem] = []
@@ -173,8 +172,8 @@ def _check_storages(cfg: dict, session: api.Session) -> list[Problem]:
 def _image(cfg: dict, session: api.Session, problems: list[Problem]) -> dict:
     """Whether the golden image is already in the import datastore.
 
-    ``create`` false once it is there. The volume id is what the module's
-    ``import_from`` needs when it is not uploading, and it is PVE's own string
+    ``create`` false once it is there. The volume id is what ``create_vm``'s
+    ``import-from`` needs when nothing is uploaded, and it is PVE's own string
     for the file rather than one built here.
 
     A name match is not enough on its own, which is what ``_verified`` is for.
@@ -208,7 +207,7 @@ def _image(cfg: dict, session: api.Session, problems: list[Problem]) -> dict:
 
 
 def _verified(cfg: dict, session: api.Session, item: dict) -> list[Problem]:
-    """D30 in this backend's terms: a present image is verified, not trusted.
+    """A present image is verified, not trusted.
 
     The twin of libvirt's ``base_volume``, which compares a present base
     volume's physical size with the local file. An interrupted upload leaves a
@@ -242,7 +241,7 @@ def _verified(cfg: dict, session: api.Session, item: dict) -> list[Problem]:
     if size != local:
         # The procedure offered is the non-destructive one, as it is in
         # `base_volume`: a name this datastore does not hold uploads alongside
-        # the old file and nothing already imported from it is touched.
+        # the existing file, and nothing already imported from it is touched.
         return [
             Problem.error(
                 f"volume {name!r} is {size} bytes in "

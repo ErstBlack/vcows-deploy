@@ -5,8 +5,8 @@
 # **The `-dirty` suffix is the point.** `.git/` is outside the build context, so
 # only the caller can compute the commit, and `container/manifest.py` records
 # `unknown` rather than trust anything that is not 40 hex or 40 hex plus
-# `-dirty`. The image built at e5d5a2c recorded a clean SHA for a commit that did
-# not contain the `container/entrypoint.py` it shipped, which is exactly the
+# `-dirty`. Without the suffix an image records a clean SHA for a commit that
+# does not contain the `container/entrypoint.py` it shipped, which is exactly the
 # question the manifest exists to answer.
 #
 # The dirty check covers the paths that reach the image and nothing else: a

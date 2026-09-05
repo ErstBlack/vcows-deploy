@@ -1,9 +1,9 @@
 """vcows-deploy -- deploy pre-built golden qcow2 images as VMs to KVM/libvirt.
 
 The version is four-digit Major.Minor.Patch.Hotfix and this is its only
-definition. Seven things consume it. Each is asserted against this constant, but
-not all by the default suite -- two sit behind the image gate and are checked
-only when ``VCOWS_IMAGE`` names a built image:
+definition. Seven things consume it, each asserted against this constant. The
+last two sit behind the image gate and run only when ``VCOWS_IMAGE`` names a
+built image:
 
   * ``--version`` output -- ``test_cli.test_version_prints_the_single_definition``
   * the ownership marker's ``v`` -- ``test_marker.test_round_trip``
@@ -16,10 +16,9 @@ only when ``VCOWS_IMAGE`` names a built image:
   * the build manifest copied into every run directory -- **image gate**,
     ``test_image.test_the_build_manifest_records_what_shipped``
 
-What no test asserts is the tag a build was actually invoked with: ``podman build
--t`` takes it from the operator, and only ``ARG VCOWS_VERSION`` inside the file is
-checked. A bump landed here and in the Containerfile can still ship under last
-release's tag.
+No test asserts the tag a build was invoked with: ``podman build -t`` takes it
+from the operator and only ``ARG VCOWS_VERSION`` is checked, so a bump made here
+and in the Containerfile can still ship under the last release's tag.
 """
 
 from __future__ import annotations
@@ -33,23 +32,22 @@ VERSION = "0.1.0.0"
 
 #: Every line vcows writes is a log line: prefixed, level-tagged, on stderr. The
 #: sole exception is `cli._confirm`'s prompt, which `input()` writes to stdout
-#: with no trailing newline so the cursor stays where the operator types -- being
-#: the only unprefixed output there is, it is trivially separable from the log.
+#: with no trailing newline so the cursor stays where the operator types; being
+#: the only unprefixed output, it is trivially separable from the log.
 #:
-#: Both `%(levelname)-7s` and `%(module)-10s` are padded, so the message column
-#: starts at the same offset on every line whatever the level or the module. That
-#: is what keeps `cli._row`'s table aligned once every row carries a prefix, and
-#: what makes a wall of these scannable at all.
+#: `%(levelname)-7s` and `%(module)-10s` are padded so the message column starts
+#: at the same offset on every line, which keeps `cli._row`'s table aligned and
+#: a wall of these scannable.
 #:
 #: Milliseconds because a preflight puts four lines in the same second, and an
-#: operator correlating against hypervisor logs needs the ordering to be visible
+#: operator correlating against hypervisor logs needs the ordering visible
 #: rather than inferred from line order.
 LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)-7s %(module)-10s %(message)s"
 
 #: UTC, matching the run directory's name -- the trailing `Z` is in LOG_FORMAT,
 #: after the milliseconds. `asctime` is localtime unless the converter below says
 #: otherwise, and a site in another timezone would read a stamp that disagrees
-#: with the directory it is describing.
+#: with the directory it names.
 LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 #: Not WARNING: the purpose is traceability *after* delivery, and `destroy`
@@ -68,12 +66,11 @@ def _log_level() -> tuple[str, str | None]:
     Never fatal: `basicConfig` raises `ValueError` on an unknown level, which
     would turn a typo in an environment variable into a run that does not start.
 
-    The rejection is *returned* rather than logged here, because the logger is
-    configured immediately below and does not exist yet -- so this has to be the
-    level's own decision rather than something it reports through. Returning it
-    is also what lets the variable be read, upper-cased and checked against
-    `getLevelNamesMapping` exactly once: `configure_logging` passes the second
-    half of this tuple back out to the one caller that can say anything about it.
+    The rejection is *returned* rather than logged, because the logger is
+    configured below and does not exist yet. Returning it also lets the variable
+    be read, upper-cased and checked against `getLevelNamesMapping` exactly
+    once: `configure_logging` passes the second half of this tuple out to the
+    one caller that can report it.
     """
     raw = os.environ.get("VCOWS_LOG_LEVEL")
     if raw is None:
@@ -90,11 +87,7 @@ class _Stderr(logging.StreamHandler):
     anything configured at import: pytest's `capsys` replaces ``sys.stderr``
     *per test*, long after this handler was built, so a bound handler writes
     past the capture and every assertion about stderr sees an empty string.
-    Measured -- it is what made 39 tests fail before this existed.
-
-    The same property makes the handler correct for any other reassignment of
-    the stream, which is the general form of the bug rather than a test-only
-    workaround.
+    Resolving late is equally correct for any other reassignment of the stream.
     """
 
     @property
@@ -109,13 +102,11 @@ class _Stderr(logging.StreamHandler):
 def configure_logging() -> str | None:
     """Configure the root logger, and hand back any rejected ``VCOWS_LOG_LEVEL``.
 
-    Idempotent -- handlers are replaced, not added. Clearing rather than
-    appending is what makes a second call safe. Left to accumulate, every line
-    would be emitted once per call.
+    Idempotent -- handlers are replaced, not added. Left to accumulate, every
+    line would be emitted once per call.
 
-    The environment is re-read on every call rather than resolved once at import,
-    because that is what lets a caller set the variable and reconfigure -- which
-    the tests do, and which is the only way to change the level in-process.
+    The environment is re-read on every call rather than resolved once at
+    import, which is the only way to change the level in-process.
 
     The return value is the raw value that was *not* usable as a level, or
     ``None``. It exists so the module-level call below can report a typo without
@@ -132,8 +123,8 @@ def configure_logging() -> str | None:
     return rejected
 
 
-# Configured at package import, deliberately, and this is the one place it can
-# be. `backends.libvirt.schema` computes `MAX_VCPUS` and its two siblings as
+# Configured at package import, and this is the one place it can be.
+# `backends.libvirt.schema` computes `MAX_VCPUS` and its two siblings as
 # module-level constants -- they are consumed as literals inside `VM_SCHEMA` --
 # and `_ceiling` reports a malformed `VCOWS_MAX_*` while doing so. That happens
 # on the import chain `cli` -> `backends` -> the libvirt package -> `schema`,
@@ -141,8 +132,8 @@ def configure_logging() -> str | None:
 # the record would fall through to `logging.lastResort`, which reaches stderr
 # unprefixed and ignores VCOWS_LOG_LEVEL entirely.
 #
-# Configuring as an import side effect is wrong for a library and right for an
-# application package. `orchestrator` is only ever imported to be run.
+# An import side effect is wrong for a library and right for an application
+# package. `orchestrator` is only ever imported to be run.
 if (_rejected := configure_logging()) is not None:
     log.warning(
         "ignoring VCOWS_LOG_LEVEL=%r: not a level name. Using %s.",

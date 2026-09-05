@@ -51,10 +51,10 @@ MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 #: credential put into a config for nothing.
 CA_CERT_PATTERN = r"^-----BEGIN CERTIFICATE-----"
 
-#: An absolute path with no whitespace -- what ``ca_file`` held at v0.1. Matched
-#: only to say the field changed shape. A literal rather than an import of the
-#: libvirt backend's: the two fields reach different libraries, and neither
-#: backend's rule is the other's to widen.
+#: An absolute path with no whitespace. Matched only to reject it: ``ca_cert``
+#: carries the PEM itself. A literal rather than an import of the libvirt
+#: backend's: the two fields reach different libraries, and neither backend's
+#: rule is the other's to widen.
 PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: ``user@realm!tokenid=secret``. The secret half is matched but never captured
@@ -304,9 +304,8 @@ def _check_target(target: dict) -> list[Problem]:
                 where="target.proxmox.ca_cert",
             )
         )
-    # The v0.1 shape, `ca_file: /run/secrets/pve-ca.pem`. An error rather than a
-    # warning, for the same reason the libvirt backend errors on one: there is no
-    # compatibility path and nothing is mounted for it any more.
+    # An error rather than a warning, for the same reason the libvirt backend
+    # errors on a path: nothing is mounted for it.
     if isinstance(ca_cert, str) and PATH_PATTERN.match(ca_cert):
         problems.append(
             Problem.error(

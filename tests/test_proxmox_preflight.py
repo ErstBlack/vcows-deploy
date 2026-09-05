@@ -1,8 +1,8 @@
 """Preflight against a PVE-shaped fake that dispatches on the API path.
 
-The endpoint assertions matter more here than in the libvirt backend: nothing in
-this repo has yet run against a real cluster, so `FakeProxmox.calls` recording
-the resolved path is what stands in for that until it does.
+The endpoint assertions matter more here than in the libvirt backend: most runs
+never reach a real cluster, so `FakeProxmox.calls` recording the resolved path is
+what stands in for one.
 """
 
 from __future__ import annotations
@@ -216,7 +216,7 @@ def test_an_image_of_the_same_size_is_reused_without_a_word(pve_cfg, tmp_path):
 
 
 def test_an_image_of_the_wrong_size_is_refused_rather_than_reused(pve_cfg, tmp_path):
-    """D30, which the libvirt backend has had since `base_volume`. Matching the
+    """The same rule as the libvirt backend's `base_volume`. Matching the
     listing by name alone reuses a truncated earlier upload, whose header still
     declares the full virtual size -- so the size is the only thing that catches
     it, and every disk imported from it would be a copy of it."""

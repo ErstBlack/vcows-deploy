@@ -63,7 +63,7 @@ def test_names_are_undecorated(cfg, prepared):
 
 
 def test_capacity_is_in_bytes_on_the_overlay(cfg, prepared):
-    """A4: the base volume's declared capacity is discarded by the upload, so the
+    """The base volume's declared capacity is discarded by the upload, so the
     only number that survives is this one."""
     assert render(cfg, prepared)["vms"]["app01"]["disk_bytes"] == 40 * 1024**3
 

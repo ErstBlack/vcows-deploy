@@ -214,8 +214,8 @@ def test_a_ca_certificate_beside_insecure_is_refused(pve_cfg):
 
 
 def test_a_path_where_the_certificate_belongs_is_refused_by_name(pve_cfg):
-    """The v0.1 shape, `ca_file: /run/secrets/pve-ca.pem`, and there is no
-    compatibility for it. Nothing is mounted for it any more."""
+    """`ca_file: /run/secrets/pve-ca.pem` is refused, not accepted for
+    compatibility: nothing is mounted for it."""
     pve_cfg["target"]["proxmox"]["ca_cert"] = "/run/secrets/pve-ca.pem"
     problems = errors(schema.validate(pve_cfg))
     assert wheres(problems) == ["target.proxmox.ca_cert"], messages(problems)
@@ -369,7 +369,7 @@ def test_an_image_name_pve_will_not_recognise_warns(pve_cfg):
 def test_a_recognised_image_name_says_nothing(pve_cfg):
     """Only about the name. The golden image does not exist on this machine, so
     the capacity and digest checks warn -- deliberately, and tested in
-    tests/test_libvirt_schema.py where they used to live."""
+    tests/test_libvirt_schema.py."""
     for name in ("golden.qcow2", "golden.raw", "golden.vmdk"):
         pve_cfg["image"]["base_volume_name"] = name
         said = messages(schema.validate(pve_cfg))
@@ -395,8 +395,8 @@ def test_a_libvirt_only_key_under_defaults_is_refused(pve_cfg):
 
 def test_verify_digest_false_skips_the_digest_check(pve_cfg, monkeypatch):
     """`destroy` never reads the golden image, so it loads the config without
-    the hash (#257). Patched at this module's own binding, because that is the
-    name `validate` calls."""
+    the hash. Patched at this module's own binding, because that is the name
+    `validate` calls."""
     pve_cfg["image"]["sha256"] = "0" * 64
 
     def refuse(*args, **kwargs):

@@ -3,11 +3,10 @@
 `tests/test_libvirt_smoke.py` says in its own docstring that **no guest is
 booted and no guest address is observed** -- the domain reaches firmware and
 stops there. That is the half this file supplies. It is the only test that sees
-what cloud-init did inside a running guest, which is the only place three
-recorded findings can surface at all: defect 5 in `docs/archive/acceptance.md` (the
-document was accepted, the normaliser threw, the guest fell back to DHCP and
-reported `cloud-init status: done` on an address nobody asked for), `#161` (the
-device name the guest ends up with), and `#164`.
+what cloud-init did inside a running guest, and so the only place a guest that
+booted healthy on the wrong address can surface: the document is accepted, the
+normaliser throws, the guest falls back to DHCP and reports `cloud-init status:
+done` on an address nobody asked for.
 
 Under the `rig` gate alone, which already names the hypervisor. The deploy runs
 in this process through `python3-libvirt`. No new gate name: `KNOWN` in
@@ -216,14 +215,14 @@ def named(guest: dict) -> str:
 
 
 def test_the_mac_matched_device_holds_the_configured_address(guest):
-    """Defect 5's shape: a guest that boots healthy on an address nobody asked
-    for reports `cloud-init status: done` and is caught by nothing else."""
+    """A guest that boots healthy on an address nobody asked for reports
+    `cloud-init status: done` and is caught by nothing else."""
     device = named(guest)
     assert f"{ADDRESS}/24" in guest["addrs"].get(device, [])
 
 
 def test_no_device_is_named_for_its_network_config_key(guest):
-    """The README claimed cloud-init renames each interface to its key. It does
-    not: a v2 ethernet is renamed only when it carries `set-name`, which vcows
+    """cloud-init does not rename each interface to its network-config key: a
+    v2 ethernet is renamed only when it carries `set-name`, which vcows
     deliberately does not write. This fails if that ever changes."""
     assert "nic0" not in guest["macs"], guest["raw"]

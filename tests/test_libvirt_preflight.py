@@ -4,8 +4,8 @@ Every fixture in ``tests/fixtures/libvirt/`` is a verbatim ``XMLDesc`` from the
 Fedora 44 rig, not something hand-written to suit the parser. That matters for two
 of them in particular: ``volume-dir-entry.xml`` is a real ``<volume type='dir'>``
 with no ``<physical>`` at all, and ``domain-unmarked-running.xml`` has an empty
-cdrom tray with no ``<source>``. Both were found by inspecting the rig rather than
-by imagining failure modes, and both would have crashed a naive parser.
+cdrom tray with no ``<source>``. Both come from inspecting the rig rather than
+from imagining failure modes, and both crash a naive parser.
 """
 
 from __future__ import annotations
@@ -48,10 +48,9 @@ def test_current_namespace_parses():
 
 
 def test_superseded_namespace_reads_as_unmarked():
-    """The A2 probe predates D14's `urn:vcows:1`.
-
-    It is not ours and must not be treated as ours -- reading a foreign namespace
-    as a marker is how destroy would delete somebody else's VM.
+    """A marker under a namespace that is not `urn:vcows:1` is not ours and must
+    not be treated as ours -- reading a foreign namespace as a marker is how
+    destroy deletes somebody else's VM.
     """
     root = parsed("domain-old-namespace.xml")
     assert MARKER_XMLNS not in fixture("domain-old-namespace.xml")
@@ -64,7 +63,7 @@ def test_no_metadata_at_all_is_unmarked():
 
 @pytest.mark.parametrize("payload", ["not json", "[]", '{"name":"x"}'])
 def test_unparseable_marker_is_unmarked_not_ours(payload):
-    """D12. Reading a damaged marker as ours risks destroying something we do not
+    """Reading a damaged marker as ours risks destroying something we do not
     understand; reading it as absent is caught by the name-collision refusal."""
     from xml.etree import ElementTree as ET
 
@@ -108,7 +107,7 @@ def test_backing_store_is_never_collected():
 
 
 def test_cdrom_sources_are_collected_when_present():
-    """D17: without this the per-VM seed ISO is orphaned on every teardown."""
+    """Without this the per-VM seed ISO is orphaned on every teardown."""
     from xml.etree import ElementTree as ET
 
     xml = """<domain><devices>
@@ -201,7 +200,7 @@ def test_present_and_matching_means_do_not_create(cfg, tmp_path):
 
 
 def test_size_mismatch_refuses(cfg, tmp_path):
-    """D30. A truncated upload still declares the full virtual size in its header,
+    """A truncated upload still declares the full virtual size in its header,
     so capacity cannot catch it -- every overlay would back onto a broken image and
     VMs would fail at random points in boot on a host reported healthy."""
     cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
@@ -245,9 +244,9 @@ def test_a_base_volume_that_reports_no_path_refuses(cfg, tmp_path):
 
 
 def test_size_mismatch_names_the_non_destructive_procedure(cfg, tmp_path):
-    """2.4. The old message ended "delete it on the hypervisor and re-run",
-    addressed to an operator whose golden image is backing every overlay on the
-    host -- and it prints during a destroy as well as a deploy."""
+    """The message must not end "delete it on the hypervisor and re-run": that
+    is addressed to an operator whose golden image is backing every overlay on
+    the host, and it prints during a destroy as well as a deploy."""
     cfg["image"]["source_qcow2"] = str(golden(tmp_path, 64))
     volumes = {
         "golden.qcow2": {"path": "/pool/golden.qcow2", "physical": 32},
@@ -287,8 +286,8 @@ def test_volume_with_no_owning_domain_refuses(cfg):
 
 
 def test_orphan_message_admits_it_may_be_another_deployments(cfg):
-    """2.11. Volume names are undecorated logical names in one flat pool (D16),
-    so on a shared pool this refusal can be raised against `lab-b`'s deploy,
+    """Volume names are undecorated logical names in one flat pool, so on a
+    shared pool this refusal can be raised against `lab-b`'s deploy,
     blamed on `lab-b`'s VM, and tell its operator to delete `lab-a`'s data."""
     volumes = {"app01.qcow2": {"path": "/pool/app01.qcow2"}}
     problems = preflight.orphan_volumes(cfg, volumes, claimed=set())
@@ -319,7 +318,7 @@ def test_a_volume_that_reports_no_path_cannot_be_vouched_for(cfg):
 
 
 def test_missing_pool_refuses_and_says_vcows_will_not_create_one():
-    """D29. Creating a pool is a host-level mutation on somebody else's hypervisor
+    """Creating a pool is a host-level mutation on somebody else's hypervisor
     and would create a destroy obligation we do not want."""
     conn = FakeConnection(pools=[])
     pool, problems = preflight.open_pool(conn, "images")
@@ -351,7 +350,7 @@ def test_a_pool_lookup_that_is_not_absence_is_not_read_as_absence():
 
 
 def test_a_pool_that_cannot_be_refreshed_refuses_the_deploy():
-    """D35's refresh is required for correctness. Without it a golden image copied
+    """The refresh is required for correctness. Without it a golden image copied
     in out of band is invisible, preflight says "not present", the module sets
     `create = true`, and the apply dies on "storage volume exists already".
 
@@ -402,7 +401,7 @@ def test_the_walk_survives_a_directory_entry():
 
 def test_a_volume_that_will_not_parse_is_reported_rather_than_dropped():
     """The walk answers three questions -- the orphan refusal, whether the golden
-    image is here, and D30's size comparison -- so a volume it silently drops is a
+    image is here, and the size comparison -- so a volume it silently drops is a
     volume none of the three saw. It still must not abandon the walk."""
     pool = FakePool(
         "images",
@@ -458,10 +457,10 @@ def test_a_network_lookup_that_is_not_absence_is_not_read_as_absence(cfg):
 
 
 def test_leases_that_could_not_be_read_are_not_read_as_no_leases(cfg):
-    """The bare `pass` this replaces made every DHCPLeases failure mean "no DHCP
-    here", and an empty claim set is what `address_conflicts` then declares each
-    address free against. The reservations in the network XML still read fine, so
-    the check is not abandoned -- it is reported as partial."""
+    """Swallowing the error makes every DHCPLeases failure mean "no DHCP here",
+    and an empty claim set is what `address_conflicts` then declares each address
+    free against. The reservations in the network XML still read fine, so the
+    check is not abandoned -- it is reported as partial."""
     conn = conn_with_network()
     conn.lease_error = lv_error(1, "internal error")
     cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.101/24"
@@ -515,8 +514,8 @@ def test_the_deployment_reaches_the_mac_derivation(cfg):
 
 
 def test_a_mac_already_on_another_domain_refuses(cfg):
-    """Free: it comes out of the same XMLDesc already parsed for the marker and the
-    disks, which is why this check survived D32's cut of the ICMP probe."""
+    """Free: it comes out of the same XMLDesc already parsed for the marker and
+    the disks, which is why there is no probe on the wire."""
     cfg["vms"][1]["nics"][0]["mac"] = "52:54:00:10:a6:42"
     by_mac = {"52:54:00:10:a6:42": "rocky-runner"}
     problems = preflight.address_conflicts(conn_with_network(), cfg, by_mac)
@@ -734,8 +733,7 @@ def dial(cfg, monkeypatch, opened=None):
 
 def test_without_credentials_the_uri_is_the_operators_with_no_query(cfg, monkeypatch):
     """The rig tests pop both fields and rely on the dev box's `~/.ssh/config`
-    alias, so a config carrying neither has to dial exactly this. `sshcmd` is
-    what the acceptance run found libvirt's client does not recognise."""
+    alias, so a config carrying neither has to dial exactly this."""
     cfg["target"]["libvirt"].pop("ssh_key")
     cfg["target"]["libvirt"].pop("known_hosts")
     seen, conn = dial(cfg, monkeypatch)
@@ -749,8 +747,8 @@ def test_inline_credentials_reach_ssh_as_files_that_live_for_the_session(
     cfg, monkeypatch
 ):
     """What is dialled, and what the files looked like while it was. libvirt
-    honours `keyfile=`; `known_hosts=` it does not (#247), so the copy is
-    named inside the `command=` wrapper with host key checking kept on."""
+    honours `keyfile=` and does not honour `known_hosts=`, so the copy is named
+    inside the `command=` wrapper with host key checking kept on."""
     seen, _ = dial(cfg, monkeypatch)
     with preflight.connect(cfg):
         pass

@@ -14,16 +14,16 @@ exactly one backend. Neither is speculative to fix and both are cheap to move
 when there is a second backend to move them for; they are named here so the "no
 core edit" claim is not read as complete.
 
-**One default implementation, and the test it had to pass.** The thing to avoid
+**One default implementation, and the bar it has to clear.** The thing to avoid
 is *noop defaults*, not ABCs: a backend that forgets ``destroy`` and inherits a
 no-op deletes nothing and exits successfully; one that forgets ``preflight``
 skips the safety check entirely. An ABC fails loudly at instantiation, which
 beats a Protocol that only complains if someone remembers to run a type checker.
 So a default is allowed only where forgetting to override cannot silently do
 nothing, and ``prepare`` is the only method that clears it: both shipped backends
-had written the identical body, the work is core's ``cloudinit`` either way, and
-a backend that needed more than the default builds fails in ``create`` on the key
-it did not build.
+want the identical body, the work is core's ``cloudinit`` either way, and a
+backend needing more than the default fails in ``create`` on the key it did not
+build.
 """
 
 from __future__ import annotations
@@ -163,10 +163,10 @@ def carrying(**attrs: Any) -> Iterator[None]:
     """Attach ``attrs`` to whatever exception leaves this block, then re-raise.
 
     Both backends accumulate their result in a local -- ``create``'s inventory
-    dict, ``destroy``'s ``Outcome`` -- which the return is the only thing to
-    carry out. So a failure on the third VM lost every record of the two that
-    are running, and an interrupt mid-teardown lost the account of what had
-    already been removed, which is the record an operator cannot re-derive.
+    dict, ``destroy``'s ``Outcome`` -- which only the return carries out. Without
+    this, a failure on the third VM loses every record of the two that are
+    running, and an interrupt mid-teardown loses the account of what had already
+    been removed, which an operator cannot re-derive.
 
     ``BaseException`` because a Ctrl-C is exactly the case this exists for, and
     an attribute on the exception rather than a backend exception type because
@@ -201,11 +201,10 @@ class Decision:
     """The VM this decision is *about*, when there is one. ``None`` for a create.
 
     The machine-readable half of ``reason``. Every branch that sets this also
-    names the VM in prose, but only two of them name its id there -- so for a
-    SKIP, and for the refusal of a name held by another deployment, the
-    hypervisor UUID was in this field and in no artifact the site ships back.
-    ``cli._record`` reads it into ``run.json``; a consumer that had to regex it
-    out of ``reason`` was the alternative.
+    names the VM in prose, but only two of them name its id there, so for a SKIP
+    and for the refusal of a name held by another deployment this field is the
+    only place the hypervisor UUID appears. ``cli._record`` reads it into
+    ``run.json``, which spares a consumer regexing it out of ``reason``.
     """
 
 

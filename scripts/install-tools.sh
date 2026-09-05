@@ -82,11 +82,11 @@ installed() {
 #
 # Two failures, and they must not read the same. A tool that prints no dotted
 # triple is the empty return this function is documented to make, and install_one
-# has a `${found:-version unknown}` written for it -- but as one pipeline the
-# grep's no-match was status 1, pipefail made the whole pipeline 1, and `set -e`
-# aborted install_one before its own log line. The `:-` could never fire. A tool
-# that cannot run at all is the other failure and still returns 1, so the
-# assignment is split: only the grep's no-match is forgiven.
+# has a `${found:-version unknown}` for it. As one pipeline the grep's no-match
+# is status 1, pipefail makes the whole pipeline 1, and `set -e` aborts
+# install_one before its own log line, so that `:-` could never fire. A tool that
+# cannot run at all is the other failure and still returns 1, so the assignment
+# is split: only the grep's no-match is forgiven.
 #
 # The first line is taken with `${out%%...}` rather than a leading `head -1`,
 # which under pipefail could also read a SIGPIPE'd producer as a failure.
@@ -109,16 +109,15 @@ install_one() {
     # `have` is `command -v` and says nothing about version, and this arm covers
     # all six tools rather than the one the sentence above names -- so on any
     # box with a distro copy, the pins and digests at the top of this file are
-    # advisory and the fetch machinery never runs. That is the intended
-    # behaviour; being silent about it was not. Report the version beside the
-    # path, and say so when it is not the pinned one. A warning, not a failure:
-    # the early return is deliberate.
+    # advisory and the fetch machinery never runs. Intended, but said out loud:
+    # the version is reported beside the path, and a mismatch against the pin is
+    # a warning rather than a failure. The early return is deliberate.
     #
     # **Not in a linked worktree.** There, `have` finds the main checkout's
     # binaries through the /usr/local/bin symlinks `expose_on_path` wrote, and
-    # this arm would install nothing -- measured 2026-09-02: every tool "using
-    # /usr/local/bin/...", .tools/bin empty. A worktree owns its own copies
-    # (8-9 s, 366 MB, measured) so nothing it runs depends on another checkout.
+    # this arm would install nothing: every tool "using /usr/local/bin/...",
+    # .tools/bin empty. A worktree owns its own copies -- 8-9 s, 366 MB -- so
+    # nothing it runs depends on another checkout.
     if have "$tool" && ! in_linked_worktree; then
         local found path
         path="$(command -v "$tool")"
@@ -160,9 +159,9 @@ install_one() {
 #
 # **Never from a linked worktree** (`in_linked_worktree`, lib.sh). The symlinks
 # outlive the tree they point into, so a worktree that is removed leaves
-# /usr/local/bin naming binaries that are gone -- measured 2026-09-02:
-# /usr/local/bin/uv pointed into a deleted scratch checkout. The main checkout
-# and CI still link, which is what the mechanism was for.
+# /usr/local/bin naming binaries that are gone -- measured: /usr/local/bin/uv
+# pointing into a deleted scratch checkout. The main checkout and CI still link,
+# which is what the mechanism is for.
 expose_on_path() {
     local dir=/usr/local/bin sudo="" tool
     if in_linked_worktree; then
@@ -204,11 +203,10 @@ main() {
     # .tools/bin converges to that list: what is missing is installed above, and
     # what is not on it is removed here. Adding only is how a directory becomes
     # whatever every past run and every copy left in it, with nothing that
-    # notices. Measured 2026-09-02: the main checkout's .tools/bin carried
-    # `cosign`, 141 MB, on no list in this repo and installed by nothing in this
-    # tree -- and a copied or symlinked .tools/bin hands it to every worktree.
-    # Only regular files, so any directory under .tools/bin is out of scope by
-    # construction.
+    # notices -- measured: a .tools/bin carrying `cosign`, 141 MB, on no list in
+    # this repo and installed by nothing in this tree, which a copied or
+    # symlinked .tools/bin then hands to every worktree. Only regular files, so
+    # any directory under .tools/bin is out of scope by construction.
     for file in "$TOOLS_BIN"/*; do
         [ -f "$file" ] || continue
         name="${file##*/}"

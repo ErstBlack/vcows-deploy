@@ -6,15 +6,14 @@ gate.
 
 Nothing here is assumed to be on the rig beforehand. The two probe domains the
 discovery tests read are defined by the ``probes`` fixture through the same
-connection the tests use, never started, and undefined however the module ends;
-the rig they ran on carried them as hand-made fixtures until 2026-09-03, when it
-no longer did and four tests failed on any tree. Everything else is read-only
-apart from ``pool.refresh()``, which is a directory rescan. Starting a guest is
-``tests/test_libvirt_boot.py``'s job, under this same ``rig`` gate.
+connection the tests use, never started, and undefined however the module ends.
+Everything else is read-only apart from ``pool.refresh()``, which is a directory
+rescan. Starting a guest is ``tests/test_libvirt_boot.py``'s job, under this same
+``rig`` gate.
 
 The pair of probes is deliberate. ``vcows-probe02`` carries a current
 ``urn:vcows:1`` marker whose logical name differs from its hypervisor name and
-is the positive case; ``vcows-spike-probe01`` carries spike A2's
+is the positive case; ``vcows-spike-probe01`` carries an
 ``https://example.invalid/vcows`` namespace, a marker-shaped element that is
 not ours, and is therefore the *unmarked* case for free.
 """
@@ -46,7 +45,7 @@ MARKED_PROBE = "vcows-probe02"
 UNMARKED_PROBE = "vcows-spike-probe01"
 #: On the marked probe only, so a conflict names one domain.
 PROBE_MAC = "52:54:00:c0:ff:ee"
-#: Spike A2's marker, verbatim: the right element name under the wrong namespace.
+#: The right element name under the wrong namespace.
 SPIKE_A2_MARKER = (
     '<vcows xmlns="https://example.invalid/vcows">{"name":"probe01"}</vcows>'
 )
@@ -165,7 +164,7 @@ def test_an_unmarked_domain_whose_name_we_want_is_refused(probes, rig_cfg, lv_se
 
 
 def test_a_running_domains_disks_resolve_after_the_refresh(rig_cfg, lv_session):
-    """D35, against the real cache. Three of the rig's four running domains have
+    """Against the real cache. Three of the rig's four running domains have
     disks written out of band, which do not resolve until the pool is refreshed.
     """
     import libvirt
@@ -195,7 +194,7 @@ def test_a_pool_that_does_not_exist_refuses(lv_session):
     assert [p.severity for p in problems] == [Severity.ERROR]
 
 
-# -- the base image (D30) --------------------------------------------------
+# -- the base image --------------------------------------------------------
 
 BASE_ON_RIG = "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
 

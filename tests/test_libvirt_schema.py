@@ -25,12 +25,8 @@ from tests.fake_backend import FakeBackend
 
 
 class LibvirtSchemaOnly(FakeBackend):
-    """Stage-2 harness: the real schema behind the rest of the fake backend.
-
-    The libvirt `Backend` subclass does not exist yet by design (D28), but the
-    schema still has to be proven against the registry composition rather than
-    only in isolation.
-    """
+    """The real schema behind the rest of the fake backend, so it is proven
+    against the registry composition rather than only in isolation."""
 
     def __init__(self):
         super().__init__(name="libvirt")
@@ -110,10 +106,9 @@ def test_the_ceilings_are_raisable_from_the_environment(cfg, monkeypatch):
     Both modules are reloaded, and the order is the point. `_ceiling` reads the
     environment in `limits`, and `schema` copies what it returns into `VM_SCHEMA`
     as a literal at import. Reloading `schema` alone re-runs
-    `from ...limits import MAX_VCPUS` against an `orchestrator.limits` that is
-    already imported, so the ceiling does not move and the assertion below holds
-    for the default -- which is what it looked like before the constants became
-    core, and is not a test of anything.
+    `from ...limits import MAX_VCPUS` against an already-imported
+    `orchestrator.limits`, so the ceiling does not move and the assertion below
+    holds for the default -- which tests nothing.
     """
     import importlib
 
@@ -154,7 +149,7 @@ def test_a_ceiling_of_one_is_taken(monkeypatch):
     assert limits._ceiling("VCOWS_MAX_VCPUS", 512) == 1
 
 
-# -- R-D: the URI is ours to assemble ---------------------------------------
+# -- the URI is ours to assemble --------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -172,8 +167,7 @@ def test_a_ceiling_of_one_is_taken(monkeypatch):
         ("qemu+ssh://vcows:hunter2@vcows/system", "no password"),
         ("qemu+ssh://vcows:@vcows/system", "no password"),
         # `urlsplit` raises on these rather than returning an unusable split, so
-        # the ValueError unwound past every other problem in the document and
-        # past `config.load`'s "every problem rather than the first".
+        # an uncaught ValueError takes the whole document's report with it.
         ("qemu+ssh://[2001:db8::1/system", "is not a URL"),
         ("qemu+ssh://2001:db8::1]/system", "is not a URL"),
         # Escaped rather than literal: ruff's RUF001 rejects a bare FULLWIDTH
@@ -195,8 +189,8 @@ def test_bad_uris_are_rejected(cfg, uri, expect):
 
 
 def test_a_uri_that_will_not_parse_loses_no_other_problem(cfg):
-    """`config.load`: every problem rather than the first. `_check_target`
-    is the first check `validate` runs, so a `ValueError` out of `urlsplit` took
+    """`config.load`: every problem rather than the first. `_check_target` is the
+    first check `validate` runs, so a `ValueError` out of `urlsplit` would take
     the whole document's report with it."""
     cfg["target"]["libvirt"]["uri"] = "qemu+ssh://[2001:db8::1/system"
     cfg["vms"][0]["vcpus"] = 0
@@ -229,17 +223,17 @@ def test_the_credentials_themselves_pass_and_say_nothing(cfg):
     ],
 )
 def test_a_path_where_the_credential_belongs_is_refused_by_name(cfg, field, value):
-    """The one shape every config written against v0.1 has, and there is no
-    compatibility for it. `known_hosts` carries no pattern of its own, so
-    without this an absolute path reaches `ssh` as a known_hosts file holding a
-    single nonsense line -- and fails at the host key check, naming neither."""
+    """A path where the contents belong is refused, not accepted for
+    compatibility. `known_hosts` carries no pattern of its own, so without this
+    an absolute path reaches `ssh` as a known_hosts file holding a single
+    nonsense line -- and fails at the host key check, naming neither."""
     cfg["target"]["libvirt"][field] = value
     problems = errors(schema.validate(cfg))
     assert wheres(problems) == [f"target.libvirt.{field}"], messages(problems)
     assert "not a path" in messages(problems)
 
 
-# -- R-G: firmware settings are not changeable after creation ---------------
+# -- firmware settings are not changeable after creation --------------------
 
 
 def test_loader_without_nvram_template_is_rejected(cfg):
@@ -266,8 +260,7 @@ def test_loader_format_without_loader_is_rejected(cfg):
 
 def test_loader_without_loader_format_is_rejected(cfg):
     """It is not optional. The module builds the varstore path from it and takes
-    an absent value as `raw`, so a qcow2 loader would get an `.fd` varstore --
-    the mismatch the first acceptance run already paid for."""
+    an absent value as `raw`, so a qcow2 loader would get an `.fd` varstore."""
     del cfg["vms"][1]["loader_format"]
     problems = errors(schema.validate(cfg))
     assert "without 'loader_format'" in messages(problems)
@@ -343,14 +336,13 @@ def test_a_nic_needs_exactly_one_attachment(cfg, attach, expect):
 
 
 def test_an_attachment_fault_and_an_addressing_fault_are_both_reported(cfg):
-    """The two halves of `_check_nics` live in different modules now.
+    """The two halves of `_check_nics` live in different modules.
 
     The attachment rule is libvirt's and `cloudinit.check_addressing` is core, so
-    the one function that used to emit both in a single pass emits its own and
-    appends the other's. Drop the delegation, or put a `return` in front of it,
-    and one whole class of problem disappears -- the operator fixes what they were
-    told about, re-runs, and is told the rest. Order is not pinned here: the split
-    does change it, and nothing depends on it.
+    `_check_nics` emits its own and appends the other's. Drop the delegation, or
+    put a `return` in front of it, and one whole class of problem disappears --
+    the operator fixes what they were told about, re-runs, and is told the rest.
+    Order is not pinned: nothing depends on it.
     """
     nic = cfg["vms"][0]["nics"][0]
     nic.pop("network", None)
@@ -526,7 +518,7 @@ def test_the_vm_that_skips_its_nic_checks_does_not_skip_the_vms_after_it(cfg):
 
 
 def test_the_guard_refuses_when_the_schema_failure_is_inside_a_nic(cfg):
-    """The clause the container's shape cannot express (#112).
+    """The clause the container's shape cannot express.
 
     `structural` is one VM's problems and `problems_from` puts the failing path
     in `where`, so a `.nics` in it is the schema saying the failure is inside the
@@ -558,19 +550,19 @@ def test_the_guard_refuses_when_the_schema_failure_is_inside_a_nic(cfg):
 def test_a_wrongly_typed_nic_field_reports_the_schema_error_rather_than_crashing(
     cfg, registry, field, value, expect
 ):
-    """#112. A nic that is a mapping whose *field* is wrong passes every clause
-    of the container-shape guard, and `_check_nics` assumes the schema ran:
-    `ip_cidr` reaches `"/" not in raw` (`TypeError`), `nameservers` reaches
-    `enumerate` (`TypeError`), `mac` reaches `.lower()` (`AttributeError`). Each
-    unwound past every other check and past `config.load`'s "every problem rather
-    than the first", so the operator got a stack trace instead of a field name.
+    """A nic that is a mapping whose *field* is wrong passes every clause of the
+    container-shape guard, and `_check_nics` assumes the schema ran: `ip_cidr`
+    reaches `"/" not in raw` (`TypeError`), `nameservers` reaches `enumerate`
+    (`TypeError`), `mac` reaches `.lower()` (`AttributeError`). Uncaught, each
+    unwinds past every other check and past `config.load`'s "every problem rather
+    than the first", and the operator gets a stack trace instead of a field name.
 
     A blank YAML value is the commonest way in -- `ip_cidr:` with nothing after
     it parses as `None` -- and every trigger here is already caught by the schema
     `check_vm_structure` just ran, so the named error is what has to reach the
-    operator. Asserted against the whole fatal list, not a substring, because the
-    defect was the *loss* of everything else: the composed path is included since
-    `config.load` runs it for all four verbs, not only `validate`.
+    operator. Asserted against the whole fatal list, not a substring, because
+    what must not be lost is everything else: the composed path is included
+    since `config.load` runs it for all four verbs, not only `validate`.
     """
     cfg["vms"][0]["nics"][0][field] = value
     where = f"vms[0].nics[0].{field}"
@@ -694,15 +686,15 @@ def test_an_unreadable_image_warns_rather_than_failing(cfg):
 
 
 def test_a_readable_image_is_logged_at_debug(cfg, tmp_path, caplog):
-    """#163: the success path returns no Problem, so the DEBUG line is the only
+    """The success path returns no Problem, so the DEBUG line is the only
     evidence that `validate` opened the image and what it measured."""
     img = tmp_path / "golden.qcow2"
     img.write_bytes(qcow2_header(40 * 1024**3))
     cfg["image"]["source_qcow2"] = str(img)
     with caplog.at_level(logging.DEBUG, logger="orchestrator.imagecheck"):
         schema.validate(cfg)
-    # Equality, not `in`: a substring match let mutmut's padded-string mutant
-    # of the message survive, measured (476 -> 477 on the first CI run).
+    # Equality, not `in`: a substring match lets mutmut's padded-string mutant
+    # of the message survive.
     mine = [r for r in caplog.records if r.name == "orchestrator.imagecheck"]
     assert [r.getMessage() for r in mine] == [f"{img}: virtual size 40.0 GiB"]
 
@@ -716,7 +708,7 @@ def test_a_non_qcow2_image_is_an_error(cfg, tmp_path):
     assert wheres(problems) == ["image.source_qcow2"]
 
 
-# -- #12: the declared digest, actually computed ----------------------------
+# -- the declared digest, actually computed ---------------------------------
 
 
 def golden(tmp_path, cfg, virtual_gb: int = 40):
@@ -734,8 +726,8 @@ def test_a_matching_sha256_passes(cfg, tmp_path):
 
 
 def test_a_mismatched_sha256_is_an_error(cfg, tmp_path):
-    """The field was schema-validated and never computed, so a substituted or
-    corrupted golden image deployed with no signal at all (#12)."""
+    """Without the comparison the field is schema-validated and never computed,
+    and a substituted or corrupted golden image deploys with no signal at all."""
     _, digest = golden(tmp_path, cfg)
     cfg["image"]["sha256"] = "0" * 64
     problems = errors(schema.validate(cfg))
@@ -771,9 +763,9 @@ def test_verify_digest_false_skips_the_digest_check(
     cfg, tmp_path, registry, monkeypatch
 ):
     """`destroy` never reads the golden image, so it loads the config without
-    the hash (#257). Patched at this module's own binding, because that is the
-    name `validate` calls -- and asserted through `core_validate` as well, which
-    is the path `config.load` takes and the one that has to default to verifying.
+    the hash. Patched at this module's own binding, because that is the name
+    `validate` calls -- and asserted through `core_validate` as well, which is
+    the path `config.load` takes and the one that has to default to verifying.
     """
     golden(tmp_path, cfg)
     cfg["image"]["sha256"] = "0" * 64  # a mismatch, so a check that ran would say so
@@ -805,7 +797,7 @@ def test_an_unreadable_image_warns_rather_than_failing_the_digest(cfg):
 
 
 def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):
-    """One flat pool and undecorated names (D16), so a golden image called
+    """One flat pool and undecorated names, so a golden image called
     `app01.qcow2` collides with app01's own overlay. libvirt would refuse it
     mid-apply; this refuses it offline, naming the clash."""
     for name in ("app01.qcow2", "app02-seed.iso"):
@@ -815,7 +807,7 @@ def test_a_base_volume_named_like_a_per_vm_volume_is_refused(cfg):
         assert wheres(problems) == ["image.base_volume_name"]
 
 
-# -- D25: the MAC derivation is permanent -----------------------------------
+# -- the MAC derivation is permanent ----------------------------------------
 
 
 def test_derived_mac_is_pinned():
@@ -878,10 +870,9 @@ def test_every_problem_is_reported_not_just_the_first(cfg):
 
 
 def test_one_scheme_serves_every_client_this_tool_has():
-    """It used to build two: the go-libvirt provider needed `qemu+sshcmd`, which
-    libvirt's own client does not recognise at all (`transport in URL not
-    recognised`). With the provider gone, preflight, create and destroy are all
-    that dial, and all three are that client."""
+    """preflight, create and destroy are all that dial, and all three are
+    libvirt's own client, which does not recognise `qemu+sshcmd` at all
+    (`transport in URL not recognised`)."""
     target = {"uri": "qemu+ssh://vcows@vcows/system"}
     assert schema.connection_uri(target) == "qemu+ssh://vcows@vcows/system"
     assert "sshcmd" not in schema.connection_uri(target)
@@ -894,7 +885,7 @@ def test_one_scheme_serves_every_client_this_tool_has():
 
 
 def test_the_operators_query_is_replaced_never_merged():
-    """R-D: the query is vcows's to assemble. Fed `no_verify=1`, the result
+    """The query is vcows's to assemble. Fed `no_verify=1`, the result
     carries only what `connect` handed over -- with files, their two
     parameters; without, nothing at all."""
     target = {"uri": "qemu+ssh://vcows@vcows/system?no_verify=1"}
@@ -993,7 +984,7 @@ def test_an_explicit_null_replaces_the_default_and_then_fails(cfg, registry):
 # by `test_a_structural_error_outside_nics_does_not_hide_a_duplicate_address`;
 # what follows covers the MAC registry and the three document-level checks, which
 # run after the per-VM loop. Each is tested in isolation elsewhere in this file;
-# none was tested against a coexisting field defect, which is the case a single
+# here each is tested against a coexisting field defect, the case a single
 # whole-document validator cannot report.
 
 
@@ -1019,7 +1010,7 @@ def test_a_field_defect_does_not_hide_a_duplicate_mac(cfg):
 
 
 def test_a_blank_nic_field_does_not_hide_a_duplicate_address_elsewhere(cfg):
-    """#112's shape, one level out. The VM whose nic will not parse is skipped --
+    """One level out. The VM whose nic will not parse is skipped --
     that is `_nic_checks_are_safe` doing its job -- but skipping it must not cost
     the *other* VMs their cross-check."""
     third_vm(cfg, ip_cidr=cfg["vms"][0]["nics"][0]["ip_cidr"])

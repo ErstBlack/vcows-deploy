@@ -2,18 +2,12 @@
 
 One function per resource, in dependency order: the base volume when the host
 does not already have it, then per VM a seed ISO, an overlay and a domain.
-Ported from the #198 spike, which created a VM on the rig, booted it, and had it
-torn down by the shipped ``vcows destroy`` -- so the XML here is the XML that
-was measured, and it mirrors
-``libvirt_domain.vm`` block by block, including the firmware exclusivity that
-resource's ``os`` block was commented for.
 
 **The upload is dense, and there is no second path.** On the golden image
 ``vol.upload`` plus ``stream.sendAll`` and
-``VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM`` plus ``sparseSendAll`` both took 2.5 s
-(``docs/research/tofu-eval-2026-09-02.md`` M3): 617 MiB is allocated of 646 MB, so there
-are no holes for the sparse stream to skip, and it would be a second code path
-earning nothing.
+``VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM`` plus ``sparseSendAll`` both took 2.5 s:
+617 MiB is allocated of 646 MB, so there are no holes for the sparse stream to
+skip, and it would be a second code path earning nothing.
 
 **Nothing is rolled back.** A ``libvirtError`` is re-raised with the resource
 it failed on named in its message, and the marker plus
@@ -101,8 +95,8 @@ PROGRESS_INTERVAL = 5
 
 
 def firmware_xml(vm: dict) -> tuple[str, str]:
-    """The ``os`` block's two halves, with the same exclusivity the module kept:
-    autoselect only when nothing is pinned, and the pin as the whole config."""
+    """The ``os`` block's two halves, and they are exclusive: autoselect only
+    when nothing is pinned, and the pin as the whole config."""
     if vm["loader"] is None:
         return (" firmware='efi'" if vm["firmware"] == "efi" else "", "")
     fmt = vm["loader_format"]
@@ -142,13 +136,12 @@ def domain_xml(vm: dict, overlay_path: str, seed_path: str) -> str:
 
 
 def upload(conn: Any, pool: Any, name: str, fmt: str, source: str) -> Any:
-    """What ``libvirt_volume`` with ``create.content.url`` did: create the volume
-    at the file's size, then stream the bytes in.
+    """Create the volume at the file's size, then stream the bytes in.
 
-    The capacity is the source file's size on purpose. Spike A4: ``vol-upload``
-    writes the qcow2 header from offset 0 and libvirt then reads the declared
-    capacity back out of it, so whatever is asked for here is discarded. The
-    number that survives is the overlay's, below.
+    The capacity is the source file's size on purpose: ``vol-upload`` writes the
+    qcow2 header from offset 0 and libvirt then reads the declared capacity back
+    out of it, so whatever is asked for here is discarded. The number that
+    survives is the overlay's, below.
     """
     size = os.path.getsize(source)
     vol = pool.createXML(
@@ -200,7 +193,7 @@ def upload(conn: Any, pool: Any, name: str, fmt: str, source: str) -> Any:
 
 
 def overlay(pool: Any, vm: dict, base_path: str) -> Any:
-    """``libvirt_volume.overlay``: capacity here and only here (spike A4)."""
+    """Capacity here and only here; ``upload`` discards whatever it declares."""
     return pool.createXML(
         VOLUME_XML.format(
             name=vm["overlay_name"],

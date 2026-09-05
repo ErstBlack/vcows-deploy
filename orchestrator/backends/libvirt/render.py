@@ -13,7 +13,7 @@ from ...cloudinit import mac_of, primary_index, seed_name
 from ...marker import Marker
 from .schema import FIRMWARE_DEFAULT, MACHINE_DEFAULT
 
-# Names are the logical name, undecorated (D16). Maximally predictable for
+# Names are the logical name, undecorated. Maximally predictable for
 # hand-debugging at a site, where an operator has the config and `virsh list` and
 # nothing else.
 
@@ -32,8 +32,8 @@ def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
         "base_volume": {
             "name": base["name"],
             # False once the image is already on this host. `create` only ever
-            # creates (D23), so without this it would try to create an existing
-            # volume on every deploy after the first.
+            # creates, so without this it would try to create an existing volume
+            # on every deploy after the first.
             "create": base["create"],
             # Empty when creating; the pool's own path for it when not.
             "path": base["path"],
@@ -48,9 +48,9 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
     firmware = vm.get("firmware", FIRMWARE_DEFAULT)
     primary = vm["nics"][primary_index(vm)]
     return {
-        # The logical name itself, undecorated (D16). `decide`'s name-clash
-        # refusal compares `Existing.name` against the config's logical name, and
-        # that comparison only means anything while these two are the same string.
+        # The logical name itself, undecorated. `decide`'s name-clash refusal
+        # compares `Existing.name` against the config's logical name, and that
+        # comparison only means anything while these two are the same string.
         "domain_name": name,
         "overlay_name": overlay_name(name),
         "seed_name": seed_name(name),
@@ -59,7 +59,7 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
         "memory_mib": vm["memory_mib"],
         # Capacity belongs on the overlay and nowhere else: vol-upload writes the
         # golden image's own header from offset 0 and silently discards whatever
-        # capacity the base volume declared. Confirmed in spike A4.
+        # capacity the base volume declared.
         "disk_bytes": vm["disk_gb"] * 1024**3,
         "seed_iso": seed_iso,
         "firmware": firmware,

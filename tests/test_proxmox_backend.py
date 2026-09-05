@@ -383,7 +383,7 @@ def test_every_abstract_method_is_reachable_through_the_class(
 def test_the_backend_forwards_the_digest_flag(backend, pve_cfg, monkeypatch):
     """The libvirt half of this is `tests/test_seam.py`'s delegation test. A
     forwarding line that dropped `verify_digest` would make `destroy` hash the
-    golden image again -- ~59 s for 10 GiB -- with nothing else failing (#257).
+    golden image again -- ~59 s for 10 GiB -- with nothing else failing.
     """
     seen: list[bool] = []
 

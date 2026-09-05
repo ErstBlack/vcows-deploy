@@ -32,11 +32,9 @@ gate() {
 # `script:`, so a line-oriented check would only ever see the `script:` key and
 # would pass while the commands beneath it did anything at all.
 #
-# It also reads `uses:`, because ci.yml's own header claims "No third-party
-# actions" and nothing asserted it. The claim now has a gate, and so does the
-# digest pinning: a tag ref is what a marketplace action's argument is actually
-# about, and an unpinned ref is the same mutable-tag exposure whoever publishes
-# it.
+# It also reads `uses:`, which is what gives ci.yml's "No third-party actions"
+# header a gate, and the digest pinning with it: an unpinned ref is the same
+# mutable-tag exposure whoever publishes it.
 workflows_carry_no_logic() {
     "$PY" - "$REPO" <<'PY'
 import sys, re, pathlib, yaml
@@ -128,10 +126,9 @@ main() {
     # Two ignores, and only one of them is a false positive.
     #
     # Each names the instruction it covers, not the line. A line number in this
-    # file pointing into that one goes stale on every edit above the target, and
-    # hadolint already prints the line anyway: one 35-line comment added to the
-    # Containerfile once put four such numbers out by 36 without touching any of
-    # the instructions they described.
+    # file pointing into that one goes stale on every edit above the target --
+    # a comment added to the Containerfile moves every number below it -- and
+    # hadolint prints the line anyway.
     #
     # DL4006 wants pipefail before a piped RUN. The pipe verifies a download and
     # is `echo "$SHA  file" | sha256sum -c -`, where echo cannot fail. False
@@ -164,20 +161,16 @@ main() {
     # so that difference is real and has to fail loudly. conftest.py: a gate that
     # quietly passes because it did not run is worse than no gate.
     #
-    # Measured over these same two globs before enabling, ~1160 lines:
-    # check-unassigned-uppercase 0, quote-safe-variables 0,
-    # avoid-nullary-conditions 0, check-extra-masked-returns 9.
+    # Measured over these same two globs, ~1160 lines: check-unassigned-uppercase
+    # 0, quote-safe-variables 0, avoid-nullary-conditions 0,
+    # check-extra-masked-returns 9. The nine were fixed rather than suppressed --
+    # the two that mattered are why lib.sh and image-build.sh assign a command
+    # substitution on its own line, where `set -e` sees the failure; the other
+    # seven are du, jq, basename and id inside log lines, and carry `|| true`.
     #
-    # The nine were fixed rather than suppressed. Two were real: lib.sh's
-    # `git status` inside `[ -n "$(...)" ]`, which recorded a clean SHA for a
-    # dirty tree when git failed, and image-build.sh's `now_utc` inline in
-    # --build-arg, which shipped an empty BUILD_DATE label. Both now assign on
-    # their own line, where `set -e` sees the failure. The other seven are du,
-    # jq, basename and id inside log lines and die messages, and carry `|| true`.
-    #
-    # `require-variable-braces` is the fifth check the survey proposed and is
-    # deliberately out: 293 findings, every one a mechanical $var -> ${var} with
-    # no correctness content, which would have buried the nine above.
+    # `require-variable-braces` is the fifth optional check and is deliberately
+    # out: 293 findings, every one a mechanical $var -> ${var} with no
+    # correctness content.
     gate "shellcheck"        shellcheck -x -s bash \
                                  -o check-extra-masked-returns \
                                  -o check-unassigned-uppercase \
@@ -196,8 +189,8 @@ main() {
     # more each run than it could ever find twice.
     #
     # Measured at 6.7s over 39.89 MB: it honours .gitignore, so `.venv/`,
-    # `.tools/` and `mutants/` are not walked. That
-    # makes it the slowest gate here and still cheap enough to keep in `check`.
+    # `.tools/` and `mutants/` are not walked. The slowest gate here, and still
+    # cheap enough to keep in `check`.
     #
     # `--redact` because a finding is printed by CI. The point is to say a secret
     # is present and where, never to copy it into a build log that is more widely

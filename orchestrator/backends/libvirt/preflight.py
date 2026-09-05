@@ -7,10 +7,10 @@ here and carried out in ``Discovered``. ``prepare`` and
 Three things about this file are load-bearing and easy to get wrong:
 
 * **One ``XMLDesc`` per domain, parsed for three things.** The marker, the disk
-  sources and the interface MACs all come out of the same document. Spike A2
-  confirmed both marker read paths; this one is chosen because it yields the disks
-  too, and ``dom.metadata()`` does not.
-* **``pool.refresh(0)`` before any volume is looked at** (D35). ``listAllVolumes``
+  sources and the interface MACs all come out of the same document. Both marker
+  read paths work; this one is chosen because it also yields the disks, which
+  ``dom.metadata()`` does not.
+* **``pool.refresh(0)`` before any volume is looked at.** ``listAllVolumes``
   and ``storageVolLookupByPath`` read libvirt's in-memory pool cache, not the
   filesystem. On the rig, three of four running domains' disks -- real files inside
   the pool's own directory, on an active pool -- do not resolve without it.
@@ -25,7 +25,7 @@ always a ``Problem`` naming the object and what the skip cost, and every
 ``libvirtError`` is matched against a code from ``errors`` rather than assumed to
 be the benign one.
 
-``ElementTree`` rather than ``defusedxml`` is D13: identical API, and stdlib is what
+``ElementTree`` rather than ``defusedxml``: identical API, and stdlib is what
 runs when someone copies one of these functions onto a hypervisor to debug it. The
 input is libvirt's own re-serialisation of XML it already accepted, ElementTree does
 not resolve external entities, and the remaining attacks need someone who can
@@ -58,7 +58,7 @@ from .render import overlay_name, seed_name
 from .schema import connection_uri
 
 #: The marker element as ``XMLDesc`` reports it. ``dom.metadata()`` strips the
-#: xmlns and would need a different tag; spike A2 caught the disagreement.
+#: xmlns and would need a different tag.
 MARKER_TAG = f"{{{MARKER_XMLNS}}}{MARKER_ELEMENT}"
 
 #: Only the paths that destroy something. Every `Problem` this module builds is
@@ -79,13 +79,13 @@ def _chatter(_ctx: Any, err: Any) -> None:
 
 
 #: What ``command=`` runs in place of ``ssh``. libvirt scrubs the environment
-#: before it execs this (measured in #247: only PATH/HOME-class variables pass),
-#: so the known_hosts path is written into the script rather than read from it.
+#: before it execs this -- only PATH and HOME-class variables pass -- so the
+#: known_hosts path is written into the script rather than read from it.
 #: libvirt itself adds ``-i <keyfile>``, ``-l <user>``, ``-T -e none`` and the
 #: ``virt-ssh-helper`` remote command. StrictHostKeyChecking stays on: refusing
-#: ``no_verify=1`` in the URI (R-D) would be pointless if the same hole were
-#: opened here. The ServerAlive pair bounds a *dead* tunnel at three minutes
-#: without putting a clock on a live transfer -- D42's other half.
+#: ``no_verify=1`` in the URI would be pointless if the same hole were opened
+#: here. The ServerAlive pair bounds a *dead* tunnel at three minutes without
+#: putting a clock on a live transfer.
 WRAPPER = (
     "#!/bin/sh\n"
     "exec ssh -o UserKnownHostsFile={hosts} -o StrictHostKeyChecking=yes"
@@ -133,11 +133,11 @@ def connect(cfg: dict) -> Iterator[Any]:
     ``registerErrorHandler`` silences libvirt's unconditional stderr chatter.
     Lookup misses are the normal case here, not errors, and every one of them would
     otherwise print a traceback-looking line an operator has to learn to ignore.
-    Keeping them off stderr is the point of that handler; *destroying* them was
-    incidental, and the handler now routes them to DEBUG instead. Off by default,
-    so the operator's terminal is unchanged, and recoverable when something is
-    wrong -- this is the only account of a libvirt failure anywhere in the
-    process, and `%s` formatting means it costs nothing while DEBUG is off.
+    Keeping them off stderr is the point; the handler routes them to DEBUG rather
+    than destroying them. Off by default, so the operator's terminal is
+    unchanged, and recoverable when something is wrong -- this is the only account
+    of a libvirt failure anywhere in the process, and `%s` formatting means it
+    costs nothing while DEBUG is off.
 
     The credentials live in a ``TemporaryDirectory`` (0700, ``mkdtemp``'s
     default) for exactly as long as the session, and are removed on any exit,
@@ -167,7 +167,7 @@ def connect(cfg: dict) -> Iterator[Any]:
 def marker_of(root: ET.Element) -> Marker | None:
     """The ownership marker, or ``None`` if this domain is not ours.
 
-    **Unparseable is unmarked** (D12). Reading a damaged marker as *ours* would let
+    **Unparseable is unmarked.** Reading a damaged marker as *ours* would let
     destroy delete something we do not understand; reading it as *absent* is caught
     by the name-collision refusal instead, which is the safe direction.
     """
@@ -177,10 +177,10 @@ def marker_of(root: ET.Element) -> Marker | None:
     try:
         return Marker.from_json(element.text)
     except MarkerError as exc:
-        # D12 stands: this domain is read as unmarked, which is the safe
-        # direction. But "damaged marker" and "no marker" are different facts and
-        # the return value makes them one, so a VM that vcows created and can no
-        # longer recognise is otherwise indistinguishable from a stranger's.
+        # The domain is read as unmarked, which is the safe direction. But
+        # "damaged marker" and "no marker" are different facts and the return
+        # value makes them one, so without this line a VM vcows created and
+        # cannot recognise is indistinguishable from a stranger's.
         log.info("damaged marker read as unmarked: %s", exc)
         return None
 
@@ -188,7 +188,7 @@ def marker_of(root: ET.Element) -> Marker | None:
 def disks_of(root: ET.Element) -> tuple[str, ...]:
     """Every **file-backed** source path this domain owns, for teardown.
 
-    Both ``disk`` and ``cdrom`` (D17) -- without the cdrom, every per-VM seed ISO
+    Both ``disk`` and ``cdrom`` -- without the cdrom, every per-VM seed ISO
     is orphaned on teardown. Never a ``<backingStore>``, and never a device with no
     ``<source>``: an empty cdrom tray is normal (every domain on the rig has one)
     and must yield nothing rather than a ``None`` that destroy later tries to
@@ -218,8 +218,7 @@ def macs_of(root: ET.Element) -> tuple[str, ...]:
     """Configured interface MACs, lowercased.
 
     Free: this is the same document already parsed for the marker and the disks,
-    which is the whole reason the MAC collision check survived D32's cut of the
-    ICMP probe.
+    so the MAC collision check costs no extra round trip.
     """
     return tuple(
         mac.lower()
@@ -245,14 +244,14 @@ def _domains(conn: Any) -> tuple[list[Existing], dict[str, str], list[Problem]]:
     problems: list[Problem] = []
     # The twin of destroy._claimed_elsewhere. Deliberately not shared: that one
     # skips its own targets before the read, and its warning names a different
-    # cost -- which this module's docstring requires it to. #42 measured the
-    # merge and rejected it; the nine identical lines are all boilerplate.
+    # cost -- which this module's docstring requires it to. The merge was
+    # measured and rejected; the nine identical lines are all boilerplate.
     for dom in conn.listAllDomains(0):
         name = "<unnamed>"
         try:
             name = dom.name()
             uuid = dom.UUIDString()
-            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; see this module's docstring
         except (libvirt.libvirtError, ET.ParseError) as exc:
             problems.append(
                 Problem.warning(
@@ -287,7 +286,7 @@ def volume_facts(xml: str) -> dict[str, Any]:
     not a parse failure. ``backing`` is ``None`` for everything that is not an
     overlay, which is how ``base_volume`` counts what a replacement would break.
     """
-    root = ET.fromstring(xml)  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+    root = ET.fromstring(xml)  # noqa: S314  libvirt's own XMLDesc output; see this module's docstring
     fmt = root.find("target/format")
     path = root.find("target/path")
     physical = root.find("physical")
@@ -307,17 +306,17 @@ def _int_or_none(element: ET.Element | None) -> int | None:
 def open_pool(conn: Any, name: str) -> tuple[Any | None, list[Problem]]:
     """Look the pool up, insist it is active, and refresh it.
 
-    vcows never creates a pool (D29): that is a host-level mutation on someone
+    vcows never creates a pool: that is a host-level mutation on someone
     else's hypervisor, and it would create a destroy obligation we do not want.
     Inactive is checked *explicitly* because a volume lookup against an inactive
     pool returns ``NO_STORAGE_VOL`` rather than anything naming the pool -- the real
     cause would never surface.
 
-    The refresh is D35 and is required for correctness, not defensive. A golden
-    image copied into the pool directory out of band is invisible until it happens,
-    so preflight would report "not present", the module would set ``create = true``,
-    and the apply would die on "storage volume exists already" for a reason nobody
-    could diagnose.
+    The refresh is required for correctness, not defensive. A golden image copied
+    into the pool directory out of band is invisible until it happens, so
+    preflight would report "not present", ``base_volume`` would return
+    ``create: True``, and the apply would die on "storage volume exists already"
+    for a reason nobody could diagnose.
     """
     import libvirt
 
@@ -370,7 +369,7 @@ def walk(pool: Any) -> tuple[dict[str, dict[str, Any]], list[Problem]]:
     """Every volume in the pool, keyed by name, and what could not be read.
 
     One walk answers three separate questions -- the orphan-volume refusal, whether
-    the golden image is here and where, and D30's size comparison -- which is why
+    the golden image is here and where, and the size comparison -- which is why
     ``prepare`` needs no session. A volume dropped here is therefore a volume none
     of the three saw, which is why the skip is reported rather than silent.
     """
@@ -406,7 +405,7 @@ def base_volume(cfg: dict, volumes: dict[str, dict]) -> tuple[dict, list[Problem
     the pool's target directory is a property of somebody else's pool. It travels
     in ``Discovered.artifacts`` and lands in ``render``'s ``base_volume``.
 
-    **D30: a present base volume is verified, not trusted.** An interrupted upload
+    **A present base volume is verified, not trusted.** An interrupted upload
     leaves a truncated qcow2 whose header still declares the full virtual size, so
     capacity cannot catch it; every overlay would then back onto a broken image and
     VMs would fail at random points in boot on a host the tool called healthy.
@@ -537,9 +536,9 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
     """Addresses libvirt has already handed out or promised on one network.
 
     Leases and ``<host>`` reservations are the only address facts a hypervisor
-    connection can state authoritatively. An ICMP probe was considered and cut
-    (D32): the container has no reason to share a segment with the target network,
-    so silence would be meaningless and a reply could be an unrelated host.
+    connection can state authoritatively. No ICMP probe: the container has no
+    reason to share a segment with the target network, so silence would be
+    meaningless and a reply could be an unrelated host.
 
     The lookup pays for itself twice -- a NIC naming a network that does not exist
     fails at define time otherwise, deep inside an apply.
@@ -561,7 +560,7 @@ def _network_claims(conn: Any, name: str) -> tuple[dict[str, str], list[Problem]
 
     claims: dict[str, str] = {}
     problems: list[Problem] = []
-    root = ET.fromstring(net.XMLDesc(0))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+    root = ET.fromstring(net.XMLDesc(0))  # noqa: S314  libvirt's own XMLDesc output; see this module's docstring
     for host in root.findall("ip/dhcp/host"):
         if ip := host.get("ip"):
             claims[ip] = f"a DHCP reservation on network {name!r}"
@@ -591,7 +590,7 @@ def address_conflicts(conn: Any, cfg: dict, by_mac: dict[str, str]) -> list[Prob
 
     Scoped to what the connection affords. Whether an address is otherwise free is
     the operator's business -- including whether a static sits inside a DHCP range,
-    which is the stock libvirt layout and not something to warn about (D33).
+    which is the stock libvirt layout and not something to warn about.
     """
     problems: list[Problem] = []
     claims: dict[str, dict[str, str]] = {}

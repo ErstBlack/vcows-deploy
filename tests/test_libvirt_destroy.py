@@ -1,11 +1,10 @@
 """Teardown: the flag mask, the ordering, and the accounting.
 
-No real VM is torn down here. There is nothing vcows created to tear down until
-the acceptance run, and destroying one of the rig's four working guests to test
-this is not a trade worth making. What is testable without one is everything that
-has actually been got wrong in this design: the order of the two calls, which flag
-bits may be shed, whether the pool is refreshed before a path is resolved, and
-whether a partial failure is reported or swallowed.
+No real VM is torn down here: destroying one of the rig's four working guests
+to test this is not a trade worth making. What is testable without one is
+everything easy to get wrong -- the order of the two calls, which flag bits may
+be shed, whether the pool is refreshed before a path is resolved, and whether a
+partial failure is reported or swallowed.
 """
 
 from __future__ import annotations
@@ -85,7 +84,7 @@ def test_floor_always_survives_the_gate():
 def domain_xml(marker, disks=()):
     """A domain document with the two things destroy re-reads: marker and disks.
 
-    Real XML rather than `<domain/>` because destroy now parses this rather than
+    Real XML rather than `<domain/>` because destroy parses this rather than
     trusting the snapshot preflight took, and a fixture that returns nothing
     would prove only that a target carrying nothing is skipped.
     """
@@ -212,13 +211,13 @@ def test_a_domain_already_gone_still_has_its_disks_collected():
 
 
 def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
-    """#9. The deletion stays -- it is the same vanished target as above -- but with
-    no live document to re-read, `_deletable`'s two remaining guards are "no
+    """The same vanished target as above, so the deletion stays -- but with no
+    live document to re-read, `_deletable`'s two remaining guards are "no
     existing domain claims this path" and a basename match, and a volume created
     after preflight ran satisfies both by construction.
 
-    So the delete is still taken and still reported as such, and now says what it
-    was taken on. A warning, not an error: it must not stop the teardown.
+    So the delete is taken, reported as such, and says what it was taken on. A
+    warning, not an error: it must not stop the teardown.
     """
     pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
     conn = FakeConnection(domains=[], pools=[pool])
@@ -231,15 +230,15 @@ def test_a_vanished_targets_disks_are_deleted_but_the_weaker_evidence_is_said():
 
     out = d.destroy({}, conn, [ghost])
 
-    # Unchanged: both disks go, the domain itself is skipped rather than
-    # destroyed, and nothing here is fatal. `destroyed` holds objects, so the
-    # two volume paths are in it and the domain name is not.
+    # Both disks go, the domain itself is skipped rather than destroyed, and
+    # nothing here is fatal. `destroyed` holds objects, so the two volume paths
+    # are in it and the domain name is not.
     assert pool.deleted == ["app01.qcow2", "app01-seed.iso"]
     assert out.skipped == ["app01"]
     assert out.destroyed == ["/pool/app01.qcow2", "/pool/app01-seed.iso"]
     assert not out.failed
 
-    # New: one warning per delete, naming the path and why the evidence is thin.
+    # One warning per delete, naming the path and why the evidence is thin.
     said = [p.message for p in out.problems]
     assert len(said) == 2
     for path in ("/pool/app01.qcow2", "/pool/app01-seed.iso"):
@@ -263,7 +262,7 @@ def test_a_live_target_deletes_its_disks_without_the_name_alone_warning():
 
 
 def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_deleted():
-    """#81. The other half of the pair above, and the commoner one: the domain
+    """The other half of the pair above, and the commoner one: the domain
     went and took its disks with it, so every path resolves NO_STORAGE_VOL and
     nothing is unlinked. The name-alone warning reports a delete, so with no
     delete there is nothing to report and `destroyed` and `problems` must agree."""
@@ -286,7 +285,7 @@ def test_a_vanished_target_whose_disks_are_already_gone_is_not_said_to_be_delete
 
 
 def test_a_vanished_targets_failed_delete_is_not_also_reported_as_a_delete():
-    """#81, second shape. `vol.delete` refused for a reason that is not "gone",
+    """Second shape. `vol.delete` refused for a reason that is not "gone",
     so `_fail` fires. `str(DestroyError)` is what `main` prints and what
     `run.json["error"]` carries; it must not say "could not delete X" and
     "X was deleted" about the same path."""
@@ -439,8 +438,8 @@ def test_a_non_flag_undefine_failure_is_not_retried():
 
 
 def test_pools_are_refreshed_before_any_path_is_resolved():
-    """D35, and the reason it is mandatory: on the rig, three of four running
-    domains' disks are real files in an active pool's own directory and do not
+    """The refresh is mandatory: on the rig, three of four running domains'
+    disks are real files in an active pool's own directory and do not
     resolve until this happens. Without it, `report and skip what does not resolve`
     silently leaks every overlay."""
     pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
@@ -460,7 +459,7 @@ def test_an_inactive_pool_is_not_refreshed():
 
 
 def test_an_inactive_pool_holding_a_targets_disk_is_fatal():
-    """The 2.3 reproduction. An inactive pool cannot be refreshed, so every disk
+    """An inactive pool cannot be refreshed, so every disk
     in it resolves as NO_STORAGE_VOL -- "already gone" -- while both files sit on
     disk with the domain's marker undefined. Silence here is how a teardown
     reports success and leaks every volume it was asked to remove."""
@@ -516,8 +515,7 @@ def test_a_path_that_will_not_resolve_is_skipped_not_unlinked():
 def test_the_disks_deleted_are_the_ones_the_domain_names_now():
     """`cmd_destroy` waits on a human at a terminal between the two reads, and
     the wait is unbounded. findings.md's "deliberately absent: disk paths" rule
-    claimed these paths were read immediately before undefining; until now they
-    were not read again at all."""
+    requires these paths to be read immediately before undefining."""
     dom = domain(active=False, disks=["/pool/app01.qcow2"])
     stale = target(dom, ["/pool/app01-seed.iso"])
     pool = FakePool("images", {"app01.qcow2": "", "app01-seed.iso": ""})
@@ -678,9 +676,10 @@ def test_a_clean_run_raises_nothing_and_says_what_it_removed():
 
 
 def test_an_interrupt_carries_out_what_was_already_torn_down(monkeypatch):
-    """Ctrl-C mid-teardown. `out` is a local and `DestroyError` is the only route
-    that carries it, so an interrupt used to leave `cmd_destroy` with nothing to
-    record for the run that can least afford to lose it."""
+    """Ctrl-C mid-teardown. `out` is a local and `DestroyError` is the only
+    route that carries it, so an interrupt that does not attach it leaves
+    `cmd_destroy` with nothing to record for the run that can least afford to
+    lose it."""
 
     def interrupt(flags):
         raise KeyboardInterrupt
@@ -725,9 +724,10 @@ def test_the_error_names_everything_left_behind_not_only_what_failed():
 
 
 def test_a_domain_that_cannot_be_asked_whether_it_is_running_is_reported():
-    """`isActive` sat outside the try. A raise there escapes `destroy` entirely, so
-    every target after this one in the loop is never touched and the operator gets a
-    traceback where an Outcome naming what was left behind should be."""
+    """`isActive` has to be inside the try. A raise outside it escapes `destroy`
+    entirely, so every target after this one in the loop is never touched and the
+    operator gets a traceback where an Outcome naming what was left behind should
+    be."""
     bad = domain("app01", active=True)
     bad.active_error = lv_error(1, "internal error")
     ok = domain("app02", active=False, disks=["/pool/app02.qcow2"])

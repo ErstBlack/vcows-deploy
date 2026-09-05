@@ -3,24 +3,23 @@
 # Built on a connected host; runs at a site with no network beyond the SSH tunnel
 # to the hypervisor.
 #
-# No pip and no virtualenv. Every runtime dependency exists as an RPM (R7), and
-# the application is copied to /opt/vcows and reached through PYTHONPATH -- which
-# also means R7's --system-site-packages trap cannot arise, because there is no
+# No pip and no virtualenv. Every runtime dependency exists as an RPM, and the
+# application is copied to /opt/vcows and reached through PYTHONPATH -- which
+# also means the --system-site-packages trap cannot arise, because there is no
 # venv to hide the libvirt binding from.
 #
 # Build: `just image`, which is scripts/image-build.sh -- written so this command
 # stops being one people retype. The set of paths the `-dirty` suffix is computed
-# over lives in `source_revision` (scripts/lib.sh) and is not restated here: the
-# copy that used to sit in this comment had already gone stale, omitting the
-# Containerfile and .containerignore that #63 added to the set.
+# over lives in `source_revision` (scripts/lib.sh) and is deliberately not
+# restated here, where a copy would go stale.
 #
-# The `-dirty` suffix is not decoration. The image built at e5d5a2c recorded a
-# clean SHA for a commit that did not contain the `container/entrypoint.py` it
-# shipped, which is the one question R5 exists to answer. `.git/` is outside the
+# The `-dirty` suffix is not decoration. Without it an image records a clean SHA
+# for a commit that does not contain the `container/entrypoint.py` it shipped,
+# which is the one question the manifest exists to answer. `.git/` is outside the
 # build context, so only the caller can compute this -- and `container/manifest.py`
 # records `unknown` rather than trust anything that is not 40 hex or 40 hex plus
-# `-dirty`. The paths are the ones this file COPYs. A suffix that fired for
-# everything would mean nothing.
+# `-dirty`. The paths are the ones this file COPYs. A suffix that fires for
+# everything means nothing.
 #
 # **Base image: the standard one, for now.** All three were built and put through
 # the same gate. Delivered (podman save | gzip): rockylinux:10 **152 MB**,
@@ -43,11 +42,9 @@
 #
 # **`:10` floats across minors, so the digest needs a periodic look.** The tag
 # is not a stable pointer: it resolved to 10.0 (published 2025-06-06), then 10.1
-# (2025-11-16), and now 10.2 (2026-05-26) -- roughly a five-to-six month cadence,
-# with no 10.3 published as of 2026-08-30. Pinning by digest freezes whichever
-# minor `:10` named when somebody last looked, and Rocky maintains only the
-# current minor. Checked 2026-08-30: `:10` resolves to exactly the digest below,
-# so this pin is current, on the current minor, and nothing needs doing.
+# (2025-11-16), then 10.2 (2026-05-26) -- roughly a five-to-six month cadence.
+# Pinning by digest freezes whichever minor `:10` named when somebody last
+# looked, and Rocky maintains only the current minor. The digest below is 10.2's.
 #
 # The monthly scheduled.yml rebuild cannot notice when that stops being true --
 # it builds from this ARG, so it re-pulls the same layer and re-scans it against
@@ -71,10 +68,10 @@ ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10
 ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 
 # `proxmoxer` is the one runtime dependency with no RPM anywhere -- measured
-# 2026-09-01 across Rocky 10 baseos/appstream/crb/extras and EPEL 10, and
-# repology shows no Fedora or RHEL-derived packaging at all (pyproject.toml says
-# so at length). It is pure Python with `requires_dist: null`, so this stage
-# installs one hash-pinned wheel and the runtime stage copies the result.
+# across Rocky 10 baseos/appstream/crb/extras and EPEL 10, and repology shows no
+# Fedora or RHEL-derived packaging at all (pyproject.toml says so at length). It
+# is pure Python with `requires_dist: null`, so this stage installs one
+# hash-pinned wheel and the runtime stage copies the result.
 #
 # **A separate stage so the delivered image never carries pip.** `dnf remove`
 # afterwards would leave the layer behind and the removal is not free; a stage
@@ -84,7 +81,7 @@ ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e398
 # stage downloads the wheel, and the runtime stage passes the version and digest
 # to the manifest. An ARG declared inside a stage is scoped to that stage, and a
 # bare re-declaration in another one inherits the *global* value -- so with these
-# below the FROM the manifest silently recorded an empty `pip_packages`.
+# below the FROM the manifest records an empty `pip_packages`.
 ARG PROXMOXER_VERSION=2.3.0
 # The wheel's own sha256 from PyPI. A second pin nothing can automate.
 ARG PROXMOXER_SHA256=1c03445e95cf9c53b6e50614dbaf561e0e1eb3ec878cf45ddde4bc4421c56743
@@ -137,12 +134,12 @@ ARG BUILD_DATE=unknown
 # constrains a redistributor; `/opt/vcows/manifest.json` is the authoritative
 # per-package record. GPL-2.0-only is in here on purpose: glibc, util-linux-core,
 # libzstd and python3-pycdlib all carry it, GPLv2 section 3 has no network-server
-# option, and that single fact is why the source sidecar cannot be avoided (D22).
+# option, and that single fact is why the source sidecar cannot be avoided.
 ARG IMAGE_LICENSES="Apache-2.0 AND GPL-2.0-only AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-3-Clause AND Python-2.0.1"
 
 # --nodocs, no weak dependencies, and the minimal langpack: the GPL source
-# obligation is proportional to what ships (D22), so the closure is kept small
-# for a licensing reason as much as a size one.
+# obligation is proportional to what ships, so the closure is kept small for a
+# licensing reason as much as a size one.
 RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
  && dnf -y install --nodocs --setopt=install_weak_deps=0 \
       glibc-minimal-langpack \
@@ -159,7 +156,7 @@ RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/libdnf5 /etc/yum.repos.d/epel*.repo
 
-# Redistributing proxmoxer means shipping its licence (R3).
+# Redistributing proxmoxer means shipping its licence.
 COPY licenses /opt/vcows/licenses
 
 COPY orchestrator /opt/vcows/orchestrator
@@ -181,9 +178,10 @@ ENV PYTHONPATH=/opt/vcows:/opt/vcows/vendor \
 # Last, so it describes the finished image. Everything above is already in place
 # by the time `rpm -qa` runs.
 #
-# Bind-mounted rather than COPYed: a COPY is its own layer, so the script shipped
-# in the delivered image and the `rm -f` that followed it only added a whiteout on
-# top. The mount exists for the duration of this RUN and leaves nothing behind.
+# Bind-mounted rather than COPYed: a COPY is its own layer, so the script would
+# ship in the delivered image and an `rm -f` after it would only add a whiteout
+# on top. The mount exists for the duration of this RUN and leaves nothing
+# behind.
 # `source_revision` (scripts/lib.sh) lists `container` among the paths the
 # `-dirty` suffix is computed over, so the file is still covered by that check.
 #
@@ -199,7 +197,7 @@ RUN --mount=type=bind,source=container/manifest.py,target=/tmp/manifest.py,z \
     python3 /tmp/manifest.py > /opt/vcows/manifest.json
 
 # The base image labels every one of these, so an image that overrides none of
-# them self-identifies to a third party as an RESF product (F16).
+# them self-identifies to a third party as an RESF product.
 LABEL org.opencontainers.image.title="vcows-deploy" \
       org.opencontainers.image.description="Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over qemu+ssh" \
       org.opencontainers.image.version="${VCOWS_VERSION}" \

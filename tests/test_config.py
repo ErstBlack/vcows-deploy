@@ -45,9 +45,9 @@ def test_loads_a_valid_config(tmp_path, registry):
 
 
 def test_load_hands_back_the_warnings_it_computed(tmp_path, registry):
-    """Every verb validates on the way in and every verb but `validate` threw the
-    non-fatal half away -- so `validate` recovered it by running the whole of
-    validation a second time, and the other three never mentioned it at all."""
+    """Every verb validates on the way in, and the non-fatal half has to come
+    back out -- otherwise `validate` has to run the whole of validation a second
+    time to recover it and the other three never mention it at all."""
     from orchestrator.problems import Severity
 
     text = CONFIG.replace("good://example", "odd://example")
@@ -75,8 +75,8 @@ def test_a_bad_filename_stem_blames_the_file_not_the_key(tmp_path, registry):
     assert "9 bad name" in message and "filename" in message
     assert "[deployment]" not in message
     # The rewrite has to *carry* a message. Both substrings above also occur in
-    # `tmp_path`, which `where` renders, so this assertion passed for a Problem
-    # whose message was None.
+    # `tmp_path`, which `where` renders, so the assertions above pass for a
+    # Problem whose message is None.
     assert isinstance(exc.value.problems[0].message, str)
     assert [p.where for p in exc.value.problems] == [str(config)]
 
@@ -243,9 +243,9 @@ def test_a_file_that_cannot_become_a_config_is_blamed_on_the_file(
 
 def test_a_problem_with_no_key_to_point_at_is_blamed_on_the_document(registry):
     """`<root>` is the `where` a document-level failure carries, and the CLI
-    prints it and `run.json` records it exactly as it does any other. Nothing
-    asserted it, so the sentinel could become the empty string -- a problem
-    reported against nothing at all -- and every existing test still passed."""
+    prints it and `run.json` records it exactly as any other. Unasserted, the
+    sentinel could become the empty string -- a problem reported against nothing
+    at all -- with every other test still passing."""
     problems = validate({}, registry)
     # One per missing required key, and every one of them points at the document
     # rather than at a key -- there is no key to point at.
@@ -284,7 +284,7 @@ def test_the_document_shape_is_checked_keyword_by_keyword(
 
 def test_one_vm_is_enough(tmp_path, registry):
     """The other side of `minItems`. Every other config here carries two, so a
-    floor of two would have been indistinguishable from a floor of one."""
+    floor of two is otherwise indistinguishable from a floor of one."""
     text = CONFIG.replace("  - name: app02\n", "")
     cfg, _ = load(write(tmp_path, text), registry)
     assert [vm["name"] for vm in cfg["vms"]] == ["app01"]

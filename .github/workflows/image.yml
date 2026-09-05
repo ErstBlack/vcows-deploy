@@ -76,12 +76,10 @@ jobs:
       - run: just test-image
       - run: just scan
       - run: just bundle
-      # The one step that makes the rest of this job worth running. Until now
-      # `just scan` wrote trivy.json, the SBOM and the archive into the runner's
-      # .cache/ and the runner deleted them, so the monthly rebuild proved
-      # something and recorded nothing -- which removes the reason to run it
-      # monthly, namely diffing this month's SBOM against last month's across an
-      # unpinned `dnf -y install` layer.
+      # The one step that makes the rest of this job worth keeping: `just scan`
+      # writes trivy.json, the SBOM and the archive into the runner's .cache/,
+      # and the runner deletes them, so without an upload the job proves
+      # something and records nothing.
       #
       # A `uses:`, so `workflows_carry_no_logic` in scripts/lint.sh still passes:
       # it inspects run/script/before_script/after_script and not uses.

@@ -96,9 +96,9 @@ def test_version_prints_the_single_definition(capsys):
 
 
 def test_version_says_which_build_the_image_is(tmp_path, monkeypatch, capsys):
-    """R5's whole purpose, and the reason `_print_manifest` runs before anything
-    that can return early: "which build is this" answered from the image itself,
-    for an air-gapped site that cannot rebuild it to find out."""
+    """Why `_print_manifest` runs before anything that can return early: "which
+    build is this" answered from the image itself, for an air-gapped site that
+    cannot rebuild it to find out."""
     baked = tmp_path / "manifest.json"
     baked.write_text(json.dumps(BUILD))
     monkeypatch.setattr(cli, "MANIFEST", baked)
@@ -140,8 +140,8 @@ def test_validate_reports_every_problem_at_once(tmp_path, backend, capsys):
 def test_a_config_warning_reaches_more_than_validate(
     backend, tmp_path, monkeypatch, capsys
 ):
-    """`load` computes them on the way into every verb. Dropping them everywhere
-    but `validate` meant an operator only saw them if they asked twice."""
+    """`load` computes them on the way into every verb. Dropped everywhere but
+    `validate`, an operator sees them only by asking twice."""
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "lab-a.yaml"
     path.write_text(CONFIG.replace("good://example", "odd://example"))
@@ -154,7 +154,7 @@ def test_a_config_warning_reaches_more_than_validate(
 
 def test_a_destroy_scopes_the_advisory_problems(backend, tmp_path, monkeypatch, capsys):
     """Preflight computes its refusals for a deploy and both verbs print them.
-    D30's names a golden image shared across deployments; unlabelled, it reads
+    A refusal naming a golden image shared across deployments reads, unlabelled,
     as an instruction to an operator already in a destructive frame of mind."""
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "lab-a.yaml"
@@ -173,7 +173,7 @@ def test_a_destroy_does_not_pay_for_the_image_digest(backend, tmp_path, monkeypa
     """`imagecheck.check_image_digest` reads the whole golden image -- its own
     measurement is ~59 s for 10 GiB -- and a teardown reads `cfg["backend"]` and
     `cfg["deployment"]` and never the file. So `cmd_destroy` is the one verb that
-    loads with `verify_digest=False`, and every other verb still pays (#257).
+    loads with `verify_digest=False`, and every other verb still pays.
 
     The fake backend runs no image checks at all, so what is asserted here is the
     flag arriving at the seam. That both shipped backends honour it is
@@ -299,7 +299,7 @@ def test_deploy_runs_the_whole_pipeline(
 
 
 def test_the_run_directory_is_not_world_readable(backend, config, tmp_path):
-    """It holds the seed ISOs, and those hold `user_data` verbatim (F12)."""
+    """It holds the seed ISOs, and those hold `user_data` verbatim."""
     assert cli.main(["deploy", config]) == 0
     mode = stat.S_IMODE(latest_run(tmp_path).stat().st_mode)
     assert mode == 0o700
@@ -308,8 +308,8 @@ def test_the_run_directory_is_not_world_readable(backend, config, tmp_path):
 def test_a_second_deploy_creates_nothing_and_calls_no_backend(
     backend, config, tmp_path, monkeypatch, capsys
 ):
-    """Every VM already exists and is ours. D23 drops them from the set being
-    created, which leaves nothing to do -- so neither `prepare` nor `create`
+    """Every VM already exists and is ours, so they are dropped from the set
+    being created and nothing is left to do -- neither `prepare` nor `create`
     runs, and no seed ISO is written for a VM nobody asked for."""
     backend.world = [ours("app01"), ours("app02")]
     monkeypatch.setattr(
@@ -361,10 +361,10 @@ def test_a_refused_deploys_reason_reaches_the_run_record(
 def test_a_failed_create_still_leaves_a_run_record(
     backend, config, tmp_path, monkeypatch, capsys
 ):
-    """The run directory is what a site ships back for support, and today it is
-    present for every run where nothing happened and absent for every run where
-    something did. `create` rolls nothing back, so the record of what it was
-    part-way through is the only account of the leftovers."""
+    """The run directory is what a site ships back for support, so it must not
+    be present only for runs where nothing happened. `create` rolls nothing back,
+    so the record of what it was part-way through is the only account of the
+    leftovers."""
 
     class CreateError(Exception):
         """A backend's own error. findings.md §3 rules out a shared hierarchy,
@@ -386,11 +386,11 @@ def test_a_failed_create_still_leaves_a_run_record(
 def test_a_deploy_that_fails_part_way_records_what_it_created(
     backend, config, tmp_path, monkeypatch, capsys
 ):
-    """`create` rolls nothing back, so a failure part-way leaves VMs running with
-    no artifact naming them: the record said `failed` and stopped there, and an
-    operator had to read the log to find out what was on the hypervisor. Both
-    backends attach what they got as far as to the exception; core reads it with
-    `getattr` and writes the inventory it would have written anyway."""
+    """`create` rolls nothing back, so a failure part-way leaves VMs running that
+    a record saying only `failed` does not name, and an operator has to read the
+    log to find out what is on the hypervisor. Both backends attach what they got
+    as far as to the exception; core reads it with `getattr` and writes the
+    inventory it would have written anyway."""
 
     def boom(cfg, session, prepared):
         exc = RuntimeError("could not define the domain")
@@ -422,9 +422,9 @@ def test_a_deploy_that_fails_part_way_records_what_it_created(
 
 
 def test_the_log_lands_beside_the_record(backend, config, tmp_path):
-    """The shipped wrapper runs `podman run --rm`, so the container README used
-    to point at is gone before anyone can ask it for its logs. `<run>/log` is the
-    copy that ships home, and it carries its own join key."""
+    """The shipped wrapper runs `podman run --rm`, so the container is gone
+    before anyone can ask it for its logs. `<run>/log` is the copy that ships
+    home, and it carries its own join key."""
     assert cli.main(["deploy", config]) == 0
     run = latest_run(tmp_path)
 
@@ -512,8 +512,7 @@ def test_a_backend_that_created_fewer_vms_than_asked_fails_the_deploy(
 ):
     """A backend that reports a subset yields `created 0 VM(s)` under `outcome:
     ok`: a run whose two artifacts contradict each other, with the record siding
-    against the truth. This is the reporting shape acceptance defect 5 passed
-    through."""
+    against the truth."""
     monkeypatch.setattr(backend, "create", lambda *a: {"app01": {"name": "app01"}})
 
     assert cli.main(["deploy", config]) == 1
@@ -547,8 +546,8 @@ def test_a_target_problem_stops_the_deploy(backend, config, monkeypatch):
 def test_only_the_vms_that_do_not_exist_yet_reach_the_backend(
     backend, config, tmp_path, monkeypatch
 ):
-    """D23: `create` only ever creates, so a VM that already exists is dropped
-    here rather than skipped further down. `prepare` is handed the same narrowed
+    """`create` only ever creates, so a VM that already exists is dropped here
+    rather than skipped further down. `prepare` is handed the same narrowed
     config -- a seed ISO for a VM that is not being created is `user_data`
     written for nothing."""
     backend.world = [ours("app01")]
@@ -578,7 +577,7 @@ def test_only_the_vms_that_do_not_exist_yet_reach_the_backend(
 def test_a_non_empty_run_dir_is_refused_before_anything_connects(
     backend, config, tmp_path, capsys, argv
 ):
-    """D40 gives every run a fresh state, and reusing a directory breaks it two
+    """Every run gets a fresh state, and reusing a directory breaks that two
     different ways: deploy dies on `seed/` with a bare FileExistsError, destroy
     creates no subdirectories at all and silently overwrites the earlier run's
     `run.json` beside its still-current `inventory.json`. Refuse both, and refuse
@@ -599,8 +598,8 @@ def test_a_run_dir_that_is_a_file_is_refused_in_a_sentence(
     backend, config, tmp_path, capsys
 ):
     """`exist_ok=True` suppresses `FileExistsError` for a directory and nothing
-    else, so this used to reach `main`'s catch-all as `error: FileExistsError:
-    [Errno 17] File exists` -- the output `UsageError` was added to replace."""
+    else, so without the `UsageError` this reaches `main`'s catch-all as
+    `error: FileExistsError: [Errno 17] File exists`."""
     notadir = tmp_path / "notadir"
     notadir.write_text("this is a file\n")
 
@@ -627,9 +626,9 @@ def test_an_empty_run_dir_still_works(backend, config, tmp_path):
 def test_a_run_dir_that_cannot_be_created_is_refused_in_a_sentence(
     backend, config, tmp_path, capsys, argv
 ):
-    """`UsageError` exists so a bad `--run-dir` is a sentence and not an
-    errno. The is-a-file and not-empty branches got that; the mkdir did not, and
-    its message named a relative path because `resolve()` ran after it."""
+    """`UsageError` exists so a bad `--run-dir` is a sentence and not an errno.
+    The mkdir branch included, and naming the absolute path, which needs
+    `resolve()` to run before the mkdir rather than after."""
     parent = tmp_path / "unwritable"
     parent.mkdir(mode=0o555)
     wanted = parent / "run"
@@ -649,8 +648,8 @@ def test_a_run_dir_that_cannot_hold_the_log_stops_before_the_body(
     """`--run-dir` naming the mount itself: it exists and is empty, and its mode
     has no group or other bits, so neither the not-empty refusal nor the `0700`
     chmod stops it. `_guard` opening `<run>/log` does, before the body runs --
-    which is the improvement, because `destroy` used to tear the VMs down and
-    only then discover it could not write its record.
+    otherwise `destroy` tears the VMs down and only then discovers it cannot
+    write its record.
 
     Unwritable by mode, like the mkdir test above: the suite does not run as root.
     """
@@ -704,9 +703,9 @@ def test_the_run_timestamp_is_utc(monkeypatch):
 
 
 def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
-    """D36. The marker has carried `deployment` since 0.1.0.0, so the scope is a
-    filter on data that is already there -- and destroying somebody else's VMs
-    because they share a hypervisor is the data-loss event findings.md §2 names.
+    """The marker carries `deployment`, so the scope is a filter on data already
+    there -- and destroying somebody else's VMs because they share a hypervisor
+    is the data-loss event findings.md §2 names.
     """
     backend.world = [ours("app01"), ours("elsewhere", "lab-b"), ours("stray", "")]
 
@@ -717,7 +716,7 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     out = capsys.readouterr().err
     assert "belongs to deployment 'lab-b'" in out
     # The detail column is empty when the marker's name is the domain's name,
-    # which is every ordinary case: repeating it read `app01  destroy  app01`.
+    # which is every ordinary case: repeating it reads `app01  destroy  app01`.
     (row,) = [ln for ln in out.splitlines() if ln.endswith("destroy")]
     assert row.count("app01") == 1, row
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
@@ -735,9 +734,9 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
 def test_a_destroy_that_could_not_finish_says_what_it_left(
     backend, config, tmp_path, capsys
 ):
-    """2.3, end to end. An inactive pool makes every disk in it resolve as
-    "already gone": the domain is destroyed and undefined, its marker with it,
-    both volumes stay on disk, and the operator was told it worked."""
+    """An inactive pool makes every disk in it resolve as "already gone": the
+    domain is destroyed and undefined, its marker with it, both volumes stay on
+    disk, and without this the operator is told it worked."""
     from orchestrator.backends.base import Outcome
     from orchestrator.problems import Problem, Severity
 
@@ -752,10 +751,9 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
 
     assert cli.main(["destroy", config, "--yes"]) == 1
     captured = capsys.readouterr()
-    # Rewritten rather than retargeted when every line became a log line: this
-    # used to pin the stdout/stderr split, and the split is now the *level*.
-    # Retargeting both halves to `.err` would have left it passing while
-    # asserting nothing about which is which.
+    # The split that carries meaning is the *level*, not stdout/stderr. Both
+    # halves land on `.err`, so asserting only that says nothing about which is
+    # which.
     assert captured.out == "", "stdout carries nothing but the interactive prompt"
     skipped = [ln for ln in captured.err.splitlines() if "/pool/app01" in ln]
     assert len(skipped) == 2, captured.err
@@ -775,13 +773,13 @@ def test_a_destroy_that_could_not_finish_says_what_it_left(
 def test_a_returned_fatal_problem_is_not_recorded_as_ok(
     backend, config, tmp_path, capsys
 ):
-    """RW-B2. `Backend.destroy`'s docstring says a backend is free to return
-    rather than raise, and `Outcome`'s says a returned outcome "without its
-    consumer reading it reproduces that defect exactly". Core read `skipped` and
-    never `failed`, so a backend that returned a fatal problem with an empty
-    `skipped` got `outcome: "ok"` and exit 0 -- the silent partial success
-    findings.md §1 names, arriving through the seam meant to prevent it.
-    Unreachable through the libvirt backend, which raises."""
+    """`Backend.destroy`'s docstring says a backend is free to return rather than
+    raise, and `Outcome`'s says a returned outcome "without its consumer reading
+    it reproduces that defect exactly". Core reading `skipped` and never `failed`
+    gives a backend that returns a fatal problem with an empty `skipped`
+    `outcome: "ok"` and exit 0 -- the silent partial success findings.md §1
+    names, arriving through the seam meant to prevent it. Unreachable through the
+    libvirt backend, which raises."""
     from orchestrator.backends.base import Outcome
     from orchestrator.problems import Problem, Severity
 
@@ -804,12 +802,10 @@ def test_a_returned_fatal_problem_is_not_recorded_as_ok(
 def test_a_backend_that_created_the_right_count_under_wrong_names_fails(
     backend, config, tmp_path, monkeypatch
 ):
-    """RW-B1. The reconciliation compared counts, so two VMs asked for and two
-    reported passed even when one was a different VM -- `run.json` and
-    `inventory.json` in the same directory disagreeing about what exists, with
-    `outcome: ok` over both. The message already computed the set difference and
-    carried an `or 'names differ'` fallback, so a set comparison was always the
-    intent."""
+    """The reconciliation compares sets, not counts: two VMs asked for and two
+    reported must not pass when one is a different VM, which leaves `run.json`
+    and `inventory.json` in the same directory disagreeing about what exists,
+    with `outcome: ok` over both."""
     monkeypatch.setattr(
         backend,
         "create",
@@ -820,8 +816,8 @@ def test_a_backend_that_created_the_right_count_under_wrong_names_fails(
     record = json.loads((latest_run(tmp_path) / "run.json").read_text())
     assert record["outcome"] == "failed"
     # The name asked for and not reported back. `or 'names differ'` covers the
-    # difference running the other way, and an assertion accepting either was
-    # satisfied by that fallback rather than by the name.
+    # difference running the other way, so accepting either would be satisfied
+    # by the fallback rather than by the name.
     assert "app02" in record["error"]
     assert not (latest_run(tmp_path) / "inventory.json").exists()
 
@@ -830,10 +826,10 @@ def test_a_destroy_that_raises_still_records_what_it_removed(
     backend, config, tmp_path, monkeypatch
 ):
     """The teardown with a fatal problem is the one with the most to record and
-    the one that reaches `_guard` as an exception rather than a return value, so
-    the structured record below it never ran: `run.json` carried `outcome:
-    failed` and a message, with no `destroyed` and no `skipped`. That is the run
-    an air-gapped site ships back after a teardown it now has to finish by hand.
+    the one that reaches `_guard` as an exception rather than a return value.
+    Without this the structured record never runs and `run.json` carries
+    `outcome: failed` and a message, with no `destroyed` and no `skipped` -- the
+    run an air-gapped site ships back after a teardown it has to finish by hand.
     """
     from orchestrator.backends.base import Outcome
     from orchestrator.problems import Problem, Severity
@@ -872,9 +868,10 @@ def test_a_destroy_that_raises_still_records_what_it_removed(
 def test_an_interrupted_destroy_records_what_it_removed(
     backend, config, tmp_path, monkeypatch
 ):
-    """The same argument one test up, for the exception that is not an `Exception`.
-    A Ctrl-C is the teardown least likely to have finished and the one whose record
-    an operator most needs, and `except Exception` here dropped it on the floor."""
+    """The same argument one test up, for the exception that is not an
+    `Exception`. A Ctrl-C is the teardown least likely to have finished and the
+    one whose record an operator most needs, and `except Exception` here would
+    drop it on the floor."""
     from orchestrator.backends.base import Outcome
 
     def interrupt(*a, **k):
@@ -1023,7 +1020,7 @@ def test_the_build_manifest_travels_with_the_run(
     backend, config, tmp_path, monkeypatch
 ):
     """The run directory is what an air-gapped site ships back, and "which build
-    did this" is unanswerable from it unless R5's record goes along."""
+    did this" is unanswerable from it unless the manifest goes along."""
     backend.world = [ours("app01"), ours("app02")]
     baked = tmp_path / "baked-manifest.json"
     baked.write_text('{"git_sha": "da3f45c"}')
@@ -1071,8 +1068,8 @@ def test_a_checkout_has_no_manifest_and_that_is_not_an_error(
 def test_version_says_when_the_manifest_exists_and_will_not_parse(
     tmp_path, monkeypatch, capsys
 ):
-    """Absent and unreadable used to be one return value, so an unreadable R5
-    record on a delivered image looked exactly like a dev box."""
+    """Absent and unreadable are different answers: one return value for both
+    makes an unreadable manifest on a delivered image look like a dev box."""
     bad = tmp_path / "manifest.json"
     bad.write_text("{ this is not json")
     monkeypatch.setattr(cli, "MANIFEST", bad)
@@ -1095,8 +1092,9 @@ def test_a_run_dir_handed_to_us_is_made_private(backend, config, tmp_path):
 def test_a_run_dir_that_cannot_be_made_private_says_which_mode_it_wanted(
     backend, config, tmp_path, monkeypatch, capsys
 ):
-    """Refusing would break the foreign-UID bind mount README:48-53 documents.
-    Saying nothing would leave `user_data` readable with nobody told."""
+    """Refusing would break the foreign-UID bind mount README's requirements
+    document. Saying nothing would leave `user_data` readable with nobody
+    told."""
     backend.world = [ours("app01"), ours("app02")]
     given = tmp_path / "not-ours"
     given.mkdir(mode=0o755)
@@ -1113,9 +1111,9 @@ def test_a_run_dir_that_cannot_be_made_private_says_which_mode_it_wanted(
 def test_nothing_in_the_run_directory_is_readable_by_anyone_else(
     backend, config, tmp_path
 ):
-    """The directory has been 0700 since Stage 4; its contents were not. The seed
-    ISOs are written by pycdlib rather than by vcows, so no per-file chmod can
-    reach them and the umask is the only lever."""
+    """The directory is 0700; its contents have to be too. The seed ISOs are
+    written by pycdlib rather than by vcows, so no per-file chmod can reach them
+    and the umask is the only lever."""
     assert cli.main(["deploy", config]) == 0
     loose = sorted(
         str(p.relative_to(latest_run(tmp_path)))

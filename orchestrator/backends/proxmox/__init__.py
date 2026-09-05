@@ -10,13 +10,11 @@ importing the registry drags this file in on every run -- including runs that
 only ever talk to libvirt. ``api.py`` imports ``proxmoxer`` inside the functions
 that need it; ``tests/test_seam.py`` is the gate.
 
-**Why there is no ``prepare`` here, in any form.** The seed ISOs are built by
+**There is no ``prepare`` here, in any form.** The seed ISOs are built by
 ``cloudinit.build_all`` and the ``image`` this backend needs is carried through
-from ``preflight``, so the inherited ``Backend.prepare`` is the whole of it. The
-Proxmox research predicted this backend would be the one that had to hold a
-socket open while the image was pulled. **It is not.** Serving the image over
-HTTP for PVE to pull was the ``download_file`` design; what shipped uploads over
-the same API token, so nothing is held open.
+from ``preflight``, so the inherited ``Backend.prepare`` is the whole of it.
+Nothing is held open while the image moves: it is uploaded over the same API
+token rather than served over HTTP for PVE to pull.
 """
 
 from __future__ import annotations
@@ -58,9 +56,9 @@ class ProxmoxBackend(Backend):
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Render the values, then make the objects they describe.
 
-        ``render`` stays a step of its own now that nothing consumes its output
-        but this line: it is the pure config-to-values half, golden-file tested
-        byte for byte, and keeping it separate is what lets ``create`` be tested
-        against a dict rather than against a config.
+        ``render`` is a step of its own even though this line is its only
+        consumer: it is the pure config-to-values half, golden-file tested byte
+        for byte, and keeping it separate lets ``create`` be tested against a
+        dict rather than against a config.
         """
         return _create.create(session, _render.render(cfg, prepared))

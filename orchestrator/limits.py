@@ -23,11 +23,10 @@ log = logging.getLogger(__name__)
 def _ceiling(name: str, default: int) -> int:
     """One size ceiling, overrideable from the environment.
 
-    Same shape as ``cli.MANIFEST``: a constant with an environment override, so a
-    site on hardware we have not seen raises the bound from the outside rather
-    than editing a file inside the image. A value that will not parse, or is not
-    positive, is reported and ignored -- taking it silently is the failure mode
-    the reporting work existed to remove.
+    A constant with an environment override, so a site on hardware we have not
+    seen raises the bound from the outside rather than editing a file inside the
+    image. A value that will not parse, or is not positive, is reported and
+    ignored rather than taken silently.
 
     This runs at **import**, because the three constants it produces are consumed
     as literals inside each backend's ``VM_SCHEMA``. That is why ``orchestrator``
