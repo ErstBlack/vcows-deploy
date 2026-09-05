@@ -90,6 +90,13 @@ INTERFACE_XML = """    <interface type='{kind}'>
 #: undefine will not clean up.
 NVRAM_DIR = "/var/lib/libvirt/qemu/nvram"
 
+#: Seconds between an upload's progress lines. The golden image takes minutes on
+#: a slow link and `_made` says nothing until it lands, so this is the only thing
+#: that distinguishes a slow upload from a hung one. Five, because anything
+#: faster than that finishes before the first line would be due and prints
+#: nothing at all.
+PROGRESS_INTERVAL = 5
+
 
 def firmware_xml(vm: dict) -> tuple[str, str]:
     """The ``os`` block's two halves, with the same exclusivity the module kept:
@@ -148,9 +155,32 @@ def upload(conn: Any, pool: Any, name: str, fmt: str, source: str) -> Any:
     stream = conn.newStream(0)
     with open(source, "rb", buffering=0) as handle:
         fd = handle.fileno()
+        sent = 0
+        spoke = time.monotonic()
+
+        def send(_stream: Any, nbytes: int, _opaque: Any) -> bytes:
+            """The bytes libvirt asked for, and a line when one is overdue.
+
+            Counted here because `sendAll` reports nothing while it runs: it
+            returns once, at the end. The clock starts before the first read, so
+            a fast upload crosses no interval and stays silent.
+            """
+            nonlocal sent, spoke
+            chunk = os.read(fd, nbytes)
+            sent += len(chunk)
+            now = time.monotonic()
+            if now - spoke >= PROGRESS_INTERVAL:
+                spoke = now
+                # `%s` rather than `%d`: floor division is what makes these
+                # whole numbers, and %d would print a float as one too.
+                log.info(
+                    "uploading %s: %s of %s MiB", name, sent // 1024**2, size // 1024**2
+                )
+            return chunk
+
         try:
             vol.upload(stream, 0, size, 0)
-            stream.sendAll(lambda _stream, nbytes, _opaque: os.read(fd, nbytes), None)
+            stream.sendAll(send, None)
             stream.finish()
         except BaseException:
             # `virStreamSendAll` aborts the stream itself only when the *handler*

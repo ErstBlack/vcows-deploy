@@ -14,6 +14,7 @@ VM actually boots.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -399,7 +400,9 @@ def test_a_cluster_that_cannot_allocate_a_vmid_says_which_vm_it_was_for(
 def test_each_created_resource_is_logged_with_what_it_cost(
     pve_cfg, pve_session, pve_world, prepared, caplog
 ):
-    """One line per resource, so a slow deploy says which upload was slow."""
+    """One line per resource, so a slow deploy says which upload was slow, and
+    one before each upload, because the POST that carries a multi-GB image
+    answers nothing until it is done."""
     caplog.set_level(logging.INFO, logger=create_mod.log.name)
     deployed(pve_cfg, pve_session, prepared)
 
@@ -409,15 +412,34 @@ def test_each_created_resource_is_logged_with_what_it_cost(
         if r.levelname == "INFO" and r.name == create_mod.log.name
     ]
     assert [m.split(" in ")[0] for m in made] == [
+        "uploading golden.qcow2 (0 MiB)",
         "created image golden.qcow2",
+        "uploading app01-seed.iso (0 MiB)",
         "created seed app01-seed.iso",
         "created vmid for app01",
         "created vm app01 (100)",
+        "uploading app02-seed.iso (0 MiB)",
         "created seed app02-seed.iso",
         "created vmid for app02",
         "created vm app02 (101)",
     ]
-    assert all(m.endswith("s") for m in made)
+    assert all(m.endswith("s") for m in made if m.startswith("created"))
+
+
+def test_the_line_before_an_upload_carries_the_size_about_to_be_sent(
+    pve_cfg, pve_session, pve_world, prepared, caplog
+):
+    """The fixtures upload bytes rather than gigabytes, so the size is asserted
+    against a source big enough to have one: a formula that reports the wrong
+    unit is invisible on a file that rounds to zero either way."""
+    Path(pve_cfg["image"]["source_qcow2"]).write_bytes(
+        IMAGE_BYTES + b"\0" * (3 * 1024**2 - len(IMAGE_BYTES))
+    )
+    caplog.set_level(logging.INFO, logger=create_mod.log.name)
+
+    deployed(pve_cfg, pve_session, prepared)
+
+    assert "uploading golden.qcow2 (3 MiB)" in [r.getMessage() for r in caplog.records]
 
 
 # -- what comes back -------------------------------------------------------

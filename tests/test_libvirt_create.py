@@ -470,3 +470,58 @@ def test_each_created_resource_is_logged_with_what_it_cost(cfg, conn, prepared, 
         "created domain app02",
     ]
     assert all(m.endswith("s") for m in made)
+
+
+def test_a_long_upload_logs_its_running_total_every_few_seconds(
+    conn, pool, tmp_path, caplog, monkeypatch
+):
+    """A multi-GB image is minutes of silence otherwise, and `_made` only speaks
+    once the volume is already there.
+
+    The clock is a fake advancing a fixed step per call, so the interval is
+    crossed *exactly* on every second chunk: a threshold one second either way,
+    or a comparison that lets the boundary through, changes which lines appear.
+    `create_mod.time` is replaced rather than `time.monotonic` itself, so nothing
+    outside the module under test gets the fake clock.
+    """
+    import itertools
+    import logging
+    import types
+
+    source = tmp_path / "golden.qcow2"
+    # A byte short of 3 MiB, in twelve of `FakeStream`'s chunks. Short on
+    # purpose: every chunk boundary is a whole number of MiB, so a counter that
+    # starts at anything but zero rounds to the same line everywhere except on
+    # the partial last read.
+    source.write_bytes(b"\0" * (3 * 1024**2 - 1))
+    # Half the interval, spelled out rather than derived from
+    # `PROGRESS_INTERVAL`: a test that reads the constant agrees with
+    # whatever it is set to, and the value is the thing being asserted.
+    ticks = itertools.count(0, 2.5)
+    monkeypatch.setattr(
+        create_mod, "time", types.SimpleNamespace(monotonic=lambda: next(ticks))
+    )
+    caplog.set_level(logging.INFO, logger=create_mod.log.name)
+
+    create_mod.upload(conn, pool, "golden.qcow2", "qcow2", str(source))
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "uploading golden.qcow2: 0 of 2 MiB",
+        "uploading golden.qcow2: 1 of 2 MiB",
+        "uploading golden.qcow2: 1 of 2 MiB",
+        "uploading golden.qcow2: 2 of 2 MiB",
+        "uploading golden.qcow2: 2 of 2 MiB",
+        "uploading golden.qcow2: 2 of 2 MiB",
+    ], "a running total, one line per interval crossed and none for the first read"
+    assert pool.uploads["golden.qcow2"][1].data == source.read_bytes()
+
+    # And once more on a whole number of mebibytes, which is the only size at
+    # which the divisor is visible: a file a byte short rounds down to the same
+    # number however slightly wrong the divisor is.
+    caplog.clear()
+    whole = tmp_path / "whole.qcow2"
+    whole.write_bytes(b"\0" * 3 * 1024**2)
+
+    create_mod.upload(conn, pool, "whole.qcow2", "qcow2", str(whole))
+
+    assert caplog.records[-1].getMessage() == "uploading whole.qcow2: 3 of 3 MiB"

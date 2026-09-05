@@ -19,7 +19,7 @@ from orchestrator.backends.base import Backend, Discovered, Existing
 from orchestrator.backends.proxmox import api
 from orchestrator.marker import Marker
 from tests.conftest import CA_CERT
-from tests.fake_proxmox import FakeProxmox
+from tests.fake_proxmox import FakeProxmox, upid
 
 
 @pytest.fixture
@@ -300,11 +300,16 @@ def test_an_api_failure_is_re_raised_as_our_own_error(pve_cfg, monkeypatch, pve_
 
 
 def test_the_task_wait_carries_our_ceiling_rather_than_proxmoxers(
-    pve_cfg, pve_token, monkeypatch
+    pve_cfg, pve_token, monkeypatch, caplog
 ):
     """A stop on a wedged guest is the slow one, and proxmoxer's own default
     would abandon a teardown that was going to finish. The poll interval is a
-    fixed tax per wait, so it is ours to set too."""
+    fixed tax per wait, so it is ours to set too -- and both numbers are said
+    once before the wait, because `blocking_status` polls silently and a run
+    that has gone quiet is otherwise indistinguishable from one that has hung.
+    """
+    import logging
+
     from proxmoxer.tools import Tasks
 
     seen = {}
@@ -318,11 +323,18 @@ def test_the_task_wait_carries_our_ceiling_rather_than_proxmoxers(
     session = api.Session(
         prox=w, node="pve1", datastore="local-lvm", import_datastore="local"
     )
+    caplog.set_level(logging.DEBUG, logger=api.log.name)
     api.delete_vm(session, "pve1", "100")
     assert seen == {
         "timeout": api.TASK_TIMEOUT,
         "polling_interval": api.POLL_INTERVAL,
     }
+    task = upid("pve1", "qmdestroy", "100")
+    assert [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"] == [
+        f"delete 100: waiting on task {task}, polling every "
+        f"{api.POLL_INTERVAL}s for up to {api.TASK_TIMEOUT}s",
+        f"delete 100: task {task} ok",
+    ]
 
 
 def test_every_abstract_method_is_reachable_through_the_class(
