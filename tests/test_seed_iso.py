@@ -4,8 +4,8 @@ Cross-read with the *other* toolchain than the one that built it, as spike A1 di
 pycdlib writes, xorriso reads back. A builder that can only be verified by its own
 reader proves nothing about whether cloud-init will find the files.
 
-Not `isoinfo` -- findings.md R4 names it, but it ships with genisoimage/cdrkit and
-is absent from Rocky 10.2. See docs/spikes/README.md.
+Not `isoinfo`: it ships with genisoimage/cdrkit and is absent from Rocky 10.2.
+See docs/spikes/README.md.
 """
 
 from __future__ import annotations
