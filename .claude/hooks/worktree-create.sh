@@ -14,7 +14,7 @@
 # is never handed to an agent, and it is removed before exiting so a retry starts
 # from nothing rather than from half a tree.
 #
-# Measured 2026-09-02: ~12 s end to end -- `install-tools.sh` from scratch 8-9 s
+# Measured: ~12 s end to end -- `install-tools.sh` from scratch 8-9 s
 # for 366 MB, `just dev-env` 3 s. The hook's timeout in settings.json is 120.
 #
 # `set -e` is deliberately absent: every step's failure is caught and reported
@@ -32,10 +32,10 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-# The harness sends `name` and `cwd` and nothing else -- measured 2026-09-03
-# against Claude Code 2.1.259, and the hooks documentation lists no other
-# field. Everything else is derived from `cwd`, which is the checkout the
-# session was in when it asked: the repo root through git's common dir, so a
+# The harness sends `name` and `cwd` and nothing else -- measured against Claude
+# Code 2.1.259, and the hooks documentation lists no other field. Everything
+# else is derived from `cwd`, which is the checkout the session was in when it
+# asked: the repo root through git's common dir, so a
 # request made from inside a linked worktree still lands beside it rather than
 # under it, and the source branch from that checkout's HEAD, so a worktree cut
 # while on a feature branch starts from the feature branch and not from master.

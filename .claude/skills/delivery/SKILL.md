@@ -29,7 +29,7 @@ earlier pass cannot vouch for an archive rewritten since.
 
 A bundle is therefore always a bundle *of an accepted image*. You cannot ship
 something that was not scanned against `docs/cve-baseline.json`, or that was
-scanned and rejected, which is the point.
+scanned and rejected.
 
 If the scan goes red, stop and use the `cve-triage` skill. Do not bundle around
 it.
@@ -54,11 +54,11 @@ On receipt, all of it:
 ```
 
 Compression is `gzip -9 -n`. `-n` drops the stored filename and mtime so the
-same archive always compresses to the same bytes. **Do not swap in pigz.** It
-was measured and rejected: over 12 runs on identical input it produced two
-outputs one byte apart, both decompressing to identical content. An artifact
-whose identity is its digest cannot be produced by something that changes the
-digest without changing the content. gzip costs 82s against 5.5s on a 444 MB
+same archive always compresses to the same bytes. **Do not swap in pigz.** Over
+12 runs on identical input pigz produced two outputs one byte apart, both
+decompressing to identical content. An artifact whose identity is its digest
+cannot be produced by something that changes the digest without changing the
+content. gzip costs 82s against 5.5s on a 444 MB
 archive, once per delivery.
 
 ## Nothing here is signed
@@ -67,16 +67,8 @@ archive, once per delivery.
 mismatched pairing, not substitution. Do not describe the bundle to anyone as
 signed.
 
-There was a `just sign` on cosign 3 and it worked, verified air-gapped under
-`unshare -rn`. It was removed in `950ca7e` because it signed
-`.cache/scan/image.tar` while the README promised a gzip tarball: two byte
-streams both called "the delivery tarball", which at a site reads as tampering
-rather than as a packaging bug. `docs/ci.md` section "Why signing was removed"
-is the current rationale and records what reinstating it needs.
-
-(Older notes, including survey section 5.2, describe the order as "sign refuses
-without the archive scan writes". That is stale. The dependency is `bundle` on
-`scan`.)
+`docs/ci.md` section "Why signing was removed" holds the rationale and what
+reinstating it needs.
 
 ## The step a human forgets
 

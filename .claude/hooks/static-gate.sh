@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
 # The static gate, run once per turn when Claude has changed a source file.
 #
-# **Stop, not PostToolUse.** The earlier form of this hook matched
-# Edit|Write|MultiEdit, so a file rewritten by `sed -i`, a heredoc or a
-# `python3 - <<PY` block reached no gate at all until someone ran `just check`.
-# That was not hypothetical: across the five commits of PR #56, every one of
-# them written through Bash, the hook fired zero times. `Stop` fires once per
-# turn however the edit was made, so the hole closes by construction instead of
-# by guessing which Bash commands write files.
+# **Stop, not PostToolUse.** A PostToolUse hook on Edit|Write|MultiEdit misses a
+# file rewritten by `sed -i`, a heredoc or a `python3 - <<PY` block, which then
+# reaches no gate until someone runs `just check`. `Stop` fires once per turn
+# however the edit was made, so the hole closes by construction instead of by
+# guessing which Bash commands write files.
 #
 # **Exit 2 blocks here.** Unlike PostToolUse, which is documented non-blocking, a
 # Stop hook exiting 2 prevents the turn from ending and puts stderr in front of
 # the model, so a break is fixed in the same turn rather than reported after it.
 #
-# **The signature is content, not `git status`.** Issue #57 proposed
-# `git status --porcelain` as the guard. Measured: it is blind to a second edit
-# of an already-modified file, because the porcelain line stays ` M path` either
-# way -- and a second edit is the common case inside a turn. A guard that misses
-# it rebuilds the failure conftest.py names, so this hashes the contents of
-# the files the five gates read or are configured by. 0.033s against lint's 2.9s:
-# correctness is free here.
+# **The signature is content, not `git status`.** `git status --porcelain` is
+# blind to a second edit of an already-modified file, because the porcelain line
+# stays ` M path` either way -- and a second edit is the common case inside a
+# turn. A guard that misses it rebuilds the failure conftest.py names, so this
+# hashes the contents of the files the six gates read or are configured by.
+# 0.033s against lint's 2.9s: correctness is free here.
 #
 # **A given tree state blocks at most once.** Exit 2 continues the turn, which
 # produces another Stop, so an unconditional block would wedge the session.
@@ -28,15 +25,14 @@
 # signature already recorded as `block` reports and exits 0. Blocking a second
 # time requires the model to have actually changed something.
 #
-# Measured on 26627ad: ./scripts/lint.sh 2.85/3.26/2.84s, `ty check` 0.33s.
-# Signature 0.033/0.034/0.039s over the 74 files the pattern below selects, on
-# d9d9252. `just check` stays rejected -- the suite is ~24s.
+# Measured: ./scripts/lint.sh 2.85/3.26/2.84s, `ty check` 0.33s, signature
+# 0.033/0.034/0.039s. `just check` stays rejected -- the suite is ~24s.
 
 set -euo pipefail
 IFS=$'\n\t'
 
 # $CLAUDE_PROJECT_DIR is set by the harness. The fallback keeps the script
-# runnable by hand for the checks in the issue.
+# runnable by hand.
 REPO="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$REPO"
 
@@ -44,11 +40,11 @@ cd "$REPO"
 # needs no new ignore rule. It does not exist on a fresh clone.
 STATE="$REPO/.cache/static-gate.state"
 
-# Every file the five gates read or are configured by: ruff and ty over *.py and
-# their [tool.*] tables in pyproject.toml, hadolint over Containerfile,
-# `shellcheck` over scripts/*.sh and .claude/hooks/*.sh,
-# workflows_carry_no_logic over the two pipeline files, and
-# the justfile that runs lint and typecheck.
+# What the pattern reaches: ruff and ty over *.py and their [tool.*] tables in
+# pyproject.toml, hadolint over Containerfile, `shellcheck` over scripts/*.sh and
+# .claude/hooks/*.sh, workflows_carry_no_logic over the two pipeline files, plus
+# the justfile that runs lint and typecheck and `.gitleaks.toml`. gitleaks scans
+# every file type, so a file outside the pattern does not re-trigger the gate.
 # Enumerated through git so .venv/, .cache/ and .tools/ fall out of scope via
 # .gitignore rather than via a second list that would drift from it.
 signature() {
