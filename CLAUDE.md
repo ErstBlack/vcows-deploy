@@ -153,6 +153,7 @@ warrants is itself a problem.
 
 | | |
 |---|---|
+| `.tools/bin/just` | Where `just` lives; it is not on PATH, so every recipe below is `.tools/bin/just <recipe>` |
 | `just dev-env` | The only correct venv |
 | `just lint` | Six gates: ruff check, ruff format, hadolint, shellcheck, workflows, gitleaks |
 | `just typecheck` | `ty check` |
