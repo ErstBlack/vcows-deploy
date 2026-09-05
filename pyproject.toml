@@ -47,12 +47,12 @@ requires-python = ">=3.12"
 #     uv venv --python /usr/bin/python3 --system-site-packages
 #
 # Without --system-site-packages the RPM binding is invisible. And without the
-# explicit interpreter, uv installs its own managed CPython (3.13 at the time of
-# writing), whose site-packages contains no RPMs at all -- so the flag appears to
-# work while `import libvirt` still fails. `uv sync` cannot express either, which
-# is why this project uses `uv venv` + `uv pip install`. The lockfile is still
-# honoured -- `just dev-env` exports uv.lock and installs the export, so the
-# bounds below constrain `uv lock`, not what any environment ends up with.
+# explicit interpreter, uv installs its own managed CPython, whose site-packages
+# contains no RPMs at all -- so the flag appears to work while `import libvirt`
+# still fails. `uv sync` cannot express either, which is why this project uses
+# `uv venv` + `uv pip install`. The lockfile is still honoured -- `just dev-env`
+# exports uv.lock and installs the export, so the bounds below constrain
+# `uv lock`, not what any environment ends up with.
 dependencies = [
     "jsonschema>=4.19",
     "PyYAML>=6.0",
@@ -82,9 +82,9 @@ dev = [
     "ruff>=0.16",
     # Exact, not a bound. ty is 0.0.x and its own documentation says breaking
     # changes may occur between any two versions, so `~=0.0.75` would still admit
-    # the releases this project has reason to fear. Everything else here is fixed
-    # the same way -- two Containerfile digests, five tool digests -- and a bump
-    # is a deliberate edit CI exercises.
+    # the releases this project has reason to fear. Every other pin here -- the
+    # Containerfile's digests, the tool digests in scripts/install-tools.sh --
+    # is fixed the same way, and a bump is a deliberate edit CI exercises.
     "ty==0.0.75",
     # PyYAML ships no inline types and jsonschema/pycdlib are both PEP 561, so
     # this is the one stub gap worth closing. `libvirt.py` is the permanent
@@ -122,7 +122,7 @@ exclude_also = ["if TYPE_CHECKING:"]
 fail_under = 90
 
 [tool.mutmut]
-# Both packages that ship. `container/` is `manifest.py` now, and
+# Both packages that ship. `container/` is `manifest.py`, and
 # `tests/test_manifest.py` imports `container`, so leaving it out makes
 # collection fail in mutmut's copied tree rather than merely skipping it.
 source_paths = ["orchestrator", "container"]
@@ -188,12 +188,10 @@ select = [
     "UP",       # pyupgrade
     "B",        # bugbear
     "SIM",      # simplify
-    # The 10 hits in `orchestrator/` today are all reviewed and carry a `# noqa`
-    # naming the reason: six parse libvirt's own XMLDesc output, two are
-    # argv-list subprocess calls, two are internal-invariant asserts.
-    # `container/` carries two more (one S603, one S607), so the
-    # scope is what makes the figure reproducible. The rule earns its place by
-    # catching the *next* one, not by re-litigating these.
+    # Every hit in `orchestrator/` and `container/` carries a `# noqa` naming
+    # the reason: parsing libvirt's own XMLDesc output, internal-invariant
+    # asserts, argv-list subprocess calls. The rule earns its place by catching
+    # the *next* one.
     "S",        # flake8-bandit
     "RUF",
 ]
@@ -204,10 +202,10 @@ select = [
 # than the inversion.
 #
 # The four bandit rules are inherent to a test suite rather than deliberate
-# exceptions: S101 is how pytest works (606 of them), S314 parses fixture XML the
-# test itself just wrote, and S603/S607 are the image gate calling `podman` by
-# name on purpose. Ignoring them here keeps `S` meaningful in
-# orchestrator/, which is the code that ships.
+# exceptions: S101 is how pytest works, S314 parses fixture XML the test itself
+# just wrote, and S603/S607 are the image gate calling `podman` by name on
+# purpose. Ignoring them here keeps `S` meaningful in orchestrator/, which is
+# the code that ships.
 "tests/*" = ["SIM300", "S101", "S314", "S603", "S607"]
 
 [tool.ty.src]
