@@ -1,7 +1,7 @@
 # Issue #78 — the domain type is unasserted, so an edit to `qemu` boots under TCG and reports success
 
 Lane `lane/tofu-module`. Reverified at `aed962d`. Transcript:
-`docs/review-tofu-module/reverify/RX-D3.txt`.
+`docs/archive/review-tofu-module/reverify/RX-D3.txt`.
 
 ## 1. Reverification verdict
 

@@ -132,7 +132,7 @@ places:
 3. **Archived evidence**, which is quoted-at-a-date by construction and is not
    updated: `docs/tooling-2026-08-30.md`, `docs/review-2026-08-30/`,
    `docs/review-2026-08-31/`, `docs/review-workflow-gate/`,
-   `docs/review-tofu-module/`, and `docs/plans/issue-87.md`,
+   `docs/archive/review-tofu-module/`, and `docs/archive/plans/issue-87.md`,
    `issue-90-pipeline-comments.md`, `issue-92.md` from earlier lanes of this
    campaign. 60-odd hits, none of them a claim about the current tree.
 
