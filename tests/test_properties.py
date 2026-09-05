@@ -61,11 +61,11 @@ def test_marker_survives_a_json_round_trip(name, deployment):
     assert Marker.from_json(marker.to_json()) == marker
 
 
-#: What a validated config can actually hold. Unbounded `st.text` made the
+#: What a validated config can actually hold. Unbounded `st.text` makes the
 #: assertion below false rather than strong: `derive_id` joins the two halves
 #: with a bare '/', so ("b/c", "a") and ("c", "a/b") produce one id from two
-#: inputs. Hypothesis draws the two pairs independently and never builds that
-#: pair, so the test passed while claiming something untrue (#16).
+#: inputs -- and Hypothesis draws the two pairs independently, so it never builds
+#: that pair and the test passes while claiming something untrue.
 #:
 #: Two strategies rather than one, because these are two constants in two
 #: modules that are currently identical and need not stay so.
@@ -78,8 +78,8 @@ DEPLOYMENT = st.from_regex(DEPLOYMENT_PATTERN, fullmatch=True)
     b=st.tuples(VM_NAME, DEPLOYMENT),
 )
 def test_derived_ids_separate_deployments(a, b):
-    """S3 folded `deployment` into the uuid5 input so two deployments with the
-    same VM name stop colliding. That is a claim about every pair of validated
+    """`deployment` is folded into the uuid5 input so two deployments with the
+    same VM name do not collide. That is a claim about every pair of validated
     identifiers, not about the pair someone happened to write down."""
     # Injectivity holds because the separator cannot occur in either half, not
     # because uuid5 is injective. This is the assertion that fails if either
@@ -103,10 +103,9 @@ def test_parse_interface_accepts_what_ipaddress_produces(spec):
 
     The address and the prefix length are drawn independently because
     `_parse_interface` is `ip_interface`, which takes a host address and not
-    only a network one -- and a host address is what an operator writes. The
-    strategy this replaces mapped through `IPv4Network(addr).supernet(24)`,
-    which widens a /32 by 24 bits: every case was a /8, every v6 case a /120,
-    and never once a host address (#16).
+    only a network one -- and a host address is what an operator writes. Mapping
+    through `IPv4Network(addr).supernet(24)` instead widens a /32 by 24 bits:
+    every case a /8, every v6 case a /120, and never once a host address.
     """
     address, prefixlen = spec
     problems: list[Problem] = []
@@ -115,7 +114,7 @@ def test_parse_interface_accepts_what_ipaddress_produces(spec):
     assert problems == []
     assert parsed is not None
     # The whole interface, not just its prefix: the docstring says "read back
-    # identically", and asserting `prefixlen` alone was not a round trip.
+    # identically", and `prefixlen` alone is not a round trip.
     assert str(parsed) == text
 
 

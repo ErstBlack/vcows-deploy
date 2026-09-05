@@ -101,8 +101,8 @@ def test_malformed_markers_raise(raw, fragment):
 
 def test_xml_form_is_a_single_namespaced_element():
     """libvirt requires <metadata> to have at least one element child, and the
-    payload must survive as text. Verified against a real hypervisor in
-    docs/spikes/README.md A2; this pins the shape that produced that result."""
+    payload must survive as text. This pins the shape verified against a real
+    hypervisor."""
     m = Marker.for_vm("app01", "lab-a")
     node = ET.fromstring(m.to_xml())
     assert node.tag == f"{{{MARKER_XMLNS}}}{MARKER_ELEMENT}"
@@ -111,7 +111,7 @@ def test_xml_form_is_a_single_namespaced_element():
 
 
 def test_xml_payload_needs_no_escaping():
-    """If the JSON ever needed XML-escaping, the byte-identical round trip that
-    A2 verified would stop holding."""
+    """If the JSON ever needed XML-escaping, the byte-identical round trip
+    through <metadata> would stop holding."""
     payload = Marker.for_vm("app01", "lab-a").to_json()
     assert not (set("<>&") & set(payload))

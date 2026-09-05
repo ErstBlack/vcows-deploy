@@ -1,11 +1,10 @@
 """Preflight against a real Proxmox VE cluster. Read-only, creates nothing.
 
-This is the gate for tomorrow: everything else in this backend's suite runs
-against `tests/fake_proxmox.py`, which asserts the API *paths* but cannot assert
-that a real PVE answers them the way the code expects. The questions it settles
-are the ones listed as open in the plan -- whether the token's privileges are
-enough to list and read, and whether the target storage really does allow the
-`import` content type.
+Everything else in this backend's suite runs against `tests/fake_proxmox.py`,
+which asserts the API *paths* but cannot assert that a real PVE answers them the
+way the code expects. The questions this settles are whether the token's
+privileges are enough to list and read, and whether the target storage really
+does allow the `import` content type.
 
     export VCOWS_PVE_ENDPOINT=https://pve.example.com:8006
     export VCOWS_PVE_TOKEN='vcows@pve!deploy=...'

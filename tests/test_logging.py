@@ -1,12 +1,11 @@
 """The log, and the line it draws against the printout.
 
-#136's split: the printout carries the headline, the log carries the detail. The
-assertions here are about *what would otherwise be destroyed* -- a libvirt error
-message, a damaged marker. What they deliberately do not assert is any
-`Problem`, `Decision` or `Outcome` being
-logged: each of those is already printed where it arrives and recorded in
-`run.json`, and repeating one here would make the logger the fifth result carrier
-findings.md §3 refuses.
+The printout carries the headline, the log carries the detail. The assertions
+here are about *what would otherwise be destroyed* -- a libvirt error message, a
+damaged marker. What they deliberately do not assert is any `Problem`, `Decision`
+or `Outcome` being logged: each of those is already printed where it arrives and
+recorded in `run.json`, and repeating one here would make the logger the fifth
+result carrier findings.md §3 refuses.
 
 Nothing in this file needs a hypervisor or a gate.
 """
@@ -31,8 +30,8 @@ from tests.conftest import REPO
 
 
 def test_a_damaged_marker_is_logged_and_still_read_as_unmarked(caplog):
-    """D12 stands -- unparseable is unmarked, which is the safe direction. The
-    log is what distinguishes it from a domain that carries no marker at all."""
+    """Unparseable is unmarked, which is the safe direction. The log is what
+    distinguishes it from a domain that carries no marker at all."""
     root = ET.fromstring(
         "<domain><metadata>"
         f'<vcows:vcows xmlns:vcows="{preflight.MARKER_XMLNS}">'
@@ -58,8 +57,8 @@ def test_an_absent_marker_says_nothing(caplog):
 
 
 def test_libvirt_errors_are_logged_rather_than_destroyed(caplog):
-    """`registerErrorHandler` was `lambda _ctx, _err: None`. Keeping the chatter
-    off stderr is the point; destroying it was incidental. Asserted against the
+    """`registerErrorHandler` must not be `lambda _ctx, _err: None`: keeping the
+    chatter off stderr is the point, destroying it is not. Asserted against the
     handler directly, which needs no hypervisor."""
     err = (38, 7, "Cannot recv data", 2, "", "", "", -1, -1)
     with caplog.at_level(logging.DEBUG, logger=preflight.__name__):
@@ -125,8 +124,8 @@ def test_quiet_mode_drops_the_report_and_keeps_the_problems(monkeypatch, capsys)
 
 
 def test_every_line_carries_a_level_and_a_logger(capsys, monkeypatch):
-    """The whole point of the migration: one channel, and the level is what
-    tells the operator which kind of line they are looking at.
+    """One channel, and the level is what tells the operator which kind of line
+    they are looking at.
 
     Emitted from `limits._ceiling` rather than from this file, because
     `%(module)s` names the file the call came from: a line this module logged
@@ -169,7 +168,7 @@ def test_the_handler_follows_a_replaced_stream(monkeypatch):
     stream: doing so rebuilds the handler against the new one and the test would
     pass whether or not the property exists. Configured at package import, a
     bound handler holds the real stderr and writes straight past `capsys` --
-    measured at 39 failing tests before this property existed.
+    measured at 39 failing tests without it.
     """
     handler = orchestrator._Stderr()  # built against the current sys.stderr
     replacement = io.StringIO()
@@ -241,7 +240,7 @@ def test_the_non_tty_refusal_is_a_log_line(monkeypatch, capsys):
     assert "ERROR" in captured.err and "pass --yes" in captured.err
 
 
-# -- the import-time write that forced the __init__ move -------------------
+# -- the import-time write -------------------------------------------------
 
 
 def test_the_import_time_ceiling_warning_is_a_proper_log_line(monkeypatch, capsys):
@@ -271,10 +270,7 @@ def test_nothing_prints(capsys):
 
     With `_confirm`'s `input()` being the only sanctioned non-log output, and
     `input()` not being a `print`, this gate is exact -- there is no allow-list
-    to drift. It replaces #143's `test_nothing_is_logged_above_info`, which
-    forbade `log.warning`/`log.error`; those are now required everywhere, and
-    the reason that gate existed (WARNING+ escaping `capsys` through
-    `logging.lastResort`) is answered by configuring at package import.
+    to drift.
     """
     import ast
 
@@ -310,12 +306,10 @@ def test_a_pool_that_answers_without_a_target_path_is_logged(caplog):
 
 def test_a_problem_without_a_where_renders_as_just_its_message(caplog):
     """Most problems are about the run rather than about a field. The absent
-    `where` must be omitted, not rendered -- the first version bracketed it and
-    produced a leading `" : "`.
+    `where` must be omitted, not bracketed into a leading `" : "`.
 
     Asserted on the record's exact message rather than on a substring of the
-    line: the first version of this test checked for `":  "` and passed against
-    the very defect it was written for, which renders `" : "`.
+    line: a check for `":  "` passes against the `" : "` this forbids.
     """
     from orchestrator.problems import Problem, Severity
 

@@ -3,31 +3,26 @@
 Nothing else in this suite runs a shell script. `scripts/lint.sh` reads them --
 six gates, four of them shellcheck optional checks -- and `tests/` covers the
 Python. So a guard that parses cleanly, passes every gate and then does nothing
-at run time is invisible here, which is how `containerfile_arg`'s `die` survived
-two reviews, a fix aimed at it, and a commit that enabled four extra shellcheck
-checks specifically to catch its class.
+at run time is invisible to everything else.
 
-This file is the place for that: a test that runs a script in a tree it owns and
+This file is the place for it: a test that runs a script in a tree it owns and
 asserts what the script *did*. The two helpers are deliberately not specific to
 `lib.sh`. `_tree` copies any scripts you name into `tmp_path`, and `_run`
 executes an arbitrary bash snippet there -- `_run(tree, "bash scripts/bundle.sh")`
 is as valid as sourcing the library and calling one function.
 
-Copying rather than running in place is not decoration: `REPO` (`lib.sh`) is
-derived from `BASH_SOURCE` and `readonly`, so relocating `lib.sh` is the only
-way to point the helpers that read `$REPO/Containerfile` at a Containerfile a
-test controls. It is also what makes `_fake_tools` safe. `lib.sh` prepends
-`$REPO/.tools/bin` to `PATH`, so the fakes need no PATH manipulation from the
-test side -- but a checkout's own `.tools/bin` can be a symlink to a real
-toolchain, and writing a fake `trivy` through one destroys it. Every directory
-these helpers write is under `tmp_path`.
+Copy rather than run in place: `REPO` (`lib.sh`) is derived from `BASH_SOURCE`
+and `readonly`, so relocating `lib.sh` is the only way to point the helpers that
+read `$REPO/Containerfile` at a Containerfile a test controls. It is also what
+makes `_fake_tools` safe. `lib.sh` prepends `$REPO/.tools/bin` to `PATH`, so the
+fakes need no PATH manipulation from the test side -- but a checkout's own
+`.tools/bin` can be a symlink to a real toolchain, and writing a fake `trivy`
+through one destroys it. Every directory these helpers write is under
+`tmp_path`.
 
 `scripts/image-scan.sh` and `scripts/bundle.sh` are covered here for the same
-reason `lib.sh` is. Both carry guards that fire on a proportion or on the
-presence of a file, which `shellcheck` cannot evaluate: the scan's
-"did not read this image" test passed at every loss short of 100% for the whole
-life of the script, and `bundle.sh` would assemble a delivery for an image the
-CVE gate had just rejected.
+reason `lib.sh` is: both carry guards that fire on a proportion or on the
+presence of a file, which `shellcheck` cannot evaluate.
 
 No `conftest.gate()`. `bash` is not an optional dependency -- `test_image.py` and
 `test_seed_iso.py` already shell out -- and `test_gates.py`'s `KNOWN` is a
@@ -57,10 +52,10 @@ SCRIPTS = REPO / "scripts"
 #: version line to drive the guard.
 CONTAINERFILE = "FROM scratch\nARG VCOWS_VERSION=9.9.9.9\n"
 
-#: A synthetic baseline of exactly 100 ids, so a `gone` count reads as a
-#: percentage and the rows below are the table in `docs/archive/plans/issue-83.md` §5.
-#: Synthetic rather than `docs/cve-baseline.json` so the thresholds asserted here
-#: do not move when that file is trimmed.
+#: Synthetic CVE ids shaped like the real baseline, exactly 100 of them so a
+#: `gone` count reads as a percentage. Synthetic rather than
+#: `docs/cve-baseline.json` so the thresholds asserted here do not move when that
+#: file is trimmed.
 BASELINE_IDS = [f"CVE-2026-{n:05d}" for n in range(100)]
 
 #: The revision label inside the fake docker-archive, and so the tail of the
@@ -199,10 +194,8 @@ def _run(tree: Path, script: str, **env: str) -> subprocess.CompletedProcess:
     Every `VCOWS_*` variable is dropped from the child environment and put back
     only if a test asks for it. The tree is the fixture, and an ambient override
     must not decide the outcome: `image_tag` returns `$VCOWS_IMAGE_TAG` verbatim
-    when it is set (`lib.sh`), so under `just test-image` -- which exports
-    `VCOWS_IMAGE` and `VCOWS_GATES` into pytest, and is normally invoked with
-    `VCOWS_IMAGE_TAG=` on the command line -- both tests below failed while the
-    same two passed under `just test`. Measured, not anticipated.
+    when it is set (`lib.sh`), so without this the two tests below pass under
+    `just test` and fail under `just test-image`.
     """
     clean = {k: v for k, v in os.environ.items() if not k.startswith("VCOWS_")}
     return subprocess.run(
@@ -241,9 +234,9 @@ def test_the_same_call_succeeds_when_the_arg_is_present(tmp_path):
 
 
 #: `gone` of the 100, and whether the scan must refuse it. The middle pair is the
-#: threshold's own boundary. The outer three are the measured ones: 1 is what a
-#: real scan of this image reports today, 45 is an emptied `gobinary` analyser,
-#: and 56 is an emptied `os-pkgs` one.
+#: threshold's own boundary. The outer three are measured: 1 is what a real scan
+#: of this image reports, 45 is an emptied `gobinary` analyser, 56 an emptied
+#: `os-pkgs` one.
 GONE_ROWS = [(1, False), (33, False), (34, True), (45, True), (56, True)]
 
 
@@ -252,13 +245,12 @@ def test_a_scan_missing_a_third_of_the_baseline_is_not_clean(tmp_path, gone, red
     """`image-scan.sh`'s missing-ids guard on a 100-id baseline, at five points
     of the curve.
 
-    The guard tested `missing -eq accepted`, so it fired only at a total loss --
-    a case `scan_floor` already refuses. The two losses it exists to catch are
-    partial and large, because trivy's three `Results` split into two
-    disjoint analyser families: 55 ids on the rocky layer and 44 across the two
-    Go binaries. `gone=45` is the row that decides the threshold. The remedy both
-    review documents prescribe, `missing * 2 -gt accepted`, first fires at 51 and
-    leaves that row green; `* 3` fires at 34 and turns it red.
+    Do not test `missing -eq accepted`: that fires only at a total loss, which
+    `scan_floor` already refuses. The losses this guard exists to catch are
+    partial and large, because trivy's three `Results` split into two disjoint
+    analyser families: 55 ids on the rocky layer and 44 across the two Go
+    binaries. `gone=45` decides the threshold -- `missing * 2 -gt accepted` first
+    fires at 51 and leaves that row green, `* 3` fires at 34 and turns it red.
     """
     tree = _tree(tmp_path, "image-scan.sh")
     _baseline(tree)
@@ -278,8 +270,7 @@ def test_the_scan_stamps_a_pass_and_takes_the_stamp_back_on_a_failure(tmp_path):
     """`image-scan.sh`'s `rm -f "$out/PASSED"` and the `sha256sum` that writes it,
     the two halves of the verdict.
 
-    The exit status is the only place the scan used to record whether it
-    accepted the image, and an exit status does not survive the process. Both
+    An exit status does not survive the process, so the verdict is a file. Both
     halves matter: a run that dies has to remove a stamp an earlier run left, or
     `bundle.sh` reads yesterday's verdict about today's archive.
     """
@@ -299,12 +290,12 @@ def test_the_scan_stamps_a_pass_and_takes_the_stamp_back_on_a_failure(tmp_path):
 
 
 def test_bundle_refuses_an_archive_no_scan_has_accepted(tmp_path):
-    """The defect: three complete files and no verdict was enough to ship.
+    """Three complete files and no verdict must not be enough to ship.
 
     A scan that dies on a new finding writes the archive, the report and the SBOM
-    before it reads the baseline, so `bundle.sh`'s three-file precondition saw
-    exactly what a passing scan leaves and assembled a correctly named,
-    checksum-verifying delivery for an image the CVE gate had rejected.
+    before it reads the baseline, so a three-file precondition sees exactly what
+    a passing scan leaves and assembles a correctly named, checksum-verifying
+    delivery for an image the CVE gate rejected.
     """
     tree = _bundle_tree(tmp_path, stamp=None)
     done = _run(tree, "bash scripts/bundle.sh")
@@ -379,17 +370,12 @@ def test_the_bundled_wrapper_names_the_tag_the_archive_stores(tmp_path):
 
 # --- scripts/lint.sh: workflows carry no logic ------------------------------
 #
-# `#82` was a defect in this gate's own walk, and it failed silently: a YAML
-# sequence alias splices a *list* into a list, so `- *bootstrap` under `script:`
-# parses to `[[...three commands...], "just check"]`. The pre-`#82` `lines()`
-# matched only `isinstance(item, str)` and dropped the whole anchor with no
-# diagnostic -- the shape all four `.gitlab-ci.yml` jobs use. The gate was blind
-# to hostile content in every anchored job and said nothing.
-#
-# It has been covered by nothing since. `docs/review/workflow-gate/REVIEW.md`
-# records the test being offered twice and declined as surface, with the
-# consequence written down instead: "a future edit to `lines()` has no
-# automated guard". This is that guard.
+# A YAML sequence alias splices a *list* into a list, so `- *bootstrap` under
+# `script:` parses to `[[...three commands...], "just check"]`. A `lines()` that
+# matches only `isinstance(item, str)` drops the whole anchor with no diagnostic
+# -- the shape all four `.gitlab-ci.yml` jobs use, so the gate would be blind to
+# hostile content in every anchored job and say nothing. This is the guard on
+# any edit to `lines()`.
 
 #: A command `lint.sh`'s `ok` allowlist must reject. Written as a chain because
 #: that is the case its "the whole command, not its prefix" comment gives for
@@ -408,9 +394,8 @@ def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") 
 
     `.venv` is a symlink rather than a build. `lint.sh`'s `main` calls
     `need_venv` and the gate's body runs under `$PY` (`lib.sh`), which needs
-    PyYAML; creating a second venv per test would cost more than the whole
-    file. The
-    link is read, never written -- every path these tests write is under
+    PyYAML; creating a second venv per test would cost more than the whole file.
+    The link is read, never written -- every path these tests write is under
     `tmp_path`.
     """
     tree = _tree(tmp_path, "lint.sh")
@@ -427,13 +412,12 @@ def _workflow_tree(tmp_path: Path, *, github: dict[str, str], gitlab: str = "") 
 def _gate_verdict(tree: Path) -> tuple[bool, str]:
     """Run this one gate, and report its exit status and its diagnostic.
 
-    Source `lint.sh` and call the function, rather than running the script.
-    Reading the summary line out of a full run was the older shape and cost the
-    other five gates -- ruff, ruff format, hadolint, shellcheck and gitleaks over
-    the fixture tree -- on every row, which was nine of the ten slowest cases in
-    this file. The status is the verdict now that nothing else runs: it was not
-    before, because those five fail against a tree that is not a checkout, where
-    `shellcheck` is handed the unexpanded `$REPO/.claude/hooks/*.sh` glob.
+    Source `lint.sh` and call the function, rather than running the script. A
+    full run costs the other five gates -- ruff, ruff format, hadolint,
+    shellcheck and gitleaks over the fixture tree -- on every row, and they fail
+    against a tree that is not a checkout, where `shellcheck` is handed the
+    unexpanded `$REPO/.claude/hooks/*.sh` glob. With nothing else running, the
+    status is the verdict.
 
     The sourcing needs a shell of its own. `_run` has already sourced `lib.sh`,
     `lint.sh` sources it again by its own `BASH_SOURCE` path, and `readonly REPO`
@@ -447,9 +431,8 @@ def _gate_verdict(tree: Path) -> tuple[bool, str]:
 #: with the benign twin of the same shape, so a case cannot pass because the
 #: fixture never reached the gate.
 #:
-#: The GitLab documents are written as anchors because that is `#82`'s shape and
-#: because a `.gitlab-ci.yml` that does not use one exercises nothing this file
-#: is here for.
+#: The GitLab documents are written as anchors: a `.gitlab-ci.yml` that does not
+#: use one exercises nothing this file is here for.
 _ANCHORED = """\
 .bootstrap: &bootstrap
   - ./scripts/os-deps.sh
@@ -464,7 +447,7 @@ _MINIMAL = _RUN % "just check"
 _DIGEST = "actions/checkout@" + "a" * 40
 
 GATE_ROWS = [
-    # The `#82` shape: a list spliced into a list under `script:`.
+    # A list spliced into a list under `script:`.
     pytest.param({"ci.yml": _MINIMAL}, _ANCHORED % HOSTILE, False, id="anchored-list"),
     pytest.param(
         {"ci.yml": _MINIMAL},
@@ -472,8 +455,8 @@ GATE_ROWS = [
         True,
         id="anchored-list-benign",
     ),
-    # A plain string under `run:`, which the walk has always reached. This is
-    # the `fullmatch`-not-`match` property: the chain starts with `just check`.
+    # A plain string under `run:`, which the walk reaches directly. This is the
+    # `fullmatch`-not-`match` property: the chain starts with `just check`.
     pytest.param({"ci.yml": _RUN % HOSTILE}, "", False, id="bare-string"),
     pytest.param({"ci.yml": _MINIMAL}, "", True, id="bare-string-benign"),
     # A list inside a list, reached only by `lines()` recursing on itself.
@@ -502,9 +485,9 @@ def test_the_workflow_gate_reaches_every_shape_a_command_can_take(
     """`workflows_carry_no_logic` against one hostile command written nine ways.
 
     The failing rows assert the diagnostic *names* the command as well. A gate
-    that fails without saying which line it objected to is the half of `#82`
-    that made it survive: the walk returned nothing and the gate reported
-    nothing, and both readings of that silence look identical from outside.
+    that fails without saying which line it objected to is indistinguishable
+    from a walk that returned nothing: both silences look identical from
+    outside.
     """
     tree = _workflow_tree(tmp_path, github=github, gitlab=gitlab)
     passed, stderr = _gate_verdict(tree)
@@ -597,10 +580,10 @@ def test_a_path_tool_reports_the_version_it_prints(tmp_path):
 
 
 def test_a_path_tool_with_no_dotted_version_is_reported_rather_than_silent(tmp_path):
-    """`#95`. The `grep -oE` in `version_of` matched nothing, `pipefail` made the
-    whole pipeline status 1, and `set -e` aborted `install_one` before its own
-    log line -- so `${found:-version unknown}`, written for exactly this tool,
-    could never fire and `install-tools.sh` failed saying nothing."""
+    """A `grep -oE` in `version_of` that matches nothing makes the whole pipeline
+    status 1 under `pipefail`, and `set -e` then aborts `install_one` before its
+    own log line -- so `${found:-version unknown}`, written for exactly this
+    tool, never fires and `install-tools.sh` fails saying nothing."""
     tree = _tools_tree(tmp_path, trivy="echo 'trivy, build 2026-08-31'")
     done = _install_tools(tree)
     assert done.returncode == 0, done.stderr
@@ -610,9 +593,9 @@ def test_a_path_tool_with_no_dotted_version_is_reported_rather_than_silent(tmp_p
 
 
 def test_a_path_tool_that_will_not_run_is_named_rather_than_read_as_unknown(tmp_path):
-    """The other half of `#95`, and why `|| true` on the assignment is not the
-    fix: a tool that cannot be run is not a tool of unknown version, and the two
-    must not print the same line. This one still stops the run, but says why."""
+    """Why `|| true` on the assignment is not the fix: a tool that cannot be run
+    is not a tool of unknown version, and the two must not print the same line.
+    This one still stops the run, but says why."""
     tree = _tools_tree(tmp_path, trivy="exit 3")
     done = _install_tools(tree)
     assert done.returncode != 0, done.stderr
@@ -624,9 +607,9 @@ def test_a_path_tool_that_will_not_run_is_named_rather_than_read_as_unknown(tmp_
 # --- scripts/vcows.sh: the wrapper a site runs ------------------------------
 #
 # The wrapper's whole contract is the `podman run` command line it builds, and
-# `shellcheck` reads none of that -- it is the same blind spot the module
-# docstring above gives for `containerfile_arg`'s `die`. A fake `podman` that
-# records its argv is what turns the contract into an assertion.
+# `shellcheck` reads none of that -- the blind spot the module docstring
+# describes. A fake `podman` that records its argv turns the contract into an
+# assertion.
 #
 # It is also the one script here that sources nothing, so `_run`'s `lib.sh` is
 # doing only one thing for these tests: putting the tree's own `.tools/bin`
@@ -792,11 +775,10 @@ def test_version_needs_neither_a_config_nor_a_mount(tmp_path):
     it to read -- and a site that has run `install` and nothing else has no
     config for the wrapper to insist on.
 
-    Carries `VCOWS_LOG_LEVEL` all the same. Measured against the built bundle:
-    the arm ran its own `podman run --rm` ahead of the forwarding loop, so
-    `VCOWS_LOG_LEVEL=bogus ./vcows.sh version` printed none of the
-    "ignoring VCOWS_LOG_LEVEL" that `validate` printed first, and the usage
-    text's "every VCOWS_* variable set here is forwarded" was false for one verb.
+    Carries `VCOWS_LOG_LEVEL` all the same: the usage text promises "every
+    VCOWS_* variable set here is forwarded", and a `version` arm that runs its
+    own `podman run --rm` ahead of the forwarding loop makes that false for one
+    verb.
     """
     tree = _wrapper_tree(tmp_path, config=False)
     done, argv = _wrapper(tree, "version", VCOWS_LOG_LEVEL="DEBUG")
@@ -824,9 +806,9 @@ def test_a_vcows_variable_set_beside_the_wrapper_reaches_the_container(tmp_path)
 
 def test_everything_after_a_bare_dash_dash_is_podman_s(tmp_path):
     """`--userns=keep-id:uid=4242,gid=0` is the remedy README prescribes for a
-    run directory owned by the wrong UID, and there was no way to pass it
-    through the wrapper. The flags land before the image, which is the only
-    place podman reads them."""
+    run directory owned by the wrong UID, and the wrapper has to pass it
+    through. The flags land before the image, the only place podman reads
+    them."""
     tree = _wrapper_tree(tmp_path)
     done, argv = _wrapper(tree, "preflight", "--", "--userns=keep-id")
     assert done.returncode == 0, done.stderr
@@ -862,9 +844,9 @@ def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
 
 #: Every shape of "that is not a command line this understands". `-c` with no
 #: value is the one worth naming: taking `$2` unchecked would mount an empty
-#: path and let podman explain it. The last three are the new surface: the
-#: container's argparse takes `--run-dir` on deploy and destroy only, and `-r`
-#: and `--run-dir` name different things at the same mount point.
+#: path and let podman explain it. The last three cover `--run-dir`: the
+#: container's argparse takes it on deploy and destroy only, and `-r` and
+#: `--run-dir` name different things at the same mount point.
 USAGE_ROWS = [
     pytest.param((), id="no-verb"),
     pytest.param(("nonesuch",), id="unknown-verb"),

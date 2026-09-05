@@ -3,9 +3,8 @@
 `conftest.py` makes a skip demandable: `VCOWS_GATES=<name>` turns it into a
 failure carrying its reason. That only works for skips that go *through* the
 mechanism. A bare `pytest.skip` or `pytest.importorskip` anywhere in the suite is
-invisible to it, and no environment variable can ever make it fail -- so it would
-pass, quietly, forever. That is the shape of the finding already recorded as
-F-TEETH-05, one level up: not a gate that is wrong, a gate that never ran.
+invisible to it, and no environment variable can ever make it fail -- so it
+passes, quietly, forever: not a gate that is wrong, a gate that never ran.
 
 These two tests are the thing that notices.
 """
@@ -43,8 +42,8 @@ def _references(tree: ast.AST) -> list[tuple[str, int]]:
     Calls alone miss the *uncalled* spellings, and they are the ones that get
     written: `pytestmark = pytest.mark.skip` and `pytest.param(1,
     marks=pytest.mark.skip)` are both bare `ast.Attribute` nodes the call walk
-    never sees. Adding `(reason=...)` to either turns it into an `ast.Call` and
-    the old scanner caught it -- two spellings of one edit disagreeing.
+    never sees. Adding `(reason=...)` to either turns it into an `ast.Call`, so a
+    call-only scan catches one spelling of an edit and not the other.
 
     `from pytest import skip as _s` binds a name with no dotted path at all, so
     the import itself is collected under the imported name.
@@ -152,10 +151,10 @@ def test_gates_is_parsed_without_whitespace_stripping():
     not exist. Both CI files are written without spaces because of this.
 
     This performs the parse rather than monkeypatching `GATES` past it. Every
-    other test in this file replaces `GATES` wholesale, so the env-var -> set
-    step -- the one line every gate name in the suite travels through -- was
-    executed by nothing, and a `GATES = set()` that stops reading the
-    environment silenced all five names at once with the whole suite green.
+    other test in this file replaces `GATES` wholesale, so nothing else executes
+    the env-var -> set step -- the one line every gate name in the suite travels
+    through -- and a `GATES = set()` that stops reading the environment silences
+    every name at once with the whole suite green.
     """
     assert conftest._parse("rig, image") == {"rig", " image"}
     assert conftest._parse("") == set()
@@ -168,11 +167,10 @@ def test_gates_is_parsed_without_whitespace_stripping():
 
 # -- the mechanism itself ---------------------------------------------------
 # Everything above scans the suite for skips that bypass the mechanism. These
-# check the mechanism, which is a different thing and was the untested half:
-# `gate()` and `require()` each have two branches and a green run only ever takes
-# the "available" one. Mutating both to always skip left `369 passed, exit 0`
-# under default and VCOWS_GATES=all alike -- `all` had silently stopped meaning
-# anything, and nothing here noticed.
+# check the mechanism, which is a different thing: `gate()` and `require()` each
+# have two branches and a green run only ever takes the "available" one. Mutating
+# both to always skip leaves `369 passed, exit 0` under default and
+# VCOWS_GATES=all alike, with `all` silently meaning nothing.
 #
 # `GATES` is read at import time and `gate()` calls `demanded()` when it builds
 # the mark, so monkeypatching it reaches these direct calls and not the marks the
@@ -218,12 +216,11 @@ def test_require_returns_when_the_dependency_is_there(monkeypatch):
 
 
 def test_a_demanded_require_that_is_missing_fails(monkeypatch):
-    """The gate-of-gates' own gap: a `Skipped` raised inside
-    `pytest.raises(pytest.fail.Exception)` propagates and skips the *enclosing*
-    test, so with `require()`'s demanded branch deleted this converted itself
-    from a failure into a skip and the run stayed exit 0. That is the shape
-    conftest.py's module docstring exists to prevent, in the file that enforces
-    it."""
+    """A `Skipped` raised inside `pytest.raises(pytest.fail.Exception)`
+    propagates and skips the *enclosing* test, so with `require()`'s demanded
+    branch gone this test would convert itself from a failure into a skip and the
+    run would stay exit 0 -- the shape conftest.py's module docstring exists to
+    prevent, in the file that enforces it."""
     monkeypatch.setattr("tests.conftest.GATES", {"rig"})
     try:
         with pytest.raises(pytest.fail.Exception, match=REASON):

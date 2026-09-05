@@ -78,7 +78,7 @@ INLINE_CREDENTIALS = (
     + indent(KNOWN_HOSTS, "      ")
 )
 
-# The R2 environment: residual egress should fail fast rather than hang at a site.
+# Residual egress should fail fast rather than hang at a site.
 OFFLINE_ENV = ("-e", "PIP_NO_INDEX=1", "-e", "no_proxy=*")
 
 
@@ -103,13 +103,13 @@ def run(*args, entrypoint=None, mounts=(), env=None, check=False):
 def test_the_image_runs_with_no_network():
     result = run("version")
     assert result.returncode == 0, result.stderr
-    # Every vcows line is a log line on stderr now; stdout carries only
-    # `_confirm`'s interactive prompt, which no verb here reaches.
+    # Every vcows line is a log line on stderr; stdout carries only `_confirm`'s
+    # interactive prompt, which no verb here reaches.
     assert VERSION in result.stderr
 
 
 def test_the_rpm_binding_is_visible_to_the_interpreter_that_runs():
-    """R7's trap, and it cannot be checked from outside the image. PyPI ships
+    """Not checkable from outside the image. PyPI ships
     libvirt-python as an sdist only, so the binding has to come from the RPM --
     and a venv without --system-site-packages would hide it while
     `python3 -c 'import libvirt'` kept working elsewhere on the same box."""
@@ -133,9 +133,9 @@ def test_validate_runs_offline(tmp_path):
 
 
 def test_inline_credentials_reach_ssh_and_leave_nothing_behind(tmp_path):
-    """The half of #247 only the image can answer: the wrapper `connect`
-    wrote is executed by libvirt, it runs the image's `ssh`, and the temp
-    directory is gone afterwards with nothing written under `~/.ssh`.
+    """The half only the image can answer: the wrapper `connect` wrote is
+    executed by libvirt, it runs the image's `ssh`, and the temp directory is
+    gone afterwards with nothing written under `~/.ssh`.
 
     `--network=none`, so `ssh` fails at name resolution -- after the wrapper
     ran and before the host key or the identity file would matter. `sh -c`
@@ -170,7 +170,7 @@ def inspect(fmt: str) -> str:
 
 
 def test_the_labels_are_ours_and_not_the_bases():
-    """F16. The base labels licenses=BSD-3-Clause, name=rockylinux, vendor=RESF
+    """The base labels licenses=BSD-3-Clause, name=rockylinux, vendor=RESF
     and RESF authors; an image overriding none of them self-identifies to a third
     party as an RESF product."""
     labels = json.loads(inspect("{{json .Labels}}"))
@@ -191,11 +191,10 @@ GIT_SHA = re.compile(r"[0-9a-f]{40}(-dirty)?\Z")
 def built_revision() -> str:
     """What the build records in the manifest, asked of the build.
 
-    Not restated here, and that is the whole point. This file used to carry its
-    own four-path copy of the shipped set, and the copy went stale: it omitted
-    the ``Containerfile`` and ``.containerignore``, so an image built before an
-    edit to either still matched a clean ``HEAD`` and the gate passed on an
-    image the Containerfile no longer described (#63).
+    Do not restate the shipped set here. A local copy goes stale -- omit the
+    ``Containerfile`` or ``.containerignore`` and an image built before an edit
+    to either still matches a clean ``HEAD``, so the gate passes on an image the
+    Containerfile no longer describes.
 
     ``scripts/lib.sh`` is sourceable by design -- its own header says it holds
     no commands of its own -- so ``source_revision`` can be asked directly.
@@ -212,12 +211,12 @@ def built_revision() -> str:
 
 
 def test_the_build_manifest_records_what_shipped():
-    """R5, and D51: the source-RPM list is what turns the GPL sidecar from a
-    research task into a reposync against a list that already exists.
+    """The source-RPM list is what turns the GPL sidecar from a research task
+    into a reposync against a list that already exists.
 
-    ``git_sha`` is asserted because it was wrong and nothing said so: the image
-    built at `e5d5a2c` named a commit that did not contain the
-    `container/entrypoint.py` it shipped.
+    ``git_sha`` is asserted because nothing else says so: a manifest naming a
+    commit whose tree is not what the image shipped looks exactly like one that
+    does.
     """
     result = run(
         "-c", "print(open('/opt/vcows/manifest.json').read())", entrypoint="python3"
@@ -245,12 +244,12 @@ def test_the_build_manifest_records_what_shipped():
     assert vendors["python3-libvirt"] == "Rocky Enterprise Software Foundation"
     assert manifest["source_rpms"], "the sidecar list is the point of recording these"
     assert len(manifest["source_rpms"]) < len(manifest["packages"])
-    # Both assertions above stayed true while the list's first entry was the
-    # literal string `(none)`: `rpm -qa` returns two `gpg-pubkey` rows carrying
-    # no `%{SOURCERPM}`, and rpm renders an absent tag as that truthy string.
-    # D22's reposync runs against this list, so a name that is not an SRPM is
-    # the research task the list exists to remove. Asserting the shape rather
-    # than the one sentinel catches the next one too.
+    # Both assertions above hold with the literal string `(none)` as the list's
+    # first entry: `rpm -qa` returns two `gpg-pubkey` rows carrying no
+    # `%{SOURCERPM}`, and rpm renders an absent tag as that truthy string. The
+    # source medium's reposync runs against this list, so a name that is not an
+    # SRPM is the research task the list exists to remove. Asserting the shape
+    # rather than the one sentinel catches the next one too.
     assert all(s.endswith(".src.rpm") for s in manifest["source_rpms"]), (
         "not source RPM filenames: "
         f"{sorted(s for s in manifest['source_rpms'] if not s.endswith('.src.rpm'))}"
@@ -262,9 +261,9 @@ def test_containerignore_keeps_a_nested_worktree_out_of_the_build_context(tmp_pa
 
     Asserted against podman's own matcher rather than a re-implementation of it.
     A test that parsed `.containerignore` here would be checking this repo's model
-    of `filepath.Match` against itself, and the defect this pins is precisely that
-    the model was wrong: the other patterns are not recursive, so a nested `.venv`
-    and `.tools` reach the builder while the top-level ones do not.
+    of `filepath.Match` against itself, and that model is what gets this wrong:
+    the other patterns are not recursive, so a nested `.venv` and `.tools` reach
+    the builder while the top-level ones do not.
 
     `FROM scratch` plus `COPY . /ctx` is the whole image -- no base pull, no
     network. The context is a fixture, not the repo, so this costs no `just image`.

@@ -1,14 +1,13 @@
-"""Every claim the build manifest makes, and the one that was once wrong.
+"""Every claim the build manifest makes.
 
 `packages()` shells out to `rpm`, so only the image can run it for real --
 `test_image.test_the_build_manifest_records_what_shipped` is what checks the
 shipped file, behind the image gate. What is checked here is the shape it is
 asked for and what `main()` does with the answer, against a faked
 `subprocess.run`: the `(none)` sentinel filter and the `source_rpms`
-deduplication are both measured behaviours that nothing asserted until now.
+deduplication are both measured behaviours.
 
-`git_sha` needs no faking and is the one that was wrong: the git SHA the image
-built at `e5d5a2c` recorded for a tree it did not match.
+`git_sha` needs no faking.
 
 Ungated and offline. `container/manifest.py` imports nothing but the standard
 library, on purpose -- it runs before the application exists.
@@ -51,10 +50,9 @@ def test_a_commit_is_recorded_as_given(monkeypatch, value):
     ],
 )
 def test_anything_else_becomes_unknown(monkeypatch, value):
-    """`unknown` is not the failure being closed here. Recording a *clean* commit
-    for a tree that had uncommitted changes is, and that is what shipped: the
-    image built at `e5d5a2c` named a commit without the `container/entrypoint.py`
-    it contained."""
+    """`unknown` is not the failure guarded against here. Recording a *clean*
+    commit for a tree that had uncommitted changes is: the manifest would name a
+    commit the image's own contents do not match."""
     monkeypatch.setenv("GIT_SHA", value)
     assert manifest.git_sha() == "unknown"
 
@@ -123,8 +121,8 @@ def test_the_package_list_is_sorted_by_name(run):
 
 def test_a_package_rpm_gives_no_source_for_is_still_recorded(run):
     """The asymmetry `NO_TAG` documents. `packages` is what rpm said, verbatim --
-    only the derived `source_rpms` list below is filtered, because only it is what
-    D22's reposync runs against."""
+    only the derived `source_rpms` list below is filtered, because only it is
+    what the GPL source medium's reposync runs against."""
     run([row("gpg-pubkey", manifest.NO_TAG)])
 
     assert manifest.packages()[0]["source_rpm"] == manifest.NO_TAG
@@ -206,7 +204,7 @@ def test_a_build_that_does_not_know_its_own_version_fails(built, run, monkeypatc
 def test_the_source_list_drops_the_sentinel_and_deduplicates(built, run, capsys):
     """Both measured behaviours, in one manifest. `(none)` is what rpm renders for
     the `gpg-pubkey` pseudo-packages the EPEL key leaves in the rpmdb -- it is
-    truthy, so it would otherwise become a source RPM D22's reposync went looking
+    truthy, so it would otherwise become a source RPM the reposync goes looking
     for. And binaries outnumber their sources, which is the whole point of the
     list: roughly 160 packages down to roughly 116 sources as built."""
     run(
@@ -230,8 +228,8 @@ def test_the_source_list_drops_the_sentinel_and_deduplicates(built, run, capsys)
 
 
 def test_the_manifest_is_written_to_be_diffed(built, run, capsys):
-    """Indented, key-sorted and newline-terminated. R5 wants releases comparable,
-    and two manifests that differ only in key order are not."""
+    """Indented, key-sorted and newline-terminated: releases have to be
+    comparable, and two manifests that differ only in key order are not."""
     run([row("zlib", "zlib.src.rpm"), row("bash", "bash.src.rpm")])
 
     manifest.main()

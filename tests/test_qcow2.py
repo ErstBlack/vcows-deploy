@@ -26,8 +26,8 @@ def test_reads_virtual_size(tmp_path, gib):
 
 
 def test_matches_the_value_qemu_img_reported(tmp_path):
-    """Pinned from docs/spikes/README.md, where this was checked against
-    `qemu-img info --output=json` on a real 20 GiB image."""
+    """The value `qemu-img info --output=json` reports for a real 20 GiB
+    image."""
     p = make_qcow2(tmp_path / "d.qcow2", 21474836480)
     assert virtual_size(p) == 21474836480
 

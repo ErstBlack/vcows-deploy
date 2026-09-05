@@ -2,10 +2,10 @@
 that hold a connection.
 
 This is not the fake *backend* -- that one proves the seam by having no hypervisor
-semantics at all. This one has hypervisor semantics deliberately, because the
-things worth testing here are exactly the libvirt-specific ones: that the pool is
-refreshed before any path is resolved, that a domain is stopped before it is
-undefined, and that a rejected flag mask sheds only the bits it is allowed to shed.
+semantics at all. This one has them deliberately, because what is worth testing
+here is libvirt-specific: that the pool is refreshed before any path is resolved,
+that a domain is stopped before it is undefined, and that a rejected flag mask
+sheds only the bits it is allowed to shed.
 
 The errors are real ``libvirt.libvirtError`` instances with ``err`` filled in, so
 ``get_error_code()`` returns what the code under test matches on. Nothing here
@@ -19,12 +19,10 @@ the same one: what does the code do when *this* call is the one that fails.
 
 Every argument is asserted or recorded, never ignored -- a fake whose method
 drops what it was handed leaves the caller's wiring unchecked, and the test then
-proves only that a call happened. The flag argument is the case that bites
-hardest, wherever the code under test has a right answer for it: a fake that
-takes any flags at all cannot tell a correct call from ``XMLDesc(None)`` -- which
-is a ``TypeError`` against the real binding -- or from the live document being
-read where the persistent one was meant. ``FakeVolume.delete`` asserted its own
-from the start; the rest followed.
+proves only that a call happened. Flags bite hardest: a fake that takes any flags
+at all cannot tell a correct call from ``XMLDesc(None)`` -- a ``TypeError``
+against the real binding -- or from the live document being read where the
+persistent one was meant.
 """
 
 from __future__ import annotations
@@ -68,8 +66,8 @@ class FakeVolume:
         Every argument here has one right answer and a wrong one that would go
         unnoticed: an offset places the bytes, and the flag is the sparse stream
         the dense path measured no faster than. `length` and the stream are kept
-        on the pool because `createXML` hands out a fresh volume object each
-        time, so a test has nothing else to hold on to.
+        on the pool because `createXML` hands out a fresh volume object each time,
+        so a test has nothing else to hold on to.
         """
         if self.pool.volume_upload_error is not None:
             raise self.pool.volume_upload_error
@@ -106,7 +104,7 @@ class FakePool:
         #: only way to tell whether one holds a disk this teardown needs.
         self._path = path
         #: name -> XMLDesc. Keys not in `visible` are on disk but not in libvirt's
-        #: in-memory cache, which is the state D35 exists for.
+        #: in-memory cache -- the state that makes `pool.refresh()` mandatory.
         self.volumes = dict(volumes)
         self.visible: set[str] = set()
         self._active = active
@@ -176,9 +174,9 @@ class FakePool:
 class FakeStream:
     """A byte sink, which is all the upload path uses one for.
 
-    `sendAll` drives the handler exactly as libvirt does -- call it until it
-    returns nothing -- so the bytes collected here are the bytes the caller's
-    handler actually read, not the bytes it was asked to read.
+    `sendAll` drives the handler as libvirt does -- call it until it returns
+    nothing -- so the bytes collected here are the bytes the caller's handler
+    read, not the bytes it was asked to read.
     """
 
     def __init__(self) -> None:
@@ -369,9 +367,9 @@ class FakeConnection:
     def storageVolLookupByPath(self, path: str) -> FakeVolume:
         """Resolves out of the *cache*, exactly as libvirt does.
 
-        A volume present in `pool.volumes` but absent from `pool.visible` is on disk
-        and invisible -- the rig state that makes `pool.refresh()` mandatory rather
-        than defensive.
+        A volume present in `pool.volumes` but absent from `pool.visible` is on
+        disk and invisible -- the rig state that makes `pool.refresh()` mandatory
+        rather than defensive.
 
         Keyed on the whole path. A suffix match makes `/other-pool/app01.qcow2`
         resolve to *this* pool's `app01.qcow2`, which is the one confusion a test

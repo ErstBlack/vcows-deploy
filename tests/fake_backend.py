@@ -1,6 +1,6 @@
 """An in-memory backend with no hypervisor semantics whatsoever. Shipped in nothing.
 
-It earns its place by proving three things interface design alone cannot:
+It proves three things interface design alone cannot:
 
 1. Core runs the whole pipeline -- validate, preflight, prepare, create,
    destroy -- **with no libvirt import anywhere in the call path.** That is the
@@ -64,7 +64,7 @@ class FakeBackend(Backend):
         if target["endpoint"].startswith("bad://"):
             return [Problem(Severity.ERROR, "endpoint scheme is not supported", where)]
         # A backend check that refuses nothing. Every verb computes these on the
-        # way in and only `validate` used to get them back.
+        # way in.
         if target["endpoint"].startswith("odd://"):
             return [
                 Problem(Severity.WARNING, "endpoint scheme is unusual", where),
@@ -85,9 +85,9 @@ class FakeBackend(Backend):
     def preflight(self, cfg: dict, session: Any) -> Discovered:
         return Discovered(
             vms=tuple(session.world),
-            # Stands in for whatever else a backend has to look at while it is
-            # connected -- for libvirt, whether the golden image is already in
-            # the pool. Core never reads this.
+            # Stands in for whatever else a backend looks at while connected --
+            # for libvirt, whether the golden image is already in the pool. Core
+            # never reads this.
             artifacts={"existing_names": sorted(e.name for e in session.world)},
         )
 
@@ -107,11 +107,11 @@ class FakeBackend(Backend):
         """Put every configured VM into the world, and report what went in.
 
         The real backends define a domain or clone a template here. This one
-        appends to the list `preflight` reads, which is what makes a second
-        deploy against the same fake see them and skip.
+        appends to the list `preflight` reads, so a second deploy against the
+        same fake sees them and skips.
         """
-        # An artifacts dict that is not `prepare`'s is a KeyError here rather than a
-        # deploy that quietly creates VMs from media nothing built.
+        # An artifacts dict that is not `prepare`'s is a KeyError here rather than
+        # a deploy that quietly creates VMs from media nothing built.
         session.seed = prepared["seed"]
         for vm in cfg["vms"]:
             marker = Marker.for_vm(vm["name"], cfg["deployment"])
@@ -120,8 +120,8 @@ class FakeBackend(Backend):
             vm["name"]: {
                 "name": vm["name"],
                 # The two keys `Backend.create` promises in every record. The
-                # fake has no networking, so this is what the config asked for
-                # and empty when it asked for nothing.
+                # fake has no networking, so this is what the config asked for,
+                # empty when it asked for nothing.
                 "configured_address": (vm.get("nics") or [{}])[0]
                 .get("ip_cidr", "")
                 .split("/")[0],
@@ -133,8 +133,8 @@ class FakeBackend(Backend):
         for t in targets:
             session.destroyed.append(t.name)
             session.world = [e for e in session.world if e.name != t.name]
-        # A backend with no hypervisor semantics tears everything down. Tests that
-        # need a partial teardown -- the case the CLI has to report -- set
+        # A backend with no hypervisor semantics tears everything down. Tests
+        # needing a partial teardown -- the case the CLI has to report -- set
         # `self.outcome` and get it back verbatim.
         if self.outcome is not None:
             return self.outcome

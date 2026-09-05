@@ -144,12 +144,11 @@ def test_full_pipeline_without_libvirt(no_libvirt, seam_cfg, tmp_path):
 def test_prepare_is_handed_data_not_a_connection():
     """The guarantee, asserted rather than documented.
 
-    An earlier version passed the live session here so the backend could ask
-    whether the golden image was already on the host. It turned out preflight
-    already walks the pool for §2's orphan-volume refusal, so that was a second
-    lookup of a fact it was already holding -- and it let `prepare` reach the
-    hypervisor for anything else too. A signature check is the only thing that
-    notices if a session creeps back in, because the call site looks identical.
+    Passing the live session here so the backend can ask whether the golden
+    image is on the host duplicates a lookup preflight already made for §2's
+    orphan-volume refusal, and lets `prepare` reach the hypervisor for anything
+    else too. A signature check is the only thing that notices if a session
+    creeps back in, because the call site looks identical.
     """
     params = inspect.signature(Backend.prepare).parameters
     assert list(params) == ["self", "cfg", "workdir", "discovered"]

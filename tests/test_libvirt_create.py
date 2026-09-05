@@ -143,9 +143,9 @@ def test_the_base_volume_is_declared_at_the_source_size_and_backs_onto_nothing(
     cfg, conn, pool, prepared
 ):
     """The whole document, because every field in it is a value the daemon acts
-    on. Spike A4: whatever capacity is declared here is discarded when libvirt
-    reads the uploaded qcow2 header, so the honest number is the file's own size
-    -- and the base backs onto nothing, which is what makes it the base.
+    on. Whatever capacity is declared here is discarded when libvirt reads the
+    uploaded qcow2 header, so the honest number is the file's own size -- and the
+    base backs onto nothing, which is what makes it the base.
     """
     deployed(cfg, conn, prepared)
 
@@ -240,8 +240,8 @@ def test_autoselected_firmware_pins_nothing(cfg, conn, prepared):
 def test_a_pinned_loader_replaces_the_autoselection_and_names_its_varstore(
     cfg, conn, prepared
 ):
-    """app02 pins Fedora's qcow2 OVMF. The varstore suffix follows the format --
-    an `.fd` varstore against a qcow2 loader is the mismatch acceptance paid for.
+    """app02 pins Fedora's qcow2 OVMF. The varstore suffix follows the format:
+    an `.fd` varstore against a qcow2 loader is a mismatch libvirt refuses.
     """
     xml = defined(cfg, conn, prepared, "app02")
     assert (
@@ -355,8 +355,8 @@ def test_every_domain_is_autostarted_and_started(cfg, conn, prepared):
 
 
 def test_the_inventory_is_keyed_by_logical_name_with_both_disks(cfg, conn, prepared):
-    """The shape `outputs.tf` emitted, unchanged, because `inventory.json` is
-    what a site ships back and reads months later."""
+    """`inventory.json` is what a site ships back and reads months later, so
+    the shape is pinned whole."""
     vms = deployed(cfg, conn, prepared)
 
     assert set(vms) == {"app01", "app02"}
@@ -386,9 +386,9 @@ def test_the_reported_address_is_the_configured_one_not_a_lease(cfg, conn, prepa
 def test_a_define_failure_names_the_vm_and_rolls_nothing_back(
     cfg, conn, pool, prepared, caplog
 ):
-    """The provider left its leftovers too. Undoing them here would mean deleting
-    volumes on a failure path with no state to say which ones this run made --
-    the marker and `preflight.orphan_volumes` are what report them instead.
+    """Undoing the leftovers here would mean deleting volumes on a failure path
+    with no state to say which ones this run made -- the marker and
+    `preflight.orphan_volumes` report them instead.
     """
     import libvirt
 
@@ -409,7 +409,7 @@ def test_a_define_failure_names_the_vm_and_rolls_nothing_back(
 
     # The leftovers are running and nothing rolls them back, so the account of
     # them rides on the exception as well: `cli._deploy` writes inventory.json
-    # from this, and without it the run named the failure and nothing else.
+    # from this, and without it the run names the failure and nothing else.
     carrier: Any = raised.value
     assert list(carrier.created) == ["app01"]
     assert carrier.created["app01"]["name"] == "app01"

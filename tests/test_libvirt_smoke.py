@@ -7,21 +7,12 @@ result has to look like. It is a gate rather than a test file for the same reaso
 `tests/test_image.py` is: it needs something no bare `pytest` run has, and a gate
 that quietly passes because it did not run is worse than no gate.
 
-**Every needle here is still the one the shell matched, character for
-character**, with one exception and one narrowing, both forced by the move to
-the SDK create path (`#204`) and both marked where they are: `create.py`
-declares `format='raw'` on the loader where the module passed null, and whether
-libvirt hands that attribute back depends on its version, so the loader needle
-accepts both measured echoes and the two absences are scoped to the `<nvram>`
-line they were always about.
+These are assertions about a document libvirtd stored, and libvirtd does not
+know which client sent it.
 
-The subject changed; what is asserted about it did not. These are assertions
-about a document libvirtd stored, and libvirtd does not know which client sent
-it.
-
-**No guest is booted and no guest address is observed**, exactly as before. The
-domain reaches firmware and stops there. The defect class `docs/archive/acceptance.md`
-records -- guests healthy on the wrong addresses -- is not what this covers.
+**No guest is booted and no guest address is observed.** The domain reaches
+firmware and stops there, so guests healthy on the wrong addresses is not a
+defect class this covers.
 
 Run it through `just smoke-libvirt`. Invoking pytest here directly does nothing:
 the constants below come from the script, which is also what re-execs under sudo
@@ -154,8 +145,8 @@ def pool(conn):
 def volumes(pool) -> list[str]:
     """The pool's volume names, re-read each time.
 
-    `virsh vol-list` re-read the pool on every call; the binding caches, and a
-    stale list is the shape of a gate that passes over what destroy left behind.
+    The binding caches, and a stale list is the shape of a gate that passes over
+    what destroy left behind.
     """
     pool.refresh(0)
     return pool.listVolumes()
@@ -166,9 +157,8 @@ def qemu_img(path: str) -> str:
 
     `-U`, and it is not cosmetic. The domain is running, so QEMU holds a write
     lock on the overlay and `qemu-img info` without it fails with `Failed to get
-    shared "write" lock` -- which is what stopped the fourth CI run. The base only
-    escaped because a backing file is opened read-only. Both callers go through
-    here so the two cannot drift apart.
+    shared "write" lock`. The base escapes only because a backing file is opened
+    read-only. Both callers go through here so the two cannot drift apart.
     """
     done = subprocess.run(
         ["qemu-img", "info", "-U", path], capture_output=True, text=True, check=False
@@ -178,9 +168,8 @@ def qemu_img(path: str) -> str:
 
 # -- the domain XML, needle by needle ----------------------------------------
 
-#: `(what it proves, the literal the shell matched)`. Each pair is one `check`
-#: line from `assert_domain`, and pytest reports one result per pair, which is
-#: what the hand-rolled ok/FAIL accumulator existed to provide.
+#: `(what it proves, the literal to match)`. One pair per `check` line in
+#: `assert_domain`, and pytest reports one result per pair.
 PRESENT = [
     pytest.param("<domain type='qemu'", id="the domain runs under TCG, not KVM"),
     pytest.param("urn:vcows:1", id="the marker survived DomainDefineXML"),
@@ -190,14 +179,12 @@ PRESENT = [
     # directory and .fd suffix -- so it is also what proves the element is there
     # for the two absences below to mean anything.
     #
-    # The loader needle is the one that changed with #204: the module passed
-    # `format = null` for a raw loader, where `create.firmware_xml` declares the
-    # format it was given. What libvirt echoes for a raw loader is a version
-    # fact, measured: 11.1.0 (the dev box, test driver) stores `format='raw'`;
-    # 10.0.0 (this gate's runner, qemu driver, after the descriptor match that
-    # fills `firmware='efi'` back) stores the element without it. Both are the
-    # pinned loader reaching the domain verbatim, so either form passes; a
-    # needle is a string or a tuple of acceptable strings.
+    # What libvirt echoes for a raw loader is a version fact, measured: 11.1.0
+    # (the dev box, test driver) stores `format='raw'`; 10.0.0 (this gate's
+    # runner, qemu driver, after the descriptor match that fills `firmware='efi'`
+    # back) stores the element without it. Both are the pinned loader reaching
+    # the domain verbatim, so either form passes; a needle is a string or a tuple
+    # of acceptable strings.
     pytest.param(
         (
             f"<loader readonly='yes' type='pflash'>{LOADER}</loader>",
@@ -219,10 +206,9 @@ PRESENT = [
     pytest.param("discard='unmap'", id="the overlay disk passes discard=unmap"),
     # No trailing `/>` on these two. libvirt writes `<source file='...'
     # index='2'/>` for a running domain, so matching the self-closing form
-    # asserted the index rather than the path -- measured, and the only two
-    # assertions the fifth CI run failed. The path is the claim: destroy parses
-    # `<source file=>`, and a create emitting a volume name rather than the path
-    # the pool gave it is what this is guarding against.
+    # asserts the index rather than the path. The path is the claim: destroy
+    # parses `<source file=>`, and a create emitting a volume name rather than
+    # the path the pool gave it is what this guards against.
     pytest.param(
         f"<source file='{POOL_DIR}/{OVERLAY_VOL}'",
         id="the root disk is the overlay's path, not its name",
@@ -245,37 +231,29 @@ PRESENT = [
     ),
 ]
 
-#: The absences, and both are matched against the `<nvram>` line rather than the
-#: whole document.
-#:
-#: They used to be matched against the whole document, on the argument that
-#: `format=` and `templateFormat=` appeared on no other element of it. The loader
-#: beside the varstore now carries `format='raw'` -- see the needle above -- so
-#: that argument is gone and a document-wide search for it would match the loader
-#: and say nothing about the varstore. The `varstore` fixture is what keeps the
-#: narrowing honest: it refuses to hand back a line that is not there.
+#: The absences, both matched against the `<nvram>` line rather than the whole
+#: document: the loader beside the varstore carries `format='raw'` on some
+#: libvirt versions -- see the needle above -- so a document-wide search would
+#: match the loader and say nothing about the varstore. The `varstore` fixture
+#: keeps the narrowing honest: it refuses to hand back a line that is not there.
 #:
 #: What they prove is one claim each about the stored varstore: that
 #: `create.firmware_xml` writes no format attribute on a raw one, and that
 #: libvirt fills neither in. The second is not the first -- libvirt filling an
-#: attribute back is exactly what no offline test can see, and it is what makes
-#: the `firmware='efi'` paragraph below a paragraph rather than an entry.
+#: attribute back is exactly what no offline test can see.
 #:
-#: **No entry here for `firmware='efi'`, deliberately, and the attempt is
-#: recorded so it is not made a third time.** `#141` fixed `#107` by stopping
-#: `firmware = "efi"` being emitted beside a pin, but libvirt fills the attribute
-#: back into the stored XML when the pinned loader matches a descriptor it can
-#: name -- so an absence FAILs against this raw `.fd` pin (CI run 33436774063,
-#: and again here on 33438908683) while passing against a qcow2 one (run
-#: 33437247928). Nothing in this capture distinguishes "vcows sent it" from
+#: **No entry here for `firmware='efi'`, deliberately.** libvirt fills that
+#: attribute back into the stored XML when the pinned loader matches a descriptor
+#: it can name, so an absence FAILs against a raw `.fd` pin and passes against a
+#: qcow2 one, and nothing in this capture distinguishes "vcows sent it" from
 #: "libvirt deduced it". `test_a_pinned_loader_escapes_autoselection` below
 #: carries that instead, and `tests/test_libvirt_create.py` carries what
 #: `create.firmware_xml` emits.
 ABSENT = [
-    # #75's other half, and the half no offline gate can reach.
-    # `tests/fake_libvirt.py` records the XML it is handed and never reads
-    # anything back, so it can only pin that vcows does not declare these two --
-    # never what libvirtd does with the varstore afterwards.
+    # The half no offline gate can reach. `tests/fake_libvirt.py` records the XML
+    # it is handed and never reads anything back, so it can only pin that vcows
+    # does not declare these two -- never what libvirtd does with the varstore
+    # afterwards.
     pytest.param(
         "format='raw'",
         id="libvirt omits format='raw' from the varstore, which is why "
@@ -315,11 +293,10 @@ class TestApplied:
         )
 
     def test_libvirt_detects_the_seed_volume_as_iso(self, pool):
-        """libvirt inspects uploaded content and reports the format it detects.
-        `create.upload` declares `iso` for exactly that reason -- declaring `raw`
-        made the provider's post-apply read disagree with its own plan, after the
-        volume had already been written. The client changed and the detection did
-        not: nothing but a real libvirtd can say what it makes of these bytes.
+        """libvirt inspects uploaded content and reports the format it detects, so
+        `create.upload` declares `iso`: declaring `raw` makes a later read
+        disagree with what was written, after the volume is already on disk.
+        Nothing but a real libvirtd can say what it makes of these bytes.
         """
         seed = pool.storageVolLookupByName(SEED_VOL)
         assert "<format type='iso'/>" in seed.XMLDesc(0)
@@ -343,25 +320,25 @@ class TestApplied:
     def test_the_domain_is_set_to_autostart(self, domain):
         assert domain.autostart() == 1
 
-    # -- #107, which is a libvirt property rather than one of ours ------------
+    # -- autoselection, a libvirt property rather than one of ours -----------
 
     def test_a_pinned_loader_escapes_autoselection(self):
         """A qcow2 pin defines with no `firmware` attribute beside it, on a host
         whose four descriptors declare only raw.
 
         The verdict of `probe_pinned_loader_escapes_autoselection`, which defines
-        one throwaway domain out of band of the create, and before it. That
-        work stays in the script; only the result crosses. `#141`'s fix is worth
-        something only while omitting the attribute keeps a pin out of
-        autoselection's validation, and that is a property of libvirt, not of
-        anything this repo controls. Before `#141` the same configuration was
-        refused at define with "Unable to find 'efi' firmware that is compatible
-        with the current configuration" (CI runs 33374365926, 33374623746).
+        one throwaway domain out of band of the create, and before it. That work
+        stays in the script; only the result crosses. Emitting no `firmware`
+        attribute beside a pin is worth something only while that keeps the pin
+        out of autoselection's validation, and that is a property of libvirt, not
+        of anything this repo controls: emitting one is refused at define with
+        "Unable to find 'efi' firmware that is compatible with the current
+        configuration".
 
         Define is the whole test -- no start, no boot, no KVM -- because define
         is where the descriptor match happens. The script logs the refusal text,
         so a define that failed for an unrelated reason is told apart there
-        rather than read as a `#107` regression here.
+        rather than read as a regression here.
         """
         assert PROBE_DEFINED == "1"
 
@@ -384,12 +361,10 @@ class TestDestroyed:
     def test_destroy_left_the_base_volume_alone(self, volumes):
         """The golden image is shared, and nothing marks it as ours.
 
-        A state-driven teardown deleted it, because it had created the volume
-        and held it in state. This is the opposite claim: `destroy` resolves
-        what to delete from the marker, `_deletable` allows only the two names
-        the marker's own name derives, and volumes carry no marker at all. A
-        teardown that took the base with it would take every other deployment's
-        base image on that host.
+        `destroy` resolves what to delete from the marker, `_deletable` allows
+        only the two names the marker's own name derives, and volumes carry no
+        marker at all. A teardown that took the base with it would take every
+        other deployment's base image on that host.
         """
         assert BASE_VOL in volumes
 

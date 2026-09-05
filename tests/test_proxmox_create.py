@@ -158,11 +158,11 @@ def test_each_seed_iso_is_uploaded_as_iso_content_under_its_own_name(
 def test_the_created_vm_is_the_body_the_cluster_accepted(
     pve_cfg, pve_session, pve_world, prepared
 ):
-    """The whole body, not one key at a time. This is the shape PVE 8.4.0 took in
-    the #198 dry run (M4) with this
-    config's names and MAC substituted, so a key renamed or a value flipped here
-    is a parameter no cluster was ever measured accepting -- and PVE ignores what
-    it does not recognise rather than refusing it.
+    """The whole body, not one key at a time. This is the shape PVE 8.4.0 was
+    measured accepting, with this config's names and MAC substituted, so a key
+    renamed or a value flipped here is a parameter no cluster was measured
+    accepting -- and PVE ignores what it does not recognise rather than refusing
+    it.
 
     Identity is the marker, so a description that mangles it produces a VM no
     later run can prove is ours -- `preflight` reads back exactly this string.
@@ -348,9 +348,9 @@ def test_every_task_the_cluster_started_was_waited_on(
 def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
     pve_cfg, pve_session, pve_world, prepared, caplog
 ):
-    """The provider left its leftovers too. Undoing them here would mean deleting
-    a VM on a failure path with no state to say which ones this run made -- the
-    marker and `preflight._orphan_seeds` are what report them instead.
+    """Undoing the leftovers here would mean deleting a VM on a failure path
+    with no state to say which ones this run made -- the marker and
+    `preflight._orphan_seeds` report them instead.
     """
     pve_world.task_fails = {upid("pve1", "qmcreate", "101")}
 
@@ -370,7 +370,7 @@ def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
 
     # The leftovers are running and nothing rolls them back, so the account of
     # them rides on the exception as well: `cli._deploy` writes inventory.json
-    # from this, and without it the run named the failure and nothing else.
+    # from this, and without it the run names the failure and nothing else.
     carrier: Any = raised.value
     assert list(carrier.created) == ["app01"]
     assert carrier.created["app01"]["vmid"] == 100
@@ -448,9 +448,9 @@ def test_the_line_before_an_upload_carries_the_size_about_to_be_sent(
 def test_the_inventory_is_keyed_by_logical_name_with_the_seed_it_made(
     pve_cfg, pve_session, pve_world, prepared
 ):
-    """The shape `outputs.tf` emitted, unchanged, because `inventory.json` is
-    what a site ships back and reads months later. The image is not in `disks`:
-    it is shared by every VM on the cluster and is not this VM's to delete."""
+    """`inventory.json` is what a site ships back and reads months later, so
+    the shape is pinned whole. The image is not in `disks`: it is shared by every
+    VM on the cluster and is not this VM's to delete."""
     vms = deployed(pve_cfg, pve_session, prepared)
 
     assert set(vms) == {"app01", "app02"}

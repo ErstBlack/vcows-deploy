@@ -1,11 +1,10 @@
 """The NoCloud seed ISO.
 
-Cross-read with the *other* toolchain than the one that built it, as spike A1 did:
-pycdlib writes, xorriso reads back. A builder that can only be verified by its own
-reader proves nothing about whether cloud-init will find the files.
+Cross-read with the *other* toolchain than the one that built it: pycdlib
+writes, xorriso reads back. A builder that can only be verified by its own reader
+proves nothing about whether cloud-init will find the files.
 
 Not `isoinfo`: it ships with genisoimage/cdrkit and is absent from Rocky 10.2.
-See docs/spikes/README.md.
 """
 
 from __future__ import annotations
@@ -84,9 +83,9 @@ def test_two_builds_of_one_input_carry_the_same_files(cfg, tmp_path):
 
     Content, not bytes. The ISO embeds wall-clock timestamps in its volume
     descriptors and in every directory record, so two builds seconds apart differ
-    in roughly thirty bytes; this asserted byte-equality until 2026-08-29 and
-    passed only because both builds usually landed in one clock tick. What the
-    stated purpose actually needs is the three files, and those are stable.
+    in roughly thirty bytes -- a byte-equality assertion passes only when both
+    builds land in one clock tick. The three files are what the purpose needs,
+    and those are stable.
     """
     files = cloudinit.seed_files(cfg["vms"][0], cfg)
     a = cloudinit.build_seed_iso(files, tmp_path / "a.iso")
@@ -134,7 +133,7 @@ def test_network_config_matches_by_mac(iso, cfg):
     # A CIDR, not netplan's `default`: cloud-init 24.4 throws
     # "Address default is not a valid ip address" out of its v2-to-v1 route
     # normaliser, then falls back to DHCP and boots healthy on the wrong
-    # address. Measured in the acceptance run.
+    # address. Measured.
     assert nic["routes"] == [{"to": "0.0.0.0/0", "via": "192.168.122.1"}]
     assert nic["nameservers"] == {"addresses": ["192.168.122.1"]}
 

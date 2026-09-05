@@ -1,11 +1,10 @@
 """A PVE-shaped stand-in for proxmoxer's chaining client.
 
 This is not the fake *backend* -- that one proves the seam by having no
-hypervisor semantics at all. This one has PVE semantics deliberately, and in
-particular it dispatches on the **API path**, so a test fails if
+hypervisor semantics at all. This one has PVE semantics deliberately, and it
+dispatches on the **API path**, so a test fails if
 ``orchestrator/backends/proxmox/api.py`` calls the wrong endpoint. That is the
-half a wrapper-level fake cannot check, and the half most likely to be wrong
-against a cluster nobody has run this against yet.
+half a wrapper-level fake cannot check.
 
 proxmoxer builds a request by attribute access and calls -- ``prox.nodes("pve1")
 .qemu(100).config.get()`` -- so the fake mirrors that shape and records the
@@ -30,9 +29,9 @@ def upid(node: str = "pve1", kind: str = "qmstop", ident: str = "100") -> str:
     hardcoded in each test because ``decode_upid`` raises ``AssertionError`` on a
     malformed one, which reads as a broken test rather than a broken fake.
 
-    ``ident`` is PVE's own id field: a vmid for a task on a VM, and the file name
-    for an upload. It is what makes two UPIDs from one run distinguishable, which
-    is how a test can tell that every task started was also waited on.
+    ``ident`` is PVE's own id field: a vmid for a task on a VM, the file name for
+    an upload. It makes two UPIDs from one run distinguishable, which is how a
+    test tells that every task started was also waited on.
     """
     return f"UPID:{node}:0000ABCD:00000000:6600ABCD:{kind}:{ident}:vcows@pve!deploy:"
 
@@ -108,9 +107,8 @@ class FakeProxmox:
         #: storage -> content type -> volids.
         self.content = content or {}
         #: volid -> the `size` its content row carries, in bytes. Anything not
-        #: named here reports VOLUME_SIZE. None means the row carries no size
-        #: at all, which is the shape preflight warns about rather than reading
-        #: as a match.
+        #: named here reports VOLUME_SIZE. None means the row carries no size at
+        #: all, the shape preflight warns about rather than reading as a match.
         self.sizes: dict[str, int | None] = {}
         #: Every resolved path, in order. The endpoint assertions read this.
         self.calls: list[tuple[str, tuple[str, ...]]] = []
@@ -120,7 +118,7 @@ class FakeProxmox:
         #: wrong without the request failing.
         self.uploads: list[dict] = []
         #: Every UPID this fake handed out, and every one it was asked the status
-        #: of. A task started and not waited on is a create that reports success
+        #: of. A task started and not waited on is a create reporting success
         #: before PVE has finished, so the tests compare the two.
         self.upids: list[str] = []
         self.waited: list[str] = []
@@ -164,10 +162,10 @@ class FakeProxmox:
 
         if parts == ("cluster", "resources"):
             self._raise(self.resources_error)
-            # `type` is a filter over every resource kind PVE knows -- storages
-            # and nodes included -- so a call that drops it or spells it wrong
-            # gets rows this fake has no shape for. Refused rather than answered
-            # as though the filter had been sent.
+            # `type` filters over every resource kind PVE knows -- storages and
+            # nodes included -- so a call that drops it or spells it wrong gets
+            # rows this fake has no shape for. Refused rather than answered as
+            # though the filter had been sent.
             if kw.get("type") != "vm":
                 raise ResourceException(f"unknown resource type {kw.get('type')!r}")
             return self._resources()
