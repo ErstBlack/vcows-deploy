@@ -21,7 +21,7 @@ semantics that would come with it -- out of v0.1 entirely.
 ``libvirt_cloudinit_disk`` is deliberately unused: it stages the ISO in
 ``os.TempDir()`` and calls ``RemoveResource()`` when the file is missing, so a
 container's empty ``/tmp`` makes the ISO, its volume, and the domain all look like
-they need recreating on every run (findings.md F2, upstream issue #1368).
+they need recreating on every run (upstream issue #1368).
 """
 
 from __future__ import annotations

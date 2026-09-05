@@ -1,7 +1,7 @@
 """What already exists on the hypervisor. The only place a deploy reads the target.
 
 Everything the pure half of the pipeline needs to know about the world is learned
-here and carried out in ``Discovered`` (findings.md §3, D24). ``prepare`` and
+here and carried out in ``Discovered``. ``prepare`` and
 ``render`` get data; they cannot go and look.
 
 Three things about this file are load-bearing and easy to get wrong:

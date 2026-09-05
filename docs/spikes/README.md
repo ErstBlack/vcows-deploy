@@ -53,16 +53,9 @@ tag `vcows`), while `XMLDesc` returns it namespaced (tag `{https://…/vcows}vco
 Preflight uses the `XMLDesc` path regardless — it is one round trip per domain and
 yields `devices/disk/source/@file` from the same document.
 
-**Not yet verified:** persistence across a `virtqemud` restart. `vcows` cannot
-restart the service (interactive auth required), and four running guests keep the
-socket-activated daemon alive so the idle-timeout route is unavailable. One
-command closes it, and running guests survive a libvirt daemon restart:
-
-```bash
-sudo systemctl restart virtqemud
-```
-
-Then re-read; `vcows-spike-probe01` is left defined for exactly this.
+**Verified since, on the rig:** the payload survives a `systemctl restart
+virtqemud` byte-identical, un-reindented, and still found by marker rather than by
+name. `docs/findings.md` §2 records it.
 
 ## A3 — golden image contents — PASS (stand-in, per D3)
 
@@ -116,9 +109,10 @@ builder against the other rather than trusting one tool's self-report.
 
 ---
 
-## Out-of-scope finding: the container may not need `qemu-img`
+## Out-of-scope finding: the container does not need `qemu-img`
 
-Not a spike deliverable; it surfaced while measuring A1's BOM.
+Not a spike deliverable; it surfaced while measuring A1's BOM. It shipped —
+`orchestrator/qcow2.py` is the reader below, and the image carries no `qemu-img`.
 
 `qemu-img` is **14.2 MB** and **GPL-2.0-only** — the most constrained licence in
 the bundle, with no upgrade path (F15's point). Its only use under the settled
@@ -127,7 +121,7 @@ volume operation — create, upload, overlay via `backing_store` — happens on 
 *hypervisor* through libvirt, not in the container.
 
 That validation does not need it. The qcow2 virtual size is a big-endian `u64` at
-byte offset 24 of the header:
+byte offset 24 of the header, which is what `orchestrator/qcow2.py` reads:
 
 ```python
 def qcow2_virtual_size(path):

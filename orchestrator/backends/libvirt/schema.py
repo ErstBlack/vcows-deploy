@@ -1,10 +1,10 @@
-"""The ``target.libvirt`` block and the per-VM shape -- findings.md F11.
+"""The ``target.libvirt`` block and the per-VM shape.
 
 **This is the one-way door.** Other groups author these configs by hand and keep
 them in their own version control, so the shape settled here is the shape we live
-with. Everything below is either in F11's list or is a check F11 implies.
+with.
 
-Two things F11 left open, settled here:
+Two rules the schema settles, because nothing else can:
 
 * ``nics`` is a list but the inventory carries one address, so **the first NIC is
   primary** unless one carries ``primary: true``. Primary means two things: its

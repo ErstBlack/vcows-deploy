@@ -1,4 +1,4 @@
-"""The `target.libvirt` block and the per-VM shape -- findings.md F11.
+"""The `target.libvirt` block and the per-VM shape.
 
 This is the one-way door, so every check gets a rejecting case *and* an accepting
 one. A validator that rejects everything passes half a suite.
@@ -59,7 +59,7 @@ def test_the_canonical_config_has_no_errors(cfg):
 
 
 def test_it_composes_through_the_core_schema(cfg, registry):
-    """F11's block has to survive `target` composition, not just validate alone."""
+    """This block has to survive `target` composition, not just validate alone."""
     assert errors(core_validate(cfg, registry)) == []
     assert set(core_schema(registry)["properties"]["target"]["properties"]) == {
         "libvirt"
