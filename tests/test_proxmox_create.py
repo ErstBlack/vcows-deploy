@@ -61,19 +61,19 @@ def prepared(sources):
 
 
 @pytest.fixture
-def world():
+def pve_world():
     return FakeProxmox()
 
 
 @pytest.fixture
-def session(world):
+def pve_session(pve_world):
     return api.Session(
-        prox=world, node="pve1", datastore="local-lvm", import_datastore="local"
+        prox=pve_world, node="pve1", datastore="local-lvm", import_datastore="local"
     )
 
 
-def deployed(cfg, session, prepared) -> dict:
-    return ProxmoxBackend().create(cfg, session, prepared)
+def deployed(cfg, pve_session, prepared) -> dict:
+    return ProxmoxBackend().create(cfg, pve_session, prepared)
 
 
 def only_app01(cfg) -> dict:
@@ -82,23 +82,23 @@ def only_app01(cfg) -> dict:
     return cfg
 
 
-def config_of(world, vmid: str = "100") -> dict:
-    return world.vms[("pve1", vmid)]
+def config_of(pve_world, vmid: str = "100") -> dict:
+    return pve_world.vms[("pve1", vmid)]
 
 
-def paths(world, verb: str) -> list[str]:
-    return [f"{'/'.join(p)}" for v, p in world.calls if v == verb]
+def paths(pve_world, verb: str) -> list[str]:
+    return [f"{'/'.join(p)}" for v, p in pve_world.calls if v == verb]
 
 
 # -- the uploads -----------------------------------------------------------
 
 
 def test_the_image_is_uploaded_as_import_content_when_the_cluster_lacks_it(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert world.uploads[0] == {
+    assert pve_world.uploads[0] == {
         "storage": "local",
         "content": "import",
         "filename": "golden.qcow2",
@@ -106,21 +106,21 @@ def test_the_image_is_uploaded_as_import_content_when_the_cluster_lacks_it(
 
 
 def test_a_declared_checksum_is_sent_for_pve_to_verify(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """Optional in the config, so an absent one means "not declared" rather than
     "no checksum" -- and an empty `checksum` sent to PVE is a rejected upload."""
     pve_cfg["image"]["sha256"] = "a" * 64
 
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert world.uploads[0]["checksum"] == "a" * 64
-    assert world.uploads[0]["checksum-algorithm"] == "sha256"
-    assert "checksum" not in world.uploads[1], "no seed ISO declares one"
+    assert pve_world.uploads[0]["checksum"] == "a" * 64
+    assert pve_world.uploads[0]["checksum-algorithm"] == "sha256"
+    assert "checksum" not in pve_world.uploads[1], "no seed ISO declares one"
 
 
 def test_the_image_is_not_uploaded_when_the_cluster_already_has_it(
-    pve_cfg, session, world, sources
+    pve_cfg, pve_session, pve_world, sources
 ):
     """The second deploy to a cluster. Re-uploading would be a multi-GB no-op,
     and `render` does not even carry a source path in this case."""
@@ -128,24 +128,24 @@ def test_the_image_is_not_uploaded_when_the_cluster_already_has_it(
         "seed_isos": sources,
         "image": {"create": False, "volid": "local:import/golden.qcow2"},
     }
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert [u["content"] for u in world.uploads] == ["iso", "iso"]
-    assert "import-from=local:import/golden.qcow2" in config_of(world)["scsi0"], (
+    assert [u["content"] for u in pve_world.uploads] == ["iso", "iso"]
+    assert "import-from=local:import/golden.qcow2" in config_of(pve_world)["scsi0"], (
         "the volid preflight found is what the disk imports from"
     )
 
 
 def test_each_seed_iso_is_uploaded_as_iso_content_under_its_own_name(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert [(u["content"], u["filename"]) for u in world.uploads[1:]] == [
+    assert [(u["content"], u["filename"]) for u in pve_world.uploads[1:]] == [
         ("iso", "app01-seed.iso"),
         ("iso", "app02-seed.iso"),
     ]
-    assert world.content["local"]["iso"] == [
+    assert pve_world.content["local"]["iso"] == [
         "local:iso/app01-seed.iso",
         "local:iso/app02-seed.iso",
     ]
@@ -155,7 +155,7 @@ def test_each_seed_iso_is_uploaded_as_iso_content_under_its_own_name(
 
 
 def test_the_created_vm_is_the_body_the_cluster_accepted(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """The whole body, not one key at a time. This is the shape PVE 8.4.0 took in
     the #198 dry run (M4) with this
@@ -168,9 +168,9 @@ def test_the_created_vm_is_the_body_the_cluster_accepted(
     `size=` and `status` are the fake's: PVE records the imported disk's size on
     the config, and the resize and start rewrite it from there.
     """
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert config_of(world) == {
+    assert config_of(pve_world) == {
         "vmid": "100",
         "name": "app01",
         "description": Marker.for_vm("app01", "lab-a").to_description(),
@@ -195,99 +195,101 @@ def test_the_created_vm_is_the_body_the_cluster_accepted(
 
 
 def test_the_nic_is_attached_the_way_the_config_spelled_it(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """app02 pins a MAC and a VLAN; app01 has neither, and an untagged NIC must
     not acquire a `tag=` at all."""
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert config_of(world)["net0"] == "virtio=52:54:00:be:a8:60,bridge=vmbr0"
+    assert config_of(pve_world)["net0"] == "virtio=52:54:00:be:a8:60,bridge=vmbr0"
     assert (
-        config_of(world, "101")["net0"]
+        config_of(pve_world, "101")["net0"]
         == "virtio=52:54:00:aa:bb:cc,bridge=vmbr0,tag=42"
     )
 
 
-def test_an_efi_vm_gets_a_varstore_disk(pve_cfg, session, world, prepared):
+def test_an_efi_vm_gets_a_varstore_disk(pve_cfg, pve_session, pve_world, prepared):
     """`ovmf` with no `efidisk0` is a VM whose firmware settings do not survive
     a reboot."""
-    deployed(pve_cfg, session, prepared)
-    assert config_of(world)["efidisk0"] == "local-lvm:1,efitype=4m"
+    deployed(pve_cfg, pve_session, prepared)
+    assert config_of(pve_world)["efidisk0"] == "local-lvm:1,efitype=4m"
 
 
-def test_a_bios_vm_gets_no_varstore_disk(pve_cfg, session, world, prepared):
+def test_a_bios_vm_gets_no_varstore_disk(pve_cfg, pve_session, pve_world, prepared):
     """`efidisk0` beside `seabios` is a disk nothing ever reads, paid for on the
     datastore."""
     pve_cfg["vms"][0]["firmware"] = "bios"
-    deployed(only_app01(pve_cfg), session, prepared)
+    deployed(only_app01(pve_cfg), pve_session, prepared)
 
-    assert config_of(world)["bios"] == "seabios"
-    assert "efidisk0" not in config_of(world)
+    assert config_of(pve_world)["bios"] == "seabios"
+    assert "efidisk0" not in config_of(pve_world)
 
 
-def test_every_vm_is_started(pve_cfg, session, world, prepared):
+def test_every_vm_is_started(pve_cfg, pve_session, pve_world, prepared):
     """Created and off is not deployed."""
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert "nodes/pve1/qemu/100/status/start" in paths(world, "post")
-    assert [c["status"] for c in world.vms.values()] == ["running", "running"]
+    assert "nodes/pve1/qemu/100/status/start" in paths(pve_world, "post")
+    assert [c["status"] for c in pve_world.vms.values()] == ["running", "running"]
 
 
 # -- the resize ------------------------------------------------------------
 
 
-def test_the_disk_is_grown_to_the_configured_size(pve_cfg, session, world, prepared):
+def test_the_disk_is_grown_to_the_configured_size(
+    pve_cfg, pve_session, pve_world, prepared
+):
     """`import-from` gives the disk the golden image's size, so `disk_gb` is
     honoured only by growing it afterwards."""
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
-    assert paths(world, "put") == [
+    assert paths(pve_world, "put") == [
         "nodes/pve1/qemu/100/resize",
         "nodes/pve1/qemu/101/resize",
     ]
-    assert "size=40G" in config_of(world)["scsi0"]
-    assert "size=60G" in config_of(world, "101")["scsi0"]
+    assert "size=40G" in config_of(pve_world)["scsi0"]
+    assert "size=60G" in config_of(pve_world, "101")["scsi0"]
 
 
 def test_a_disk_already_the_configured_size_is_not_resized(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
-    world.imported_gb = 40
-    deployed(only_app01(pve_cfg), session, prepared)
+    pve_world.imported_gb = 40
+    deployed(only_app01(pve_cfg), pve_session, prepared)
 
-    assert paths(world, "put") == []
+    assert paths(pve_world, "put") == []
 
 
 def test_a_disk_smaller_than_the_image_is_refused_rather_than_deployed(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """PVE cannot shrink a disk. Creating the VM anyway would leave it running at
     a size the config does not describe, which nothing downstream would notice."""
-    world.imported_gb = 100
+    pve_world.imported_gb = 100
 
     with pytest.raises(api.ProxmoxApiError) as raised:
-        deployed(only_app01(pve_cfg), session, prepared)
+        deployed(only_app01(pve_cfg), pve_session, prepared)
 
     assert str(raised.value) == (
         "could not create vm app01 (100): disk_gb 40 is below the imported "
         "image's 100 GiB and PVE cannot shrink it"
     )
-    assert paths(world, "put") == []
-    assert "nodes/pve1/qemu/100/status/start" not in paths(world, "post")
+    assert paths(pve_world, "put") == []
+    assert "nodes/pve1/qemu/100/status/start" not in paths(pve_world, "post")
 
 
 def test_a_resize_that_answers_with_no_upid_is_still_a_success(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """Current PVE answers a resize with a UPID; older ones answer with nothing,
     having already done the work. Waiting on the second answer would turn a
     working cluster into a failed deploy."""
-    world.resize_returns_upid = False
-    deployed(only_app01(pve_cfg), session, prepared)
+    pve_world.resize_returns_upid = False
+    deployed(only_app01(pve_cfg), pve_session, prepared)
 
-    assert paths(world, "put") == ["nodes/pve1/qemu/100/resize"]
-    assert "size=40G" in config_of(world)["scsi0"]
-    assert world.vms[("pve1", "100")]["status"] == "running"
+    assert paths(pve_world, "put") == ["nodes/pve1/qemu/100/resize"]
+    assert "size=40G" in config_of(pve_world)["scsi0"]
+    assert pve_world.vms[("pve1", "100")]["status"] == "running"
 
 
 # -- the disk string PVE answers with --------------------------------------
@@ -330,29 +332,29 @@ def test_a_unit_the_table_does_not_carry_is_refused_rather_than_guessed():
 
 
 def test_every_task_the_cluster_started_was_waited_on(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """A UPID that is never polled is a create that reports success while PVE is
     still working, which is how a deploy hands back a VM that has not booted."""
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
     # image, two seeds, two creates, two resizes, two starts.
-    assert len(world.upids) == 9
-    assert len(set(world.upids)) == 9, "each one distinguishable from the others"
-    assert set(world.waited) == set(world.upids)
+    assert len(pve_world.upids) == 9
+    assert len(set(pve_world.upids)) == 9, "each one distinguishable from the others"
+    assert set(pve_world.waited) == set(pve_world.upids)
 
 
 def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
-    pve_cfg, session, world, prepared, caplog
+    pve_cfg, pve_session, pve_world, prepared, caplog
 ):
     """The provider left its leftovers too. Undoing them here would mean deleting
     a VM on a failure path with no state to say which ones this run made -- the
     marker and `preflight._orphan_seeds` are what report them instead.
     """
-    world.task_fails = {upid("pve1", "qmcreate", "101")}
+    pve_world.task_fails = {upid("pve1", "qmcreate", "101")}
 
     with pytest.raises(api.ProxmoxApiError) as raised:
-        deployed(pve_cfg, session, prepared)
+        deployed(pve_cfg, pve_session, prepared)
 
     # Whole, not a prefix: the resource is named once and only once, by `_made`.
     # `api.wait` is handed the bare step, so a doubled name fails here.
@@ -360,8 +362,10 @@ def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
         f"could not create vm app02 (101): create: "
         f"task {upid('pve1', 'qmcreate', '101')} ended with 'task failed somehow'"
     ), "the name rides on the exception: run.json's error field is built from it"
-    assert config_of(world)["status"] == "running", "app01 is left created and running"
-    assert paths(world, "delete") == [], "nothing is torn down"
+    assert config_of(pve_world)["status"] == "running", (
+        "app01 is left created and running"
+    )
+    assert paths(pve_world, "delete") == [], "nothing is torn down"
 
     # The leftovers are running and nothing rolls them back, so the account of
     # them rides on the exception as well: `cli._deploy` writes inventory.json
@@ -375,29 +379,29 @@ def test_a_failed_task_names_the_vm_and_rolls_nothing_back(
 
 
 def test_a_cluster_that_cannot_allocate_a_vmid_says_which_vm_it_was_for(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """`/cluster/nextid` is a PVE call like any other and fails like one. Left
     outside `_made` it would escape as proxmoxer's own type naming nothing."""
-    world.nextid_error = ResourceException("500 unable to allocate a VM ID")
+    pve_world.nextid_error = ResourceException("500 unable to allocate a VM ID")
 
     with pytest.raises(api.ProxmoxApiError) as raised:
-        deployed(only_app01(pve_cfg), session, prepared)
+        deployed(only_app01(pve_cfg), pve_session, prepared)
 
     assert str(raised.value) == (
         "could not create vmid for app01: 500 unable to allocate a VM ID"
     )
-    assert paths(world, "post") == ["nodes/pve1/storage/local/upload"] * 2, (
+    assert paths(pve_world, "post") == ["nodes/pve1/storage/local/upload"] * 2, (
         "the uploads happened; nothing after the vmid did"
     )
 
 
 def test_each_created_resource_is_logged_with_what_it_cost(
-    pve_cfg, session, world, prepared, caplog
+    pve_cfg, pve_session, pve_world, prepared, caplog
 ):
     """One line per resource, so a slow deploy says which upload was slow."""
     caplog.set_level(logging.INFO, logger=create_mod.log.name)
-    deployed(pve_cfg, session, prepared)
+    deployed(pve_cfg, pve_session, prepared)
 
     made = [
         r.getMessage()
@@ -420,12 +424,12 @@ def test_each_created_resource_is_logged_with_what_it_cost(
 
 
 def test_the_inventory_is_keyed_by_logical_name_with_the_seed_it_made(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """The shape `outputs.tf` emitted, unchanged, because `inventory.json` is
     what a site ships back and reads months later. The image is not in `disks`:
     it is shared by every VM on the cluster and is not this VM's to delete."""
-    vms = deployed(pve_cfg, session, prepared)
+    vms = deployed(pve_cfg, pve_session, prepared)
 
     assert set(vms) == {"app01", "app02"}
     assert vms["app01"] == {
@@ -440,13 +444,13 @@ def test_the_inventory_is_keyed_by_logical_name_with_the_seed_it_made(
 
 
 def test_the_reported_address_is_the_configured_one_not_a_lease(
-    pve_cfg, session, world, prepared
+    pve_cfg, pve_session, pve_world, prepared
 ):
     """Nothing here asks PVE what address the guest got. The name carries the
     distinction and so does the value."""
     pve_cfg["vms"][0]["nics"][0]["ip_cidr"] = "10.9.9.9/24"
     pve_cfg["vms"][0]["nics"][0]["gateway"] = "10.9.9.1"
-    assert deployed(pve_cfg, session, prepared)["app01"]["configured_address"] == (
+    assert deployed(pve_cfg, pve_session, prepared)["app01"]["configured_address"] == (
         "10.9.9.9"
     )
 

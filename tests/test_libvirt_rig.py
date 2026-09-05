@@ -109,7 +109,7 @@ def rig_cfg(cfg):
 
 
 @pytest.fixture
-def session(rig_cfg):
+def lv_session(rig_cfg):
     with preflight.connect(rig_cfg) as conn:
         yield conn
 
@@ -123,19 +123,19 @@ def test_the_connection_closes_on_the_way_out(rig_cfg):
         conn.getLibVersion()
 
 
-def test_the_daemon_version_is_not_the_client_version(session):
+def test_the_daemon_version_is_not_the_client_version(lv_session):
     """The undefine mask gates on the daemon's. Reading the client's would gate on
     the wrong machine entirely -- and on the rig the two genuinely differ."""
     import libvirt
 
-    assert session.getLibVersion() != libvirt.getVersion()
+    assert lv_session.getLibVersion() != libvirt.getVersion()
 
 
 # -- discovery -------------------------------------------------------------
 
 
-def test_the_marked_probe_is_found_by_marker(probes, rig_cfg, session):
-    discovered = preflight.preflight(rig_cfg, session)
+def test_the_marked_probe_is_found_by_marker(probes, rig_cfg, lv_session):
+    discovered = preflight.preflight(rig_cfg, lv_session)
     probe = next(e for e in discovered.vms if e.name == MARKED_PROBE)
     assert probe.marker is not None
     assert probe.marker.name == "probe02"
@@ -145,16 +145,16 @@ def test_the_marked_probe_is_found_by_marker(probes, rig_cfg, session):
     assert probe.marker.name != probe.name
 
 
-def test_the_superseded_probe_reads_as_unmarked(probes, rig_cfg, session):
-    discovered = preflight.preflight(rig_cfg, session)
+def test_the_superseded_probe_reads_as_unmarked(probes, rig_cfg, lv_session):
+    discovered = preflight.preflight(rig_cfg, lv_session)
     probe = next(e for e in discovered.vms if e.name == UNMARKED_PROBE)
     assert probe.marker is None
 
 
-def test_an_unmarked_domain_whose_name_we_want_is_refused(probes, rig_cfg, session):
+def test_an_unmarked_domain_whose_name_we_want_is_refused(probes, rig_cfg, lv_session):
     """vcows will not adopt or overwrite something it did not create."""
     rig_cfg["vms"][0]["name"] = UNMARKED_PROBE
-    discovered = preflight.preflight(rig_cfg, session)
+    discovered = preflight.preflight(rig_cfg, lv_session)
     decisions, _ = decide(
         [vm["name"] for vm in rig_cfg["vms"]],
         discovered.vms,
@@ -164,18 +164,18 @@ def test_an_unmarked_domain_whose_name_we_want_is_refused(probes, rig_cfg, sessi
     assert "will not adopt or overwrite" in decisions[0].reason
 
 
-def test_a_running_domains_disks_resolve_after_the_refresh(rig_cfg, session):
+def test_a_running_domains_disks_resolve_after_the_refresh(rig_cfg, lv_session):
     """D35, against the real cache. Three of the rig's four running domains have
     disks written out of band, which do not resolve until the pool is refreshed.
     """
     import libvirt
 
-    discovered = preflight.preflight(rig_cfg, session)
+    discovered = preflight.preflight(rig_cfg, lv_session)
     paths = [p for e in discovered.vms for p in e.disks]
     assert paths, "the rig has running domains with disks"
     for path in paths:
         try:
-            session.storageVolLookupByPath(path)
+            lv_session.storageVolLookupByPath(path)
         except libvirt.libvirtError as exc:
             pytest.fail(f"{path} did not resolve after refresh: {exc}")
 
@@ -183,14 +183,14 @@ def test_a_running_domains_disks_resolve_after_the_refresh(rig_cfg, session):
 # -- the pool --------------------------------------------------------------
 
 
-def test_the_configured_pool_opens(session):
-    pool, problems = preflight.open_pool(session, "images")
+def test_the_configured_pool_opens(lv_session):
+    pool, problems = preflight.open_pool(lv_session, "images")
     assert pool is not None
     assert problems == []
 
 
-def test_a_pool_that_does_not_exist_refuses(session):
-    pool, problems = preflight.open_pool(session, "nosuchpool")
+def test_a_pool_that_does_not_exist_refuses(lv_session):
+    pool, problems = preflight.open_pool(lv_session, "nosuchpool")
     assert pool is None
     assert [p.severity for p in problems] == [Severity.ERROR]
 
@@ -207,8 +207,8 @@ def sparse(path, size: int):
 
 
 @pytest.fixture
-def rig_volumes(session):
-    pool, problems = preflight.open_pool(session, "images")
+def rig_volumes(lv_session):
+    pool, problems = preflight.open_pool(lv_session, "images")
     assert pool is not None, problems
     volumes, _ = preflight.walk(pool)
     return volumes
@@ -249,34 +249,34 @@ def test_a_truncated_local_image_refuses(rig_cfg, rig_volumes, tmp_path):
 # -- addressing ------------------------------------------------------------
 
 
-def conflicts(cfg, session):
-    _, by_mac, _ = preflight._domains(session)
-    return preflight.address_conflicts(session, cfg, by_mac)
+def conflicts(cfg, lv_session):
+    _, by_mac, _ = preflight._domains(lv_session)
+    return preflight.address_conflicts(lv_session, cfg, by_mac)
 
 
-def test_a_free_address_in_the_confirmed_range_passes(rig_cfg, session):
-    assert conflicts(rig_cfg, session) == []
+def test_a_free_address_in_the_confirmed_range_passes(rig_cfg, lv_session):
+    assert conflicts(rig_cfg, lv_session) == []
 
 
-def test_an_address_with_a_live_lease_refuses(rig_cfg, session):
+def test_an_address_with_a_live_lease_refuses(rig_cfg, lv_session):
     """192.168.122.82 is this dev box, leased on the rig's default network."""
     rig_cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.82/24"
-    problems = conflicts(rig_cfg, session)
+    problems = conflicts(rig_cfg, lv_session)
     assert any("192.168.122.82 is already" in p.message for p in problems)
 
 
-def test_an_address_with_a_dhcp_reservation_refuses(rig_cfg, session):
+def test_an_address_with_a_dhcp_reservation_refuses(rig_cfg, lv_session):
     """The rig reserves .101-.105 for rocky8-cto-01..05."""
     rig_cfg["vms"][0]["nics"][0]["ip_cidr"] = "192.168.122.101/24"
-    problems = conflicts(rig_cfg, session)
+    problems = conflicts(rig_cfg, lv_session)
     assert any("a DHCP reservation" in p.message for p in problems)
 
 
-def test_a_mac_already_on_the_rig_refuses(probes, rig_cfg, session):
+def test_a_mac_already_on_the_rig_refuses(probes, rig_cfg, lv_session):
     """vcows-probe02's MAC, claimed by a VM with a different logical name -- so it
     is somebody else's, not ours."""
     rig_cfg["vms"][0]["nics"][0]["mac"] = PROBE_MAC
-    problems = conflicts(rig_cfg, session)
+    problems = conflicts(rig_cfg, lv_session)
     assert any(
         f"already configured on domain '{MARKED_PROBE}'" in p.message for p in problems
     )
