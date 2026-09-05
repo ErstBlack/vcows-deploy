@@ -43,8 +43,8 @@ class ProxmoxBackend(Backend):
     def config_schema(self) -> dict:
         return _schema.TARGET_SCHEMA
 
-    def validate(self, cfg: dict) -> list[Problem]:
-        return _schema.validate(cfg)
+    def validate(self, cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
+        return _schema.validate(cfg, verify_digest=verify_digest)
 
     # -- connected -------------------------------------------------------
 

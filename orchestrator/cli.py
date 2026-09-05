@@ -473,7 +473,12 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
 
 
 def cmd_destroy(args: argparse.Namespace) -> int:
-    cfg, config_problems = load(args.config, REGISTRY)
+    # Without the digest: hashing the golden image costs ~59 s for 10 GiB
+    # (`imagecheck.check_image_digest`), a teardown never reads the file, and
+    # every config problem is advisory here anyway -- so the wait would buy an
+    # operator nothing but a message `_destroy` prints under "none of them
+    # changes this teardown".
+    cfg, config_problems = load(args.config, REGISTRY, verify_digest=False)
     started = _timestamp()
     run = _Run(_run_dir(cfg, args.run_dir), "destroy", cfg, started)
     return _guard(run, lambda: _destroy(args, run, config_problems))

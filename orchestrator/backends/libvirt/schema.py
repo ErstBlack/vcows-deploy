@@ -156,10 +156,11 @@ def connection_uri(target: dict, params: dict[str, str] | None = None) -> str:
     return urlunsplit(parts._replace(scheme="qemu+ssh", query=query))
 
 
-def validate(cfg: dict) -> list[Problem]:
+def validate(cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
     """Offline checks. No connection, no I/O against the target.
 
     Returns every problem rather than the first, matching ``config.load``.
+    ``verify_digest`` is false only for ``destroy``; see ``Backend.validate``.
     """
     problems: list[Problem] = []
     problems += _check_target(cfg["target"]["libvirt"])
@@ -176,7 +177,8 @@ def validate(cfg: dict) -> list[Problem]:
         problems += _check_nics(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
     problems += check_disk_capacity(cfg)
-    problems += check_image_digest(cfg)
+    if verify_digest:
+        problems += check_image_digest(cfg)
     problems += _check_volume_names(cfg)
     return problems
 

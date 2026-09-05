@@ -169,6 +169,40 @@ def test_a_destroy_scopes_the_advisory_problems(backend, tmp_path, monkeypatch, 
     assert any("endpoint scheme is unusual" in p for p in record["problems"])
 
 
+def test_a_destroy_does_not_pay_for_the_image_digest(backend, tmp_path, monkeypatch):
+    """`imagecheck.check_image_digest` reads the whole golden image -- its own
+    measurement is ~59 s for 10 GiB -- and a teardown reads `cfg["backend"]` and
+    `cfg["deployment"]` and never the file. So `cmd_destroy` is the one verb that
+    loads with `verify_digest=False`, and every other verb still pays (#257).
+
+    The fake backend runs no image checks at all, so what is asserted here is the
+    flag arriving at the seam. That both shipped backends honour it is
+    `tests/test_libvirt_schema.py` and `tests/test_proxmox_schema.py`.
+    """
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "lab-a.yaml"
+    path.write_text(
+        CONFIG.replace(
+            "  base_volume_name: golden.qcow2\n",
+            f'  base_volume_name: golden.qcow2\n  sha256: "{"a" * 64}"\n',
+        )
+    )
+
+    seen: list[bool] = []
+    real = backend.validate
+
+    def watch(cfg, *, verify_digest=True):
+        seen.append(verify_digest)
+        return real(cfg, verify_digest=verify_digest)
+
+    monkeypatch.setattr(backend, "validate", watch)
+
+    assert cli.main(["destroy", str(path), "--yes"]) == 0
+    assert seen == [False]
+    assert cli.main(["validate", str(path)]) == 0
+    assert seen == [False, True]
+
+
 # -- preflight --------------------------------------------------------------
 
 

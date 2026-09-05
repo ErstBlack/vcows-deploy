@@ -16,7 +16,7 @@ import pytest
 
 from orchestrator.backends import REGISTRY
 from orchestrator.backends.base import Backend, Discovered, Existing
-from orchestrator.backends.proxmox import api
+from orchestrator.backends.proxmox import api, schema
 from orchestrator.marker import Marker
 from tests.conftest import CA_CERT
 from tests.fake_proxmox import FakeProxmox
@@ -366,3 +366,20 @@ def test_every_abstract_method_is_reachable_through_the_class(
             name="app01", id="pve1/100", marker=Marker.for_vm("app01", "lab-a")
         )
         assert backend.destroy(pve_cfg, session, [target]).destroyed == ["app01"]
+
+
+def test_the_backend_forwards_the_digest_flag(backend, pve_cfg, monkeypatch):
+    """The libvirt half of this is `tests/test_seam.py`'s delegation test. A
+    forwarding line that dropped `verify_digest` would make `destroy` hash the
+    golden image again -- ~59 s for 10 GiB -- with nothing else failing (#257).
+    """
+    seen: list[bool] = []
+
+    def record(cfg, *, verify_digest=True):
+        seen.append(verify_digest)
+        return []
+
+    monkeypatch.setattr(schema, "validate", record)
+    assert backend.validate(pve_cfg) == []
+    assert backend.validate(pve_cfg, verify_digest=False) == []
+    assert seen == [True, False]

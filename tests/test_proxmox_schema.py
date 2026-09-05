@@ -391,3 +391,18 @@ def test_a_libvirt_only_key_under_defaults_is_refused(pve_cfg):
     problems = errors(validate(pve_cfg, REGISTRY))
     assert "loader" in messages(problems)
     assert wheres(problems) == ["vms[0]", "vms[1]"]
+
+
+def test_verify_digest_false_skips_the_digest_check(pve_cfg, monkeypatch):
+    """`destroy` never reads the golden image, so it loads the config without
+    the hash (#257). Patched at this module's own binding, because that is the
+    name `validate` calls."""
+    pve_cfg["image"]["sha256"] = "0" * 64
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("hashed the image for a verb that does not read it")
+
+    monkeypatch.setattr(schema, "check_image_digest", refuse)
+    assert "image.sha256" not in wheres(schema.validate(pve_cfg, verify_digest=False))
+    with pytest.raises(AssertionError):
+        schema.validate(pve_cfg)

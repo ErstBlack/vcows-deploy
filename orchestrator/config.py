@@ -125,7 +125,9 @@ def core_schema(registry: dict[str, Any]) -> dict:
     }
 
 
-def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem]]:
+def load(
+    path: str | Path, registry: dict[str, Any], *, verify_digest: bool = True
+) -> tuple[dict, list[Problem]]:
     """Load, validate, and return the config and everything non-fatal about it.
 
     Raises ``ConfigError`` carrying *every* problem rather than the first: an
@@ -162,7 +164,7 @@ def load(path: str | Path, registry: dict[str, Any]) -> tuple[dict, list[Problem
     defaulted = "deployment" not in raw
     raw.setdefault("deployment", path.stem)
 
-    problems = validate(raw, registry)
+    problems = validate(raw, registry, verify_digest=verify_digest)
     if defaulted:
         problems = [_blame_the_filename(p, path) for p in problems]
     if any(p.fatal for p in problems):
@@ -268,8 +270,14 @@ def _name_the_vm(problems: list[Problem], cfg: dict) -> list[Problem]:
     return out
 
 
-def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
-    """Structural validation, then the selected backend's own checks."""
+def validate(
+    cfg: dict, registry: dict[str, Any], *, verify_digest: bool = True
+) -> list[Problem]:
+    """Structural validation, then the selected backend's own checks.
+
+    ``verify_digest`` is carried straight to the backend and read nowhere here;
+    ``Backend.validate`` says what it costs and who turns it off.
+    """
     validator = jsonschema.Draft202012Validator(core_schema(registry))
     problems = problems_from(validator.iter_errors(cfg), root="<root>")
     if problems:
@@ -280,7 +288,8 @@ def validate(cfg: dict, registry: dict[str, Any]) -> list[Problem]:
     # The backend sees a resolved VM and never the block itself; what it says
     # about a value no VM wrote is then filed against the key that did.
     problems += _blame_the_defaults(
-        registry[cfg["backend"]].validate(resolve(cfg)), cfg
+        registry[cfg["backend"]].validate(resolve(cfg), verify_digest=verify_digest),
+        cfg,
     )
 
     seen: set[str] = set()

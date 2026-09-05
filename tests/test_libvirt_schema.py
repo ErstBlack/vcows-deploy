@@ -38,8 +38,8 @@ class LibvirtSchemaOnly(FakeBackend):
     def config_schema(self) -> dict:
         return schema.TARGET_SCHEMA
 
-    def validate(self, cfg: dict) -> list:
-        return schema.validate(cfg)
+    def validate(self, cfg: dict, *, verify_digest: bool = True) -> list:
+        return schema.validate(cfg, verify_digest=verify_digest)
 
 
 @pytest.fixture
@@ -765,6 +765,31 @@ def test_no_sha256_reads_nothing(cfg, tmp_path, monkeypatch):
 
     monkeypatch.setattr(imagecheck.hashlib, "file_digest", refuse)
     assert errors(schema.validate(cfg)) == []
+
+
+def test_verify_digest_false_skips_the_digest_check(
+    cfg, tmp_path, registry, monkeypatch
+):
+    """`destroy` never reads the golden image, so it loads the config without
+    the hash (#257). Patched at this module's own binding, because that is the
+    name `validate` calls -- and asserted through `core_validate` as well, which
+    is the path `config.load` takes and the one that has to default to verifying.
+    """
+    golden(tmp_path, cfg)
+    cfg["image"]["sha256"] = "0" * 64  # a mismatch, so a check that ran would say so
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("hashed the image for a verb that does not read it")
+
+    monkeypatch.setattr(schema, "check_image_digest", refuse)
+    assert "image.sha256" not in wheres(schema.validate(cfg, verify_digest=False))
+    assert "image.sha256" not in wheres(
+        core_validate(cfg, registry, verify_digest=False)
+    )
+    with pytest.raises(AssertionError):
+        schema.validate(cfg)
+    with pytest.raises(AssertionError):
+        core_validate(cfg, registry)
 
 
 def test_an_unreadable_image_warns_rather_than_failing_the_digest(cfg):

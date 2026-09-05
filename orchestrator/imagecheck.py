@@ -35,13 +35,17 @@ def check_image_digest(cfg: dict) -> list[Problem]:
     12 s for a 2 GiB golden image and 59 s for a 10 GiB one. CPU-bound, so a warm
     page cache does not help; with no ``sha256`` declared the call returns in
     8 microseconds. ``config.load`` runs the offline checks for every verb
-    (``cmd_validate``, ``cmd_preflight``, ``cmd_deploy``, ``cmd_destroy``), so
-    ``destroy`` pays it even though it reads only ``cfg["backend"]`` and
-    ``cfg["deployment"]`` and never touches ``cfg["image"]``.
+    (``cmd_validate``, ``cmd_preflight``, ``cmd_deploy``, ``cmd_destroy``), and
+    ``destroy`` reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
+    touches ``cfg["image"]`` -- so it used to pay the 59 s for nothing. That one
+    verb loads with ``verify_digest=False``, and each backend's ``validate`` then
+    does not call this at all (#257). The skip is the caller's, because what has
+    to not happen is the call: a flag read in here would still be a function
+    every backend calls on a teardown.
 
-    That waste is accepted rather than engineered around. An operator who sets
-    the field has asked for the check, and the alternative -- verifying in
-    ``preflight`` -- puts an offline check in the connected phase, so
+    **No wider skip than that.** An operator who sets the field has asked for the
+    check on every verb that acts on the image, and the alternative -- verifying
+    in ``preflight`` -- puts an offline check in the connected phase, so
     ``vcows validate`` would keep reporting a corrupt image as valid. That is the
     defect this closes, not a shape to preserve.
 

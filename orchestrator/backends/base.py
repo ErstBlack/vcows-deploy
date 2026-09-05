@@ -327,8 +327,16 @@ class Backend(ABC):
         """The ``target.<name>`` sub-schema, as jsonschema."""
 
     @abstractmethod
-    def validate(self, cfg: dict) -> list[Problem]:
-        """Offline checks. No connection, no I/O against the target."""
+    def validate(self, cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
+        """Offline checks. No connection, no I/O against the target.
+
+        ``verify_digest`` false means "skip the one check that reads the golden
+        image": ``imagecheck.check_image_digest`` hashes the whole file, ~59 s
+        for 10 GiB, and ``destroy`` never touches it. Every other verb leaves it
+        true. A backend that reads the image in some other check owes it the same
+        skip; one that ignores the flag entirely is correct and slow, so this is
+        a cost seam and not a safety one.
+        """
 
     @abstractmethod
     def connect(self, cfg: dict) -> AbstractContextManager[Any]:

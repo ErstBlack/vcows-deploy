@@ -152,10 +152,11 @@ def token_parts(raw: str) -> re.Match[str] | None:
     return TOKEN_PATTERN.match(raw.strip())
 
 
-def validate(cfg: dict) -> list[Problem]:
+def validate(cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
     """Offline checks. No connection, no I/O against the target.
 
     Returns every problem rather than the first, matching ``config.load``.
+    ``verify_digest`` is false only for ``destroy``; see ``Backend.validate``.
     """
     problems: list[Problem] = []
     problems += _check_target(cfg["target"]["proxmox"])
@@ -172,7 +173,8 @@ def validate(cfg: dict) -> list[Problem]:
         problems += check_addressing(vm, where, seen_ips, seen_macs, cfg["deployment"])
 
     problems += check_disk_capacity(cfg)
-    problems += check_image_digest(cfg)
+    if verify_digest:
+        problems += check_image_digest(cfg)
     problems += _check_image_name(cfg)
     return problems
 
