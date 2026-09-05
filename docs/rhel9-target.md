@@ -206,10 +206,10 @@ than load-bearing, which is worth knowing before somebody decides it is redundan
 
 ### C10 — a full acceptance run
 
-**Needs any 9.x.** `acceptance.md` closes with "A RHEL 9 or RHEL 10 target" as
+**Needs any 9.x.** `docs/archive/acceptance.md` closes with "A RHEL 9 or RHEL 10 target" as
 still open. Re-run the definition of done end to end — pool, upload, overlay,
 cloud-init, domain, boot, reachable address, destroy with the state file deleted —
-and record it the way `acceptance.md` records the first one, defects included.
+and record it the way `docs/archive/acceptance.md` records the first one, defects included.
 
 ## What a RHEL 9 host still will not settle
 
@@ -225,6 +225,6 @@ contradicts a shipped comment, the comment changes with it.
 
 * `docs/findings.md` §2 for anything that changes an accepted gap or a rule,
   §6 for anything that closes a verification item.
-* `docs/acceptance.md` for a run, defects and all.
-* `docs/review-2026-08-29/2026-08-29-remediation-checklist.md` — C1, C2 and C3
+* `docs/archive/acceptance.md` for a run, defects and all.
+* `docs/review/2026-08-29/2026-08-29-remediation-checklist.md` — C1, C2 and C3
   are Blocked rows there and each names what it is waiting for.

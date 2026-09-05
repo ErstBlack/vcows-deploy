@@ -102,7 +102,7 @@ def test_malformed_markers_raise(raw, fragment):
 def test_xml_form_is_a_single_namespaced_element():
     """libvirt requires <metadata> to have at least one element child, and the
     payload must survive as text. Verified against a real hypervisor in
-    docs/spikes.md A2; this pins the shape that produced that result."""
+    docs/spikes/README.md A2; this pins the shape that produced that result."""
     m = Marker.for_vm("app01", "lab-a")
     node = ET.fromstring(m.to_xml())
     assert node.tag == f"{{{MARKER_XMLNS}}}{MARKER_ELEMENT}"

@@ -10,7 +10,7 @@ constrained licence that would be in the bundle, with no upgrade path. The only
 in-container use is the "disk_gb >= golden image virtual size" check, because
 every volume operation (create, upload, overlay via ``backing_store``) happens on
 the *hypervisor* through libvirt. Verified byte-for-byte against
-``qemu-img info --output=json``; see docs/spikes.md.
+``qemu-img info --output=json``; see docs/spikes/README.md.
 """
 
 from __future__ import annotations

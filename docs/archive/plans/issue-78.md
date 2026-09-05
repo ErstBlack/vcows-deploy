@@ -56,7 +56,7 @@ $ git show a3068e3:scripts/smoke-libvirt.sh | grep -n "domain type='qemu'"    38
 ```
 
 **C2 — the reproduction report's "43 `assert` blocks" is now 47.**
-`docs/review-2026-08-31/verify/CD-mediums.md` counted 43 at `672a500`; `454ee7c`
+`docs/review/2026-08-31/verify/CD-mediums.md` counted 43 at `672a500`; `454ee7c`
 added four. The claim that matters — *none* of them reads
 `libvirt_domain.vm[*].type` — still holds at 47.
 

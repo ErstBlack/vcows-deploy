@@ -20,7 +20,7 @@ about a document libvirtd stored, and libvirtd does not know which client sent
 it.
 
 **No guest is booted and no guest address is observed**, exactly as before. The
-domain reaches firmware and stops there. The defect class `docs/acceptance.md`
+domain reaches firmware and stops there. The defect class `docs/archive/acceptance.md`
 records -- guests healthy on the wrong addresses -- is not what this covers.
 
 Run it through `just smoke-libvirt`. Invoking pytest here directly does nothing:

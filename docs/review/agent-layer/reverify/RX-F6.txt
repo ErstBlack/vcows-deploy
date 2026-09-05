@@ -1,0 +1,107 @@
+########## RX-F6 — issues closed with no repo artifact
+# target aed962d
+
+===== A. the rule CLAUDE.md:67-76 states =====
+$ sed -n 67,76p CLAUDE.md
+    67	## `.claude/` holds two files with opposite tracking status
+    68	
+    69	`.claude/settings.json` is committed: hooks and `permissions.deny`, reviewable
+    70	like every other gate here. `.claude/settings.local.json` is the machine-local
+    71	`allow` list and is **not** tracked -- it is ignored by `~/.config/git/ignore`,
+    72	not by anything in this repo, so `.gitignore` will not tell you and a clean
+    73	`git status` is not evidence that it is unmodified. `git check-ignore -v` is.
+    74	
+    75	The consequence is that a change confined to the local file leaves no artifact
+    76	to review and cannot close an issue from a commit body.
+
+===== B. a METHOD CORRECTION to the finder's command =====
+# The finder ran: git log --all over 4eb378b..672a500.
+# --all adds every ref as a positive tip, so the range's upper bound is discarded.
+$ git log --all --oneline 4eb378b..672a500 | wc -l
+114
+$ git log      --oneline 4eb378b..672a500 | wc -l
+21
+# 114 commits surveyed, not the 21 in the range. The command was wider than intended,
+# which is why the #50 hit it reports finding by hand was in its own output all along.
+
+===== C. the strict review range 4eb378b..672a500 =====
+  #47 references in commit subjects+bodies: 0
+  #50 references in commit subjects+bodies: 1
+  #52 references in commit subjects+bodies: 0
+$ git log --format="%h %s" 4eb378b..672a500 --grep="#50"
+26627ad Turn three CLAUDE.md rules into hooks and permission rules (#56)
+$ git log -1 --format="%B" 26627ad | grep -A2 "#50"
+* #50 -- Bash(just:*) no longer blanket-allows the mutating recipes. Applied to
+  .claude/settings.local.json, which is untracked, so it appears in no diff here
+  and was closed by hand.
+# #50 IS covered inside the range, by 26627ad's body. #47 and #52 are not.
+
+===== D. the range SINCE the review pin, 672a500..aed962d =====
+  #47: 1
+  #50: 0
+  #52: 1
+$ git log --all --format="%h %s" --grep="#47"
+b58f924 Record the third review: the remediation read, and the two gates no review had run (#91)
+e9ad747 Record the third review: the remediation read, and the two gates no review had run
+$ git log -1 --format="%B" b58f924 | grep -B1 -A2 "#47"
+eleven wrong remedies that the author had already caught and refused. Three
+issues are NOT DONE for want of any artifact in the repo: #47 and #52 landed in
+~/.claude/, and #23's rejection lives only in a GitHub comment.
+
+
+===== E. so what does the tree hold at HEAD? =====
+  #47 -> docs/review/2026-08-31/REVIEW.md docs/review/2026-08-31/finders/F-agent-layer.md docs/review/2026-08-31/verify/F-lows.md 
+  #50 -> docs/review/2026-08-31/REVIEW.md docs/review/2026-08-31/finders/F-agent-layer.md docs/review/2026-08-31/verify/F-lows.md 
+  #52 -> docs/review/2026-08-31/REVIEW.md docs/review/2026-08-31/finders/F-agent-layer.md docs/review/2026-08-31/verify/F-lows.md 
+$ grep -n -A9 "NOT DONE" docs/review/2026-08-31/REVIEW.md | head -14
+270:### NOT DONE — #47, #50, #52, and what that means
+271-
+272-All three closed with no repo artifact. On inspection **#50 is covered**: `26627ad`'s body
+273-names it and it is the `settings.local.json` case `CLAUDE.md:75-76` already describes. **#47
+274-and #52 landed outside the project directory entirely** — `~/.claude/local-plugins/ty-lsp/`
+275-and the MCP roster — which is wider than the rule `CLAUDE.md` states. #52's resolution also
+276-reversed the issue's own proposal on serena, argued only in a GitHub comment.
+277-
+278-The consequence is structural, not clerical: **a decision recorded only in a GitHub comment
+279-or a machine-local file is a decision this repo cannot show anyone.** #23 has the same shape.
+
+# All three now have a repo artifact at HEAD. b58f924 -- the commit that RECORDED this
+# review -- is what closed the gap the finding describes.
+
+===== F. GitHub timeline, read-only =====
+--- issue #47 ---
+$ gh issue view 47 --json number,title,state,stateReason,closedAt
+{"closedAt":"2026-08-30T22:11:27Z","number":47,"state":"CLOSED","stateReason":"COMPLETED","title":"ty ships a language server, and survey section 5.4 only evaluated pyright"}
+$ gh api repos/ErstBlack/vcows-deploy/issues/47/timeline --paginate | jq '[.[]|select(.event=="closed" or .event=="referenced")|{event,commit_id,created_at}]'
+{"event":"closed","commit_id":null,"created_at":"2026-08-30T22:11:27Z"}
+{"event":"referenced","commit_id":"b58f924980afef517880f4c2dedc99e800517399","created_at":"2026-08-31T05:04:45Z"}
+
+--- issue #50 ---
+$ gh issue view 50 --json number,title,state,stateReason,closedAt
+{"closedAt":"2026-08-30T18:25:55Z","number":50,"state":"CLOSED","stateReason":"COMPLETED","title":"Bash(just:*) allows the four recipes section 5.5 said not to allow"}
+$ gh api repos/ErstBlack/vcows-deploy/issues/50/timeline --paginate | jq '[.[]|select(.event=="closed" or .event=="referenced")|{event,commit_id,created_at}]'
+{"event":"closed","commit_id":null,"created_at":"2026-08-30T18:25:55Z"}
+{"event":"referenced","commit_id":"26627ad2ee960f6e361327907fb49e9b36e5e44f","created_at":"2026-08-30T19:08:05Z"}
+
+--- issue #52 ---
+$ gh issue view 52 --json number,title,state,stateReason,closedAt
+{"closedAt":"2026-08-30T22:11:46Z","number":52,"state":"CLOSED","stateReason":"COMPLETED","title":"Section 5.4's MCP roster: drop the GitHub server, keep context7, settle serena at #30"}
+$ gh api repos/ErstBlack/vcows-deploy/issues/52/timeline --paginate | jq '[.[]|select(.event=="closed" or .event=="referenced")|{event,commit_id,created_at}]'
+{"event":"closed","commit_id":null,"created_at":"2026-08-30T22:11:47Z"}
+{"event":"referenced","commit_id":"b58f924980afef517880f4c2dedc99e800517399","created_at":"2026-08-31T05:04:45Z"}
+
+# Every 'closed' event carries commit_id: null -- all three closed by hand, as the finding says.
+# But every one also now carries a 'referenced' event with a real commit_id:
+#   #50 -> 26627ad (inside the review range, as F-lows.md corrected)
+#   #47 -> b58f924 (AFTER the review pin -- the review commit itself)
+#   #52 -> b58f924 (same)
+
+===== G. the fix the finder proposed, and its cost =====
+$ wc -l CLAUDE.md
+130 CLAUDE.md
+# 130 lines at HEAD, not the 128 F-lows.md states. The 200-line contract is real -- see below:
+$ git grep -n 'line ceiling\|200-line' -- '*.md'
+docs/review/2026-08-29/_progress.md:82:   -> NOTE: file is 206 lines, 6 over the 200-line contract. Accepted, not retried.
+docs/review/2026-08-31/verify/F-lows.md:116:sentences in a file at 128 of its 200-line ceiling buys a reader nothing they
+
+########## END RX-F6

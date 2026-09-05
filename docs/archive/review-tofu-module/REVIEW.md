@@ -79,7 +79,7 @@ the description string would add surface for nothing.
 ### Lens 3 — what moved?
 
 Nothing. The line is replaced in place; `variables.tf` is the same length. No
-file in the repo cites `variables.tf:10` outside `docs/review-2026-08-31/` and
+file in the repo cites `variables.tf:10` outside `docs/review/2026-08-31/` and
 this lane's own plan, and both are archived evidence describing the pre-change
 state.
 
@@ -144,7 +144,7 @@ combined figures are in C3's lens 3, which is the one to read).
 Nothing outside `docs/` cites a line number in that file. `grep -rn
 'tftest\.hcl:[0-9]'` over live files returns nothing: `tests/test_tofu_module.py:165`
 names the path, not a line, and `scripts/smoke-libvirt.sh:6` names the file in
-prose. The hits are all in `docs/review-2026-08-30/`, `docs/review-2026-08-31/`
+prose. The hits are all in `docs/review/2026-08-30/`, `docs/review/2026-08-31/`
 and this lane's plans, which are archived evidence pinned to the commits they
 describe and are deliberately not rewritten.
 
@@ -382,8 +382,8 @@ filtered to live files:
   needed; the code moved to meet the document.
 * `tests/test_gates.py:81` and `:55` cited lines this commit moved and are
   corrected in the same commit.
-* Everything else is `docs/review-2026-08-29/`, `docs/review-2026-08-30/`,
-  `docs/review-2026-08-31/` and this lane's own `docs/plans/`. Those are archived
+* Everything else is `docs/review/2026-08-29/`, `docs/review/2026-08-30/`,
+  `docs/review/2026-08-31/` and this lane's own `docs/archive/plans/`. Those are archived
   evidence pinned to the commits they describe — `ruff`'s `extend-exclude` and
   `ty`'s exclude both name `docs/` for exactly that reason — and rewriting them
   would make each document disagree with the code it quotes. Left alone
@@ -464,7 +464,7 @@ filtered to live files:
   block's message is about a domain not carrying the sizing its tfvars asked for.
   This is the one failure in that run block whose consequence is silent-wrong
   rather than a wrong number, so it gets its own message.
-  `docs/review-2026-08-31/verify/CD-mediums.md:398` proposes the fold; it is
+  `docs/review/2026-08-31/verify/CD-mediums.md:398` proposes the fold; it is
   superseded by `docs/archive/plans/issue-78.md` §5.
 * **L-F5 — "change `render.py:61` to emit `qemu+ssh://`."** That is the
   acceptance-run defect the `sshcmd` decision exists to fix, measured on the rig

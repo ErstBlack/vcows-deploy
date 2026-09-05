@@ -1,0 +1,199 @@
+# docs/review/drift/reverify/anchors.txt
+#
+# Every grep this lane relied on, and its output, captured at the tip of
+# lane/drift in a clean worktree of this repo. Re-run all of it with:
+#
+#     sed -n 's/^[$] //p' docs/review/drift/reverify/anchors.txt | sh
+#
+# from the repo root. Lines beginning '$ ' are the commands; everything
+# else is either output or a '#' heading. An empty result is printed as
+# '(no output)'.
+#
+# Captured at: 640bfdf583f3c12cadefa0c4478e631436a6c354
+# Baseline for the campaign: 80b1706 (= origin/master when this lane started)
+
+
+#A. TARGETS -- what each citation points at, measured at the lane tip
+
+$ grep -n 'workflows_carry_no_logic' scripts/lint.sh
+40:workflows_carry_no_logic() {
+199:    gate "workflows carry no logic" workflows_carry_no_logic
+
+$ awk 'NR>=40 && /^}/{print NR": "$0; exit}' scripts/lint.sh
+124: }
+
+$ grep -n 'write-baseline' scripts/image-scan.sh
+5:#   scripts/image-scan.sh --write-baseline   record what is there now as accepted
+100:    # Before the baseline is consulted, and before --write-baseline can record an
+108:    if [ "${1:-}" = "--write-baseline" ]; then
+121:        die "run 'scripts/image-scan.sh --write-baseline' once the pins are settled"
+185:    # --write-baseline returns at :116, above this and below the rm, so
+
+$ grep -n 'BASE_DIGEST' Containerfile
+68:# and compare `.Digest` against BASE_DIGEST. A mismatch means `:10` has moved to
+80:ARG BASE_DIGEST=sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
+82:FROM ${BASE_IMAGE}@${BASE_DIGEST}
+87:ARG BASE_DIGEST
+194:    BASE_IMAGE="${BASE_IMAGE}" BASE_DIGEST="${BASE_DIGEST}" \
+212:      org.opencontainers.image.base.digest="${BASE_DIGEST}" \
+
+$ grep -n 'TOFU_RPM_SHA256' Containerfile
+97:ARG TOFU_RPM_SHA256=547fe4544d3091ede04478f143fbb17bb0e010999237d904bf8950ad7542848f
+132: && echo "${TOFU_RPM_SHA256}  /tmp/tofu.rpm" | sha256sum -c - \
+
+$ grep -n 'PROVIDER_SHA256' Containerfile
+104:ARG PROVIDER_SHA256=061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1
+144:RUN echo "${PROVIDER_SHA256}  /opt/tofu-mirror/registry.opentofu.org/dmacvicar/libvirt/terraform-provider-libvirt_${PROVIDER_VERSION}_linux_amd64.zip" \
+195:    PROVIDER_SHA256="${PROVIDER_SHA256}" \
+
+$ grep -n 'h1:' docs/provider-0.9.8.lock.hcl
+8:    "h1:yqZeKoJ+EZc3687/+ZBqBmtwzvBPLNwaEHW74+bSc6Y=",
+
+$ grep -n 'os.umask' orchestrator/cli.py
+763:    os.umask(0o077)
+
+$ grep -n 'source_revision' scripts/lib.sh
+136:source_revision() {
+
+$ grep -n '^## ' README.md
+7:## Read this first: the config is not declarative
+24:## What it does
+36:## Requirements
+86:## Using it
+123:## The config
+224:## The run directory
+251:## Air gap
+260:## The image
+275:## Delivering it
+305:## Licensing
+318:## Development
+
+$ sed -n '277,281p' README.md
+```bash
+just image     # build
+just scan      # trivy against docs/cve-baseline.json, plus an SBOM
+just bundle    # assemble .cache/delivery/
+```
+
+$ jq '.accepted|length' docs/cve-baseline.json
+99
+
+$ jq '.rationale|keys|length' docs/cve-baseline.json
+6
+
+$ grep -n 'die ' scripts/bundle.sh
+35:    [ -n "$config" ] || die "no manifest.json in $archive -- not a docker-archive?"
+37:    [ -n "$value" ] || die "image in $archive carries no $key label"
+51:        [ -f "$f" ] || die "no $(basename "$f") -- run 'just scan' first, which writes it"
+76:        die "no PASSED stamp in .cache/scan -- 'just scan' has not accepted this archive. Run it and read what it says before bundling."
+78:        die "the PASSED stamp in .cache/scan does not describe image.tar -- re-run 'just scan'"
+
+$ grep -n '^def ' tests/conftest.py
+37:def _parse(raw: str) -> set[str]:
+46:def demanded(name: str) -> bool:
+50:def gate(name: str, available: bool, reason: str):
+67:def require(name: str, available: bool, reason: str) -> None:
+76:def pytest_configure(config) -> None:
+82:def pytest_runtest_setup(item) -> None:
+105:def tofu_env(workdir: Path, mirror: Path = MIRROR) -> dict:
+198:def _umask():
+213:def cfg() -> dict:
+
+$ grep -n 'GATES' tests/conftest.py
+9:saying the module was never looked at. `VCOWS_GATES` is the opt-in that turns a
+10:named gate's skip into a failure -- `VCOWS_GATES=tofu`, or `all` for every one of
+43:GATES = _parse(os.environ.get("VCOWS_GATES", ""))
+47:    return bool(GATES & {name, "all"})
+
+$ sed -n '7p' tests/conftest.py
+**A gate that quietly passes because it did not run is worse than no gate**, and in
+
+$ sed -n '61p' orchestrator/backends/libvirt/render.py
+        "uri": connection_uri(target, "sshcmd"),
+
+$ sed -n '7p' README.md
+## Read this first: the config is not declarative
+
+$ sed -n '43,44p' orchestrator/config.py
+    "additionalProperties": False,
+    "required": ["source_qcow2", "base_volume_name"],
+
+
+#B. UNIQUENESS -- the property each de-anchoring depends on
+
+$ grep -c 'os.umask' orchestrator/cli.py
+1
+
+$ grep -c '^source_revision() {' scripts/lib.sh
+1
+
+$ grep -c '^workflows_carry_no_logic() {' scripts/lint.sh
+1
+
+$ grep -c '^## Delivering it$' README.md
+1
+
+
+#C. THE CITING LINES, as they now read
+
+$ grep -n 'workflows_carry_no_logic\|image-scan.sh' CLAUDE.md
+39:`scripts/lint.sh`'s `workflows_carry_no_logic` parses both pipeline files
+86:**`scripts/image-scan.sh`'s `--write-baseline` destroys that rationale.** It
+
+$ grep -n 'Containerfile:\|lock.hcl:' CLAUDE.md
+100:* `BASE_DIGEST` — `Containerfile:80`
+101:* `TOFU_RPM_SHA256` — `Containerfile:97`
+102:* `PROVIDER_SHA256` — `Containerfile:104`
+103:* the `h1:` hash — `docs/provider-0.9.8.lock.hcl:8`
+
+$ grep -n 'conftest' CLAUDE.md
+47:`tests/conftest.py:7`: "A gate that quietly passes because it did not run is
+48:worse than no gate." Every conditional skip goes through `conftest.gate()` or
+49:`conftest.require()`, and `tests/test_gates.py` AST-walks the suite and fails
+54:`VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure. Five
+
+$ grep -n 'os.umask' container/entrypoint.py
+189:    # next line. `orchestrator/cli.py`'s `os.umask(0o077)` cannot close that:
+
+$ grep -n 'source_revision' .github/workflows/image.yml
+60:      # Not needed by anything measured: source_revision in lib.sh calls only
+
+$ grep -n 'README.md' scripts/image-scan.sh
+80:    # reads that for a verdict. README.md's "Delivering it" documents `just scan`
+
+$ grep -n 'accepted id survives' .claude/skills/cve-triage/SKILL.md
+30:the hand-written `note` with a generic one. Every accepted id survives; every
+
+$ grep -n 'PASSED\|accepted image' .claude/skills/delivery/SKILL.md
+26:requires the `PASSED` stamp `just scan` writes only when the baseline accepted
+30:A bundle is therefore always a bundle *of an accepted image*. You cannot ship
+
+$ grep -n 'copy commands' docs/findings.md
+419:That document is archived as background. It is a good survey, but it was written before any code existed and several of its concrete claims are wrong. Do not copy commands or claims out of it without checking here first.
+
+
+#D. INVARIANTS -- files this lane edited that others cite by line
+
+$ wc -l scripts/image-scan.sh
+190 scripts/image-scan.sh
+
+$ sed -n '92p;116p;128p;169p;187p' scripts/image-scan.sh
+    save_archive "$tag" "$archive"
+        return
+    delta="$(jq -c --argjson found "$found" '{
+    if [ "$accepted" -gt 0 ] && [ $((missing * 3)) -gt "$accepted" ]; then
+    ( cd "$out" && sha256sum image.tar ) > "$out/PASSED"
+
+$ wc -l CLAUDE.md
+131 CLAUDE.md
+
+
+#E. MEASURED, LEFT ALONE -- reported, in neither issue, in a file lane/rhel-firmware may move
+
+$ grep -n 'main.tf:205' tests/libvirt-module.tftest.hcl
+314:// fallback to var.base_volume.path, and main.tf:205's non-null bridge arm.
+
+$ sed -n '204,205p' orchestrator/backends/libvirt/tofu/main.tf
+          bridge  = n.bridge != null ? { bridge = n.bridge } : null
+        }
+

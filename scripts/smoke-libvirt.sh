@@ -27,7 +27,7 @@
 #
 # **No guest is booted and no guest address is observed.** The domain reaches
 # firmware and stops there; nothing here needs it to reach a login prompt. The
-# defect class `docs/acceptance.md` records -- guests healthy on the wrong
+# defect class `docs/archive/acceptance.md` records -- guests healthy on the wrong
 # addresses -- is not what this gate covers.
 #
 # ## No /dev/kvm

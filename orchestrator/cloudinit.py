@@ -2,7 +2,7 @@
 
 **Core, not the libvirt backend's, because nothing in the artifact is
 hypervisor-specific.**
-``docs/orchestrator-architecture.md`` §6.4 chose this before there was a second
+``docs/archive/orchestrator-architecture.md`` §6.4 chose this before there was a second
 backend to prove it: Proxmox's own ``cicustom`` reads a snippet, packages it into
 an ISO and attaches it as a CD-ROM at every VM start, so shipping the ISO
 directly is doing that packaging here -- where libvirt already needed it -- and

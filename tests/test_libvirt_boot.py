@@ -4,7 +4,7 @@
 booted and no guest address is observed** -- the domain reaches firmware and
 stops there. That is the half this file supplies. It is the only test that sees
 what cloud-init did inside a running guest, which is the only place three
-recorded findings can surface at all: defect 5 in `docs/acceptance.md` (the
+recorded findings can surface at all: defect 5 in `docs/archive/acceptance.md` (the
 document was accepted, the normaliser threw, the guest fell back to DHCP and
 reported `cloud-init status: done` on an address nobody asked for), `#161` (the
 device name the guest ends up with), and `#164`.

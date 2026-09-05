@@ -5,7 +5,7 @@ pycdlib writes, xorriso reads back. A builder that can only be verified by its o
 reader proves nothing about whether cloud-init will find the files.
 
 Not `isoinfo` -- findings.md R4 names it, but it ships with genisoimage/cdrkit and
-is absent from Rocky 10.2. See docs/spikes.md.
+is absent from Rocky 10.2. See docs/spikes/README.md.
 """
 
 from __future__ import annotations
