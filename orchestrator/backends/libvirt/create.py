@@ -32,6 +32,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from ..base import carrying
+
 log = logging.getLogger(__name__)
 
 VOLUME_XML = """<volume type='file'>
@@ -259,7 +261,8 @@ def create(conn: Any, tfvars: dict) -> dict:
             base_path = upload(conn, pool, base["name"], "qcow2", base["source"]).path()
 
     vms: dict[str, dict] = {}
-    try:
+    # The return below is the only other way `vms` leaves this function.
+    with carrying(created=vms):
         for name, vm in tfvars["vms"].items():
             with _made(f"seed volume {vm['seed_name']}"):
                 seed = upload(conn, pool, vm["seed_name"], "iso", vm["seed_iso"])
@@ -277,13 +280,4 @@ def create(conn: Any, tfvars: dict) -> dict:
                 "configured_address": vm["configured_address"],
                 "disks": [disk.path(), seed.path()],
             }
-    except BaseException as exc:
-        # `vms` is a local and the return is the only thing that carries it out,
-        # so a failure on the third VM lost every record of the two that are
-        # running -- the VMs nothing rolls back and nobody has an inventory for.
-        # Same carrier `destroy` uses for its `Outcome`, read back by
-        # `cli._deploy` with `getattr` so core stays backend-agnostic.
-        carrier: Any = exc
-        carrier.created = vms
-        raise
     return vms

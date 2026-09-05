@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from ..base import carrying
 from . import api
 
 log = logging.getLogger(__name__)
@@ -174,7 +175,8 @@ def create(session: api.Session, tfvars: dict) -> dict:
             )
 
     vms: dict[str, dict] = {}
-    try:
+    # The return below is the only other way `vms` leaves this function.
+    with carrying(created=vms):
         for key, vm in tfvars["vms"].items():
             with _made(f"seed {vm['seed_name']}"):
                 seed_id = upload(session, "iso", vm["seed_iso"], vm["seed_name"], "")
@@ -193,13 +195,4 @@ def create(session: api.Session, tfvars: dict) -> dict:
                 "configured_address": vm["configured_address"],
                 "disks": [seed_id],
             }
-    except BaseException as exc:
-        # `vms` is a local and the return is the only thing that carries it out,
-        # so a failure on the third VM lost every record of the two that are
-        # running -- the VMs nothing rolls back and nobody has an inventory for.
-        # Same carrier `destroy` uses for its `Outcome`, read back by
-        # `cli._deploy` with `getattr` so core stays backend-agnostic.
-        carrier: Any = exc
-        carrier.created = vms
-        raise
     return vms

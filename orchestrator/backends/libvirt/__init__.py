@@ -1,9 +1,11 @@
-"""The libvirt backend: seven methods, bound together.
+"""The libvirt backend: six methods, bound together.
 
-Three of them delegate to the free functions in ``schema.py``, which imports
-nothing hypervisor-specific, and to ``orchestrator/cloudinit.py``, which is core
-because nothing in the seed ISO is hypervisor-specific. The four that hold a
-connection live in ``preflight.py``, ``destroy.py`` and ``create.py``.
+Two of them delegate to the free functions in ``schema.py``, which imports
+nothing hypervisor-specific. The four that hold a connection live in
+``preflight.py``, ``destroy.py`` and ``create.py``. There is no ``prepare``
+here: it built the seed ISOs through core's ``cloudinit`` and carried
+``preflight``'s ``base_volume`` through to ``create``, which is what the
+inherited ``Backend.prepare`` now does for every backend.
 
 **No libvirt import at module level, here or in any module this one imports at
 import time.** ``orchestrator/backends/__init__.py`` names this class, so importing
@@ -18,10 +20,8 @@ method core calls is on it.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from ... import cloudinit as _cloudinit
 from ...problems import Problem
 from ..base import (
     Backend,
@@ -57,22 +57,6 @@ class LibvirtBackend(Backend):
         return _destroy.destroy(cfg, session, targets)
 
     # -- apply -----------------------------------------------------------
-
-    def prepare(
-        self, cfg: dict, workdir: Path, discovered: Discovered
-    ) -> dict[str, Any]:
-        """Build the seed ISOs and carry preflight's findings through to ``create``.
-
-        Nothing is torn down afterwards -- the run directory keeps the ISOs so a
-        VM that will not boot can be debugged by inspecting the one it was given.
-        """
-        return {
-            "seed_isos": _cloudinit.build_all(cfg, workdir),
-            # Discovered while connected, because nothing downstream can find
-            # it out: the pool's directory belongs to somebody else's pool
-            # definition, and `create` is handed data rather than a lookup.
-            "base_volume": discovered.artifacts["base_volume"],
-        }
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Render the values, then make the objects they describe.

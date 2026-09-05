@@ -29,7 +29,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from ...problems import Problem
-from ..base import Existing, Outcome
+from ..base import Existing, Outcome, carrying
 from .errors import (
     ERR_INVALID_ARG,
     ERR_NO_DOMAIN,
@@ -499,7 +499,9 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         )
         raise DestroyError(out)
 
-    try:
+    # `DestroyError` below is the only other route `out` takes out of here, and
+    # an interrupt raises neither.
+    with carrying(outcome=out):
         for target in targets:
             # Whether the disks below are being deleted against a live document or
             # against the preflight snapshot alone. It changes what the evidence is
@@ -549,16 +551,6 @@ def destroy(cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
                                 where=target.name,
                             )
                         )
-    except BaseException as exc:
-        # `out` is a local, and `DestroyError` is the only route that carries
-        # it out of here. An interrupt takes neither route, so `_destroy`'s
-        # `getattr(exc, "outcome", None)` finds nothing and the account of a
-        # half-finished teardown is lost -- the one it can least afford to
-        # lose, since the operator has to re-run this and the record is the
-        # only thing that says which domains are already gone.
-        carrier: Any = exc
-        carrier.outcome = out
-        raise
 
     if out.failed:
         raise DestroyError(out)
