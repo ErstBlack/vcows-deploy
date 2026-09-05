@@ -47,8 +47,8 @@ def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
             # and as the expected id when creating.
             "volid": image["volid"],
             "source": cfg["image"]["source_qcow2"] if image["create"] else "",
-            # The provider verifies this after upload when it is set. Optional in
-            # the config, so empty means "not declared" rather than "no checksum".
+            # PVE verifies this after upload when it is set. Optional in the
+            # config, so empty means "not declared" rather than "no checksum".
             "checksum": cfg["image"].get("sha256", ""),
         },
         "vms": {vm["name"]: _vm(vm, cfg, seeds[vm["name"]]) for vm in cfg["vms"]},
@@ -60,7 +60,7 @@ def _vm(vm: dict, cfg: dict, seed_iso: str) -> dict[str, Any]:
     primary = vm["nics"][primary_index(vm)]
     return {
         # The logical name, undecorated -- the same rule the libvirt backend
-        # follows (D16), and for the same reason: maximally predictable for
+        # follows, and for the same reason: maximally predictable for
         # hand-debugging at a site, where an operator has the config and the PVE
         # UI.
         "vm_name": name,

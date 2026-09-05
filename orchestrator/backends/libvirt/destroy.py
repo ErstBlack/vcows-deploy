@@ -71,8 +71,8 @@ def undefine_mask(version: int) -> int:
     flag validation happens server-side in ``qemuDomainUndefineFlags``.
 
     Every bit here has existed since libvirt 8.9.0, and RHEL 9.8 and RHEL 10.2 both
-    ship 11.10.0, so in practice this only ever matters on 9.0/9.1 EUS. It is eight
-    lines of insurance, not the central risk this file was scoped around.
+    ship 11.10.0, so in practice this only ever matters on 9.0/9.1 EUS. Eight
+    lines of insurance.
     """
     mask = FLOOR
     for introduced, bit in _GATED:
@@ -115,9 +115,9 @@ def _stop(dom: Any, name: str, out: Outcome) -> bool:
     """Force the domain off. True if it is now safe to undefine.
 
     ``isActive`` is a round trip like any other and belongs inside the ``try``. A
-    raise from it left this function entirely, and with it ``destroy``'s loop: every
-    target after this one went untouched and the operator got a traceback in place
-    of the Outcome naming what was left behind.
+    raise from it would leave this function entirely, and with it ``destroy``'s
+    loop: every target after this one untouched, and a traceback in place of the
+    Outcome naming what was left behind.
     """
     import libvirt
 
@@ -235,7 +235,7 @@ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
     import libvirt
 
     try:
-        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+        path = ET.fromstring(pool.XMLDesc(0)).findtext("./target/path")  # noqa: S314  libvirt's own XMLDesc output; see preflight's module docstring
     except (libvirt.libvirtError, ET.ParseError) as exc:
         log.debug("could not read the pool's target path: %s", exc)
         return None
@@ -246,7 +246,7 @@ def _pool_holds(pool: Any, wanted: set[str]) -> list[str] | None:
 
 
 def _refresh_pools(conn: Any, out: Outcome, targets: list[Existing]) -> None:
-    """Rescan every active pool before resolving any path (D35).
+    """Rescan every active pool before resolving any path.
 
     ``storageVolLookupByPath`` reads libvirt's in-memory pool cache. On the rig,
     three of four running domains' disks -- real files inside an active pool's own
@@ -367,14 +367,14 @@ def _claimed_elsewhere(
         return None
     # The twin of preflight._domains. Deliberately not shared: the filter below
     # runs before the read, and a shared iterator would have to move it after,
-    # warning about a domain this teardown is about to delete. #42.
+    # warning about a domain this teardown is about to delete.
     for dom in domains:
         name = "<unnamed>"
         try:
             name = dom.name()
             if dom.UUIDString() in ours:
                 continue
-            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+            root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; see preflight's module docstring
         except (libvirt.libvirtError, ET.ParseError) as exc:
             # A domain that vanished mid-scan claims nothing, and that is the
             # common case -- but one that could not be read may claim a disk this
@@ -404,7 +404,7 @@ def _reverify(dom: Any, target: Existing, out: Outcome) -> Existing | None:
     import libvirt
 
     try:
-        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; D13, see preflight's module docstring
+        root = ET.fromstring(dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE))  # noqa: S314  libvirt's own XMLDesc output; see preflight's module docstring
     except (libvirt.libvirtError, ET.ParseError) as exc:
         out.problems.append(
             Problem.error(f"could not re-read: {exc}", where=target.name)

@@ -8,7 +8,7 @@ while still carrying its record.
 **Order matters and is not negotiable.** Stop, then delete the VM, then delete
 the seed ISO. PVE refuses to delete a running VM, and deleting the ISO first
 would strand it if the VM delete then failed -- the VM would still reference a
-file that no longer exists.
+file that is gone.
 """
 
 from __future__ import annotations

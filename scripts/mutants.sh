@@ -6,9 +6,8 @@
 #   scripts/mutants.sh --verdict DIR      judge the summed stats of a sharded run
 #
 # **`mutmut run` exits 0 whatever it finds.** Measured: 3835 mutants, 964 of them
-# surviving, exit code 0. So a pipeline step that just called it would be green
-# forever -- the vacuous pass this repo already has a name for, arriving through
-# the front door. Everything below exists to turn that run into a pass or a fail.
+# surviving, exit code 0. A pipeline step that just called it would be green
+# forever. Everything below exists to turn that run into a pass or a fail.
 #
 # **Differential, not absolute**, for the same reason `scripts/image-scan.sh` is.
 # A gate demanding zero survivors would be red from the first run and stay red, and
@@ -17,13 +16,13 @@
 # docs/mutation-baseline.json holds what has been looked at and accepted, and this
 # fails only on what is *new*. Red means the change under review made it worse.
 #
-# What the remaining survivors are, measured when #146 closed by decoding
-# `mutants/*.meta` against the mutated source: roughly 440 of the 491 mutate the
-# *text* of a log line or a `Problem` message -- `"XX...XX"`, a case flip, a
-# format argument swapped for None or dropped. Killing one means asserting on
-# prose, which pins the wording of a message this repo revises deliberately, so
-# they are a floor rather than a backlog. The other ~50 are equivalent mutants,
-# each named in #146 with the reason no test can tell it from the original.
+# What the remaining survivors are, measured by decoding `mutants/*.meta`
+# against the mutated source: roughly 440 of the 491 mutate the *text* of a log
+# line or a `Problem` message -- `"XX...XX"`, a case flip, a format argument
+# swapped for None or dropped. Killing one means asserting on prose, which pins
+# the wording of a message this repo revises deliberately, so they are a floor
+# rather than a backlog. The other ~50 are equivalent mutants: no test can tell
+# them from the original.
 #
 # **Do not suppress the message-text ones.** mutmut 3.7.0 offers three ways and
 # all three are rejected here: `do_not_mutate` (a file-path glob),
@@ -206,13 +205,13 @@ run_shard() {
 
     mkdir -p "$SHARD_DIR"
     cp "$STATS" "$SHARD_DIR/shard-$k.json"
-    # And, on GitHub, as a job output as well. Artifacts were the first design
-    # and every shard's upload failed with "Artifact storage quota has been hit"
-    # (job 100822624337): the quota is shared across the account, recalculated
-    # only every 6 to 12 hours, and stale-full from delivery bundles already
-    # deleted. Step outputs have their own 1 MB-per-job budget, which a hundred
-    # bytes of counters will not fill. The file above is still written, because
-    # GitLab's side of this seam is the artifact.
+    # And, on GitHub, as a job output as well. Not an artifact: a shard's upload
+    # fails with "Artifact storage quota has been hit", because the quota is
+    # shared across the account, recalculated only every 6 to 12 hours, and
+    # stale-full from delivery bundles already deleted. Step outputs have their
+    # own 1 MB-per-job budget, which a hundred bytes of counters will not fill.
+    # The file above is still written, because GitLab's side of this seam is the
+    # artifact.
     if [ -n "${GITHUB_OUTPUT:-}" ]; then
         # `jq -c` on its own line, and one line of output: a step output is a
         # `name=value` pair that a newline ends.
@@ -238,9 +237,9 @@ verdict() {
 
     # The GitHub side of the seam run_shard writes: the shards' numbers arrive as
     # job outputs rather than as files, because the account's artifact storage
-    # quota refused the uploads (job 100822624337). Landing them in $dir first
-    # means one code path judges both platforms -- GitLab's shards arrive here as
-    # artifact files and set none of these.
+    # quota refuses the uploads. Landing them in $dir first means one code path
+    # judges both platforms -- GitLab's shards arrive here as artifact files and
+    # set none of these.
     #
     # An unset or empty variable is skipped rather than diagnosed: a cancelled
     # matrix job leaves its output empty, and the sum check below is what has to
@@ -332,7 +331,7 @@ main() {
               --argjson total "$total" --argjson killed "$killed" \
               --argjson survived "$survived" --argjson no_tests "$no_tests" \
               '{generated: $generated,
-                note: "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Roughly 440 of them mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog -- and the rest are equivalent mutants named in #146.",
+                note: "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Most of them mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog -- and the rest are equivalent mutants no test can tell from the original.",
                 total: $total, killed: $killed,
                 survived: $survived, no_tests: $no_tests}' > "$BASELINE"
         log "wrote $(basename "$BASELINE"): $survived survived, $no_tests with no tests"

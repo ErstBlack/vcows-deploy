@@ -1,9 +1,8 @@
 """Offline checks on the core ``image`` block. Backend-independent by nature.
 
-``config.IMAGE_SCHEMA`` is core, so the checks on it are too. They lived in the
-libvirt backend only because it was the only backend; both of them read
-``image.source_qcow2`` and ``image.sha256`` and neither knows what a storage pool
-or a datastore is.
+``config.IMAGE_SCHEMA`` is core, so the checks on it are too: both read
+``image.source_qcow2`` and ``image.sha256``, and neither knows what a storage
+pool or a datastore is.
 
 **Called by each backend rather than by ``config.validate``.** Every backend
 wants them, but where they land in the problem list is the backend's to choose --
@@ -25,10 +24,9 @@ log = logging.getLogger(__name__)
 def check_image_digest(cfg: dict) -> list[Problem]:
     """The declared ``image.sha256``, actually computed.
 
-    The field is schema-validated (``config.py``'s ``sha256`` pattern, under
-    ``additionalProperties: False``) and was never checked, so a corrupted or
-    substituted golden image deployed with no signal. A pattern that only ever
-    proved the string was 64 hex characters reads as enforcement and is not.
+    ``config.py``'s ``sha256`` pattern only proves the string is 64 hex
+    characters; without this a corrupted or substituted golden image deploys with
+    no signal.
 
     Optional, and the cost is why it stays optional: this reads the whole image.
     Measured through this function -- 424 MiB in 2.46 s, ~172 MiB/s -- so roughly
@@ -37,17 +35,15 @@ def check_image_digest(cfg: dict) -> list[Problem]:
     8 microseconds. ``config.load`` runs the offline checks for every verb
     (``cmd_validate``, ``cmd_preflight``, ``cmd_deploy``, ``cmd_destroy``), and
     ``destroy`` reads only ``cfg["backend"]`` and ``cfg["deployment"]`` and never
-    touches ``cfg["image"]`` -- so it used to pay the 59 s for nothing. That one
-    verb loads with ``verify_digest=False``, and each backend's ``validate`` then
-    does not call this at all (#257). The skip is the caller's, because what has
-    to not happen is the call: a flag read in here would still be a function
-    every backend calls on a teardown.
+    touches ``cfg["image"]``, so it loads with ``verify_digest=False`` and each
+    backend's ``validate`` then does not call this at all. The skip is the
+    caller's, because what has to not happen is the call: a flag read in here
+    would still be a function every backend calls on a teardown.
 
     **No wider skip than that.** An operator who sets the field has asked for the
-    check on every verb that acts on the image, and the alternative -- verifying
-    in ``preflight`` -- puts an offline check in the connected phase, so
-    ``vcows validate`` would keep reporting a corrupt image as valid. That is the
-    defect this closes, not a shape to preserve.
+    check on every verb that acts on the image, and verifying in ``preflight``
+    instead would put an offline check in the connected phase, so
+    ``vcows validate`` would report a corrupt image as valid.
 
     Unreadable is a warning, for the same reason ``check_disk_capacity`` says:
     ``validate`` is the offline phase and the golden image is bind-mounted at run
@@ -85,9 +81,9 @@ def check_image_digest(cfg: dict) -> list[Problem]:
 
 
 def check_disk_capacity(cfg: dict) -> list[Problem]:
-    """R-F: an overlay smaller than its backing image cannot be created.
+    """An overlay smaller than its backing image cannot be created.
 
-    Uses the qcow2 header read rather than ``qemu-img info`` -- see D18 and
+    Uses the qcow2 header read rather than ``qemu-img info`` -- see
     orchestrator/qcow2.py. Degrades to a warning rather than an error when the
     image cannot be read, because ``validate`` is the offline phase and the golden
     image is bind-mounted at run time.
@@ -108,7 +104,7 @@ def check_disk_capacity(cfg: dict) -> list[Problem]:
         return [Problem.error(str(exc), where="image.source_qcow2")]
 
     # The success path returns no Problem, so this line is the only evidence in
-    # the log that `validate` opened the image at all (#163).
+    # the log that `validate` opened the image at all.
     log.debug("%s: virtual size %.1f GiB", source, virtual / 1024**3)
 
     problems = []

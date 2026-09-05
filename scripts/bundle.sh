@@ -3,13 +3,9 @@
 #
 #   scripts/bundle.sh    -> .cache/delivery/
 #
-# **This is the step that was missing.** README described the delivery as a
-# `podman save | gzip` tarball that no script produced, while the only concrete
-# artifact was the uncompressed docker-archive `just scan` writes for trivy and
-# syft to seek. Two different byte streams were both called "the delivery
-# tarball", which is how the old signing step came to sign one and ship the
-# other. One script now produces one named artifact, and the name says which
-# commit it came from.
+# **One script, one named artifact, and the name says which commit it came
+# from.** The other byte stream in this repo is the uncompressed docker-archive
+# `just scan` writes for trivy and syft to read; that one is not the delivery.
 #
 # **Named from the archive, not from the worktree.** The version and revision are
 # read out of the image config inside image.tar rather than from `git rev-parse`,
@@ -63,12 +59,11 @@ main() {
     done
 
     # The loop above asks whether `just scan` *ran*. This asks whether it
-    # *passed*, which is a different question and used to have no answer here. A
-    # scan that dies on a new finding leaves all three files above complete and
-    # current, because image-scan.sh writes them before it reads the baseline;
-    # the bundle that resulted was correctly named, internally consistent and
-    # verified by its own SHA256SUMS, with the rejected id sitting inside the
-    # trivy.json it shipped.
+    # *passed*, which is a different question. A scan that dies on a new finding
+    # leaves all three files above complete and current, because image-scan.sh
+    # writes them before it reads the baseline -- so without this stamp the
+    # bundle is correctly named, internally consistent and verified by its own
+    # SHA256SUMS, with the rejected id sitting inside the trivy.json it ships.
     #
     # The digest in the stamp is what makes it mean something. It binds the
     # verdict to the bytes the gate accepted, so a stamp left by an earlier pass
@@ -82,7 +77,7 @@ main() {
     #
     # Fatal, unlike the revision warning below, because the two answer questions
     # of different shapes. "Is this archive the current tree?" has a legitimate
-    # no -- that is why :85-90 only warns. "Did the CVE gate accept this
+    # no, which is why that one only warns. "Did the CVE gate accept this
     # archive?" does not.
     [ -f "$scan/PASSED" ] ||
         die "no PASSED stamp in .cache/scan -- 'just scan' has not accepted this archive. Run it and read what it says before bundling."

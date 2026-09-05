@@ -33,7 +33,7 @@ VCOWS_NS = uuid.UUID("43a00ff6-89be-57a1-8596-246f665e9f4b")
 #: XML namespace for the libvirt ``<metadata>`` child element.
 #:
 #: Stamped into every VM's persistent domain XML, so changing it makes markers
-#: written by earlier versions unreadable. A URN rather than an http URL because
+#: written by any other release unreadable. A URN rather than an http URL because
 #: XML namespaces are identifiers, not addresses: there is no domain to own and
 #: no question about whether it should resolve. The trailing digit leaves a clean
 #: break if the marker format ever needs an incompatible one.
@@ -70,13 +70,9 @@ class Marker:
     ``decide()`` refuses a deploy when a name we want is held by a marker from a
     different deployment, and ``cmd_destroy`` tears down only the targets whose
     marker matches, reporting each skip and whose it was. So this is not
-    decorative: it is what bounds the blast radius of both verbs, and D36 named
-    the config's ``deployment`` key the blast radius for that reason.
+    decorative: it is what bounds the blast radius of both verbs.
 
-    Recorded from 0.1.0.0 (D4) so the data existed before any VM was marked --
-    which is what let destroy become scoped with no marker migration and no "what
-    does absent mean" ambiguity. Empty when parsed from a marker written before
-    the field existed, never ``None``.
+    Empty, never ``None``, when the parsed marker does not carry the key.
     """
 
     id: str
@@ -114,9 +110,8 @@ class Marker:
     def from_json(cls, raw: str) -> Marker:
         """Parse a payload, **ignoring unknown keys**.
 
-        Tolerating unknown keys from day one is what makes the format actually
-        extensible rather than theoretically extensible: a later version adding a
-        field must not make its VMs unreadable by this one.
+        Tolerating unknown keys is what makes the format extensible: a later
+        version adding a field must not make its VMs unreadable by this one.
         """
         try:
             data = json.loads(raw)
@@ -130,8 +125,7 @@ class Marker:
         return cls(
             v=_text(data, "v"),
             name=_text(data, "name"),
-            # Absent in markers written before `deployment` existed. Empty
-            # string, never None, so callers need no null check.
+            # Optional. Empty string, never None, so callers need no null check.
             deployment=_text(data, "deployment", ""),
             id=_text(data, "id"),
         )
@@ -141,8 +135,7 @@ class Marker:
 
         libvirt requires ``<metadata>`` to have at least one *element* child, and
         deep-copies the subtree into the persistent domain XML. Verified to
-        survive define -> dumpxml byte-identical and un-reindented; see
-        docs/spikes/README.md A2.
+        survive define -> dumpxml byte-identical and un-reindented.
         """
         return (
             f'<{MARKER_ELEMENT} xmlns="{MARKER_XMLNS}">'

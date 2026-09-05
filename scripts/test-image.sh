@@ -2,9 +2,8 @@
 # The offline container gate, demanded rather than skipped.
 #
 # Exists because the recipe needs to tell pytest *which* image to exercise, and
-# the tag is computed from the Containerfile. Leaving that to the caller meant
-# `just image && just test-image` failed in CI with ten setup errors -- correct
-# behaviour from the gate, and a missing three lines here.
+# the tag is computed from the Containerfile. Left to the caller,
+# `just image && just test-image` fails the gate with setup errors.
 
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

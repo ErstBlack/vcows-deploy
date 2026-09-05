@@ -1,6 +1,6 @@
 # Work that is worth doing regularly and is wrong as a pull-request gate.
 #
-# Mutation testing is not here either, and now for the opposite reason: it runs on
+# Mutation testing is not here either, for the opposite reason: it runs on
 # every pull request instead (ci.yml's `mutation` job). It is a question about a
 # change -- did this make the suite blinder? -- so the answer belongs beside the
 # change, not in a monthly job nobody opens. Measured at 2m07s for 5008 mutants on
@@ -9,8 +9,7 @@
 #
 # It does not block anything. Nothing in a pipeline can fix a CVE in a pinned
 # binary -- only a version bump can -- so a scheduled scan that goes red would be
-# muted inside a month and then be green by neglect, which is the failure mode
-# this repo already has a name for.
+# muted inside a month and then be green by neglect.
 name: scheduled
 
 on:
@@ -68,7 +67,7 @@ jobs:
       - run: just image
       - run: just scan
       # The step that would make the rest of this job worth running, and the
-      # reason `just bundle` no longer runs above it. `just scan` writes
+      # reason `just bundle` does not run above it. `just scan` writes
       # trivy.json, the SBOM and the archive into the runner's .cache/ and the
       # runner deletes them, so the monthly rebuild proves something and records
       # nothing -- which removes the reason to run it monthly, namely diffing

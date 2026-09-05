@@ -14,7 +14,7 @@ Two rules the schema settles, because nothing else can:
   flat for exactly that reason, and core resolves it before this module runs, so
   every VM reaching here already carries the values it will be judged against.
 
-The split with core is D11: core's ``vms`` schema requires only ``name``, and
+The split with core: core's ``vms`` schema requires only ``name``, and
 everything about a VM's shape -- especially NICs, whose valid forms are entirely
 backend-specific -- is checked here. That keeps core backend-agnostic and produces
 better messages: a jsonschema ``oneOf`` failure on the bridge/network union is
@@ -53,10 +53,10 @@ MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 #: Unanchored at the end: everything after the header is base64 and a footer.
 SSH_KEY_PATTERN = r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
 
-#: An absolute path with no whitespace in it -- what these two fields held at
-#: v0.1. Matched only to say so: they carry contents now, nothing is mounted for
-#: them, and ``known_hosts`` has no pattern of its own, so an unrecognised path
-#: would otherwise reach ``ssh`` as a known_hosts file of one nonsense line.
+#: An absolute path with no whitespace in it. Matched only to reject it:
+#: ``ssh_key`` and ``known_hosts`` carry contents, nothing is mounted for them,
+#: and ``known_hosts`` has no pattern of its own, so an unrecognised path would
+#: otherwise reach ``ssh`` as a known_hosts file of one nonsense line.
 #: ``\Z``, not ``$``: Python's ``$`` also matches before a trailing newline.
 PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
@@ -137,11 +137,11 @@ def connection_uri(target: dict, params: dict[str, str] | None = None) -> str:
 
     ``params`` is what ``preflight.connect`` wrote for ``ssh`` -- ``keyfile=``
     and ``command=`` -- or nothing, in which case there is no query and ``ssh``
-    reads the caller's own ``~/.ssh``. ``known_hosts=`` is not a ``qemu+ssh``
-    parameter (libssh only; #247 measured libssh and rejected it), so the
-    known_hosts copy travels inside the ``command=`` wrapper instead.
+    reads the caller's own ``~/.ssh``. ``known_hosts=`` is a libssh parameter and
+    not a ``qemu+ssh`` one, so the known_hosts copy travels inside the
+    ``command=`` wrapper instead.
 
-    R-D's refusal of an operator-supplied query still matters: it is what keeps
+    ``_check_target``'s refusal of an operator-supplied query is what keeps
     ``no_verify=1`` off the connection, and the operator's query is *replaced*
     here, never merged. ``safe="/"`` keeps the paths readable in the log line,
     and ``quote_via=quote`` rather than ``urlencode``'s default ``quote_plus``
@@ -186,7 +186,7 @@ def validate(cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
 def _check_volume_names(cfg: dict) -> list[Problem]:
     """The golden image and a per-VM volume must not want the same name.
 
-    One flat pool, undecorated names (D16), so a golden image called
+    One flat pool, undecorated names, so a golden image called
     ``app01.qcow2`` collides with app01's own overlay. libvirt refuses the
     duplicate itself, but mid-apply, after the run has created other objects.
 
@@ -213,14 +213,14 @@ def _check_volume_names(cfg: dict) -> list[Problem]:
 
 
 def _check_target(target: dict) -> list[Problem]:
-    """R-D: the URI is ours to assemble, not the operator's to decorate."""
+    """The URI is ours to assemble, not the operator's to decorate."""
     where = "target.libvirt.uri"
     uri = target["uri"]
     try:
         parts = urlsplit(uri)
     except ValueError as exc:
         # `_check_target` is the first thing `validate` runs, so an unhandled
-        # `ValueError` here unwound past every other check and past
+        # `ValueError` here would unwind past every other check and past
         # `config.load`'s "every problem rather than the first". Returning early
         # is right rather than merely convenient: every remaining check reads
         # `parts`, so there is nothing further to say about this URI.
@@ -284,10 +284,9 @@ def _check_target(target: dict) -> list[Problem]:
             Problem.error(f"unexpected fragment {parts.fragment!r}", where=where)
         )
 
-    # The v0.1 shape, which every config written so far carries. An error rather
-    # than a warning: there is no compatibility path, nothing is mounted for
-    # these any more, and the alternative is `ssh` failing on a key file holding
-    # one line of text that happens to be a filename.
+    # An error rather than a warning: nothing is mounted for these, so the
+    # alternative is `ssh` failing on a key file holding one line of text that
+    # happens to be a filename.
     for field in ("ssh_key", "known_hosts"):
         value = target.get(field)
         if isinstance(value, str) and PATH_PATTERN.match(value):
@@ -302,7 +301,7 @@ def _check_target(target: dict) -> list[Problem]:
 
 
 def _check_firmware(vm: dict, where: str) -> list[Problem]:
-    """R-G. None of this is changeable after a domain is created."""
+    """None of this is changeable after a domain is created."""
     firmware = vm.get("firmware", FIRMWARE_DEFAULT)
     loader = vm.get("loader")
     template = vm.get("nvram_template")
@@ -340,10 +339,9 @@ def _check_firmware(vm: dict, where: str) -> list[Problem]:
             )
         )
     if loader is not None and "loader_format" not in vm:
-        # The module does not treat an absent format as "unknown", it treats it
-        # as raw: main.tf builds the varstore path with an `.fd` suffix and
-        # passes `format = null`. A qcow2 loader then gets an `.fd` varstore,
-        # which is the mismatch the first acceptance run already paid for.
+        # An absent format is taken as raw, not as unknown: `create.firmware_xml`
+        # suffixes the varstore path `.fd` for anything that is not qcow2, so a
+        # qcow2 loader would get an `.fd` varstore.
         problems.append(
             Problem.error(
                 "'loader' was set without 'loader_format'. It is not optional: "

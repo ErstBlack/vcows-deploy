@@ -1,5 +1,5 @@
-# vcows-deploy -- GitLab CI. Written 2026-08-29 against uv 0.12.7 and just
-# 1.46.0, for a self-hosted instance the project has not moved to yet.
+# vcows-deploy -- GitLab CI. Written against uv 0.12.7 and just 1.46.0, for a
+# self-hosted instance the project has not moved to yet.
 # **Never executed.** It is syntax-checked and its recipes are exercised
 # by the GitHub pipeline, which is not the same as having run.
 #
@@ -19,8 +19,8 @@
 #                rather than per file, and .cache/delivery/ is 153 MiB (a 151 MB
 #                tarball plus a 7 MB SBOM and a 2.3 MB report). Below that, the
 #                `image` and `rebuild-scan` jobs do all their work and then lose
-#                the artifact the comment at :170-172 calls "what makes the rest
-#                of this job worth running". Never executed, so this is from
+#                the artifact their own `artifacts:` comments call what makes the
+#                rest of the job worth running. Never executed, so this is from
 #                GitLab's documentation, not from a run.
 # Every job is tagged. An untagged job on an instance with no matching runner
 # hangs pending forever instead of failing, which is the worst of both.
@@ -140,10 +140,8 @@ smoke:
   tags: [linux]
   timeout: 30m
   cache: [*tools_cache, *uv_cache]
-  # *bootstrap now, where this job used to spell out the two scripts and skip
-  # `just dev-env`. The gate's assertions are tests/test_libvirt_smoke.py and the
-  # script runs them out of that venv (#122), so the anchor's third line is the
-  # one this job was missing rather than the one it had to avoid.
+  # *bootstrap, including its `just dev-env`: the gate's assertions are
+  # tests/test_libvirt_smoke.py and the script runs them out of that venv.
   script:
     - *bootstrap
     - just smoke-libvirt

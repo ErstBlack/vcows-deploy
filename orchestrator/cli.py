@@ -1,17 +1,17 @@
 """The command line: five verbs, and the run directory they write.
 
 ``validate``, ``preflight``, ``deploy``, ``destroy``, ``version``. Separately
-invocable phases are findings.md §5's sanctioned replacement for a hooks directory
--- an operator who wants to look before they leap runs ``preflight`` -- which is
-the whole reason the first two are commands rather than flags on ``deploy``.
+invocable phases are findings.md §5's sanctioned replacement for a hooks
+directory: an operator who wants to look before they leap runs ``preflight``.
+That is why the first two are commands rather than flags on ``deploy``.
 
-**The run directory carries secrets.** The seed ISOs are kept deliberately, so that
-debugging a VM that will not boot means inspecting the media it was actually given
-rather than rebuilding it -- and those ISOs contain ``user_data`` verbatim. It is
-created 0700 and documented as an artifact to handle like the config it came from
-(F12). Encrypting the directory is not attempted: the ISOs are the secret in it,
-and a passphrase that, if lost, makes unreadable a directory D23 already calls
-disposable buys nothing an operator cannot get from the mount it sits on.
+**The run directory carries secrets.** The seed ISOs are kept deliberately, so
+debugging a VM that will not boot means inspecting the media it was given rather
+than rebuilding it, and those ISOs contain ``user_data`` verbatim. The directory
+is created 0700 and is an artifact to handle like the config it came from.
+Encrypting it is not attempted: the ISOs are the secret in it, and a passphrase
+that, if lost, makes a disposable directory unreadable buys nothing an operator
+cannot get from the mount it sits on.
 
 **Exit codes are 0 and 1** -- from vcows. Anything richer is a contract with no
 consumer at v0.1. argparse is the exception and it is not ours: an unknown verb,
@@ -47,10 +47,10 @@ from .backends.base import (
 from .config import ConfigError, load
 from .problems import Problem
 
-#: The R5 build manifest, baked into the image at build time: which RPMs and
-#: which git revision produced this container. Absent outside the image, where
-#: there is nothing to record -- a checkout is not a release, and inventing a
-#: manifest for one would make the two indistinguishable.
+#: The build manifest, baked into the image: which RPMs and which git revision
+#: produced this container. Absent outside the image, where there is nothing to
+#: record -- a checkout is not a release, and inventing a manifest for one would
+#: make the two indistinguishable.
 MANIFEST = Path("/opt/vcows/manifest.json")
 
 #: Every line vcows writes goes through here: prefixed, level-tagged, on stderr.
@@ -66,8 +66,8 @@ log = logging.getLogger("orchestrator.cli")
 class UsageError(Exception):
     """The command cannot run as invoked, and the reason is a sentence.
 
-    Not a ``ConfigError`` -- nothing is wrong with the config -- and deliberately
-    not a raw ``OSError`` reaching ``main``'s catch-all, which would print
+    Not a ``ConfigError`` -- nothing is wrong with the config -- and not a raw
+    ``OSError`` reaching ``main``'s catch-all, which would print
     ``error: FileExistsError: /runs/lab-a`` and leave the operator to work out
     which of the two paths they passed it means.
     """
@@ -80,12 +80,12 @@ def _timestamp() -> str:
 def _run_dir(cfg: dict, override: str | None) -> Path:
     """A directory of this run's own. Empty is fine; occupied is not.
 
-    Every deploy applies against fresh state (D23/D40), so a second run in a
-    directory that already holds one is refused rather than merged. Refusing it
-    *here* is the point: this runs before anything connects, where the alternative
-    was a bare ``FileExistsError`` out of ``seed.mkdir()`` after the preflight had
-    already spent a session and printed clean -- or, for destroy, no error at all
-    and a ``run.json`` overwritten beside the earlier run's ``inventory.json``.
+    Every deploy applies against fresh state, so a second run in a directory
+    that already holds one is refused rather than merged. Refused *here*, before
+    anything connects: left to ``seed.mkdir()`` it would be a bare
+    ``FileExistsError`` after the preflight had already spent a session and
+    printed clean -- or, for destroy, no error at all and a ``run.json``
+    overwritten beside the earlier run's ``inventory.json``.
 
     An empty directory that already exists still works. That is the bind-mounted
     mountpoint an operator hands the container, and it is the documented shape.
@@ -131,9 +131,9 @@ def _run_dir(cfg: dict, override: str | None) -> Path:
     # EACCES only. EROFS -- `/runs` mounted `:ro` -- is deliberately *not* caught:
     # a run directory that cannot be chmod'ed because the filesystem is read-only
     # cannot be written to either, and the uncaught OSError names the mount
-    # (`Read-only file system: '/runs'`). Widening this to `except OSError` was
-    # measured: it reports the mode instead of the cause and defers the failure to
-    # `run.json`, whose errno never mentions the mount.
+    # (`Read-only file system: '/runs'`). `except OSError` here reports the mode
+    # instead of the cause and defers the failure to `run.json`, whose errno
+    # never mentions the mount.
     if path.stat().st_mode & 0o077:
         try:
             os.chmod(path, 0o700)
@@ -152,10 +152,9 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-#: The report layout: a name, a short verb, then free text. Written once because
-#: the widths were previously repeated as literal padding -- `"skip    "` and
-#: `"destroy "` are hand-cut to match `{:<7}` plus a separator -- so changing
-#: either width silently misaligned two of the three sites.
+#: The report layout: a name, a short verb, then free text. Every row goes
+#: through `_row`; padding hand-cut at a call site misaligns silently when a
+#: width changes here.
 _NAME_W = 20
 _VERB_W = 7
 
@@ -168,12 +167,8 @@ def _problem(problem: Problem) -> None:
     ``__str__`` itself is left alone: `run.json` records `str(p)`, and the record
     should not change shape because the log got tidier.
 
-    Routing on the problem's own severity is also a fix. Every one of these
-    previously went out at WARNING, fatal ones included.
-
     ``where`` is frequently empty -- a `Problem` about the run rather than about
-    a field -- so it is omitted rather than rendered as an empty bracket. The
-    earlier version emitted a dangling ``: `` for those.
+    a field -- so it is omitted rather than rendered as an empty bracket.
     """
     message = (
         f"[{problem.where}] {problem.message}" if problem.where else problem.message
@@ -184,7 +179,7 @@ def _problem(problem: Problem) -> None:
 def _row(name: str, verb: str, detail: str) -> str:
     """One report line. `_report` and the destroy loop cannot share a *function*
     -- one prints `Decision`s and the other `Existing`s, which findings.md §3
-    keeps as separate carriers -- so they share the shape instead."""
+    keeps as separate carriers -- so they share this shape instead."""
     # rstrip: an empty detail column would otherwise leave the line's own
     # padding hanging off the end of the log record.
     return f"{name:<{_NAME_W}} {verb:<{_VERB_W}} {detail}".rstrip()
@@ -201,10 +196,10 @@ def _report(decisions: list[Decision], problems: list[Problem]) -> None:
 class _Run:
     """One run's directory, and everything the record of it will need.
 
-    A holder rather than five arguments because the failure path has to write the
-    same record as the success path, from an ``except`` block that can see none of
-    the locals the body accumulated. Fields are filled in as they are learned, so
-    a run that dies at its third step still records its first two.
+    A holder rather than five arguments because the failure path writes the same
+    record as the success path, from an ``except`` block that can see none of the
+    locals the body accumulated. Fields are filled in as they are learned, so a
+    run that dies at its third step still records its first two.
     """
 
     path: Path
@@ -220,10 +215,9 @@ def _decision(d: Decision) -> dict[str, Any]:
 
     ``existing`` is present only when there is one -- a create decided against
     nothing, and an empty key would read as "there was a VM and it had no name".
-    It carries the identity `reason` states in English, so a reader does not have
-    to parse a sentence to find out which domain was skipped: for a SKIP and for
-    the "belongs to another deployment" refusal, the id appears nowhere else in
-    the run directory at all.
+    It carries the identity `reason` states in English, and for a SKIP and for
+    the "belongs to another deployment" refusal that id appears nowhere else in
+    the run directory.
     """
     record: dict[str, Any] = {
         "vm": d.vm_name,
@@ -241,7 +235,7 @@ def _record(run: _Run, outcome: str) -> None:
     Everything beyond the fixed keys arrives through ``run.extra``, which is the
     only channel: a caller with something to add writes it there first.
 
-    The R5 build manifest is copied in beside it, not merged into it: that half is
+    The build manifest is copied in beside it, not merged into it: that half is
     baked at image build time and this half is what a runtime can observe. The
     copy matters because the run directory is what an air-gapped site ships back,
     and "which build did this" is unanswerable from it otherwise. Absent outside
@@ -288,16 +282,15 @@ def _guard(run: _Run, body: Callable[[], int]) -> int:
     is credential-free by inspection.** A ``requests`` or ``proxmoxer`` exception
     string is whatever the library put in it -- a ``ResourceException`` includes
     the response body -- so a cluster that echoes something back puts it in an
-    artifact the site ships home. Accepted at this likelihood rather than
-    filtered, and stated here so the channel is on record rather than assumed
-    closed.
+    artifact the site ships home. Accepted rather than filtered, and stated here
+    so the channel is on record rather than assumed closed.
 
     **The log goes into the run directory too**, because the shipped wrapper runs
     ``podman run --rm`` and the container whose logs held it is gone by the time
     anyone asks. The handler's lifecycle is here rather than in ``_run_dir``
     because this is what brackets a verb's body, and closing it in a ``finally``
-    is what stops one open file per run from leaking. ``validate`` and
-    ``preflight`` write no run directory and so pass through neither.
+    stops one open file per run from leaking. ``validate`` and ``preflight``
+    write no run directory and so pass through neither.
     """
     handler = logging.FileHandler(run.path / "log")
     handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
@@ -390,8 +383,8 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
     discovered, decisions, found = _look(cfg)
     problems = config_problems + found
     _report(decisions, problems)
-    # As soon as they exist, so that every record from here on carries them --
-    # including the failure one. A refusal's reason belonged only to stderr.
+    # As soon as they exist, so that every record from here on carries them,
+    # including the failure one.
     run.decisions = decisions
     run.extra["problems"] = [str(p) for p in problems]
 
@@ -409,7 +402,7 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         log.info("nothing to create")
         return 0
 
-    # D23: `create` only ever creates, so VMs that already exist are dropped here
+    # `create` only ever creates, so VMs that already exist are dropped here
     # rather than skipped further down. It also keeps `prepare` from writing a
     # seed ISO -- `user_data` verbatim -- for a VM nobody asked to create.
     create_cfg = {**cfg, "vms": [vm for vm in cfg["vms"] if vm["name"] in creating]}
@@ -427,11 +420,10 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
         try:
             vms = backend.create(create_cfg, session, prepared)
         except BaseException as exc:
-            # A create that dies on the third VM leaves the first two running and
-            # rolls nothing back, and until now the run recorded only the
-            # exception -- so the one artifact naming the VMs that exist did not
-            # exist. `getattr` rather than the backend's own error type, for the
-            # reason `_destroy` gives about `outcome`.
+            # A create that dies on the third VM leaves the first two running
+            # and rolls nothing back, so the run needs an artifact naming the VMs
+            # that exist. `getattr` rather than the backend's own error type, for
+            # the reason `_destroy` gives about `outcome`.
             partial = getattr(exc, "created", None)
             if partial:
                 _write_json(run.path / "inventory.json", {"vms": partial})
@@ -448,10 +440,9 @@ def _deploy(run: _Run, config_problems: list[Problem]) -> int:
                 )
             raise
 
-    # Names, not counts. The message below already computes the set difference and
-    # carries an `or 'names differ'` fallback, so the intent was always a set
-    # comparison; a length test made that fallback reachable only when the lengths
-    # already differed, and let two same-sized disagreeing lists through.
+    # Names, not counts: a length test lets two same-sized disagreeing lists
+    # through, and leaves the message's `or 'names differ'` fallback reachable
+    # only when the lengths already differ.
     if set(vms) != set(creating):
         # The backend is the authority on what it created and `creating` is the
         # authority on what was asked for. When they disagree the run has two
@@ -515,11 +506,10 @@ def _destroy(
         for problem in advisory:
             _problem(problem)
         run.extra["problems"] = [str(p) for p in advisory]
-        # The run directory is the copy that outlives the terminal.
-        # `findings.md`'s "reported as found and skipped, with their deployment
-        # names" rule mandates the report, and the `skip` row below satisfies
-        # it -- but a marked VM this teardown deliberately left alone appeared in
-        # no shipped artifact at all. The deployment name goes with it: a bare
+        # The run directory is the copy that outlives the terminal. The `skip`
+        # row below satisfies `findings.md`'s "reported as found and skipped,
+        # with their deployment names" rule on stderr; this puts the same VMs in
+        # a shipped artifact. The deployment name goes with each, because a bare
         # list of names drops the half of the row that explains why the VM was
         # left.
         run.extra["left_alone"] = {
@@ -539,9 +529,9 @@ def _destroy(
                 ),
             )
         for e in targets:
-            # The marker's logical name, and only when it differs: for the
-            # ordinary case where the domain is named after it, repeating it
-            # made the detail column say `app01  destroy  app01`.
+            # The marker's logical name, and only when it differs: where the
+            # domain is named after it, repeating it would make the detail
+            # column say `app01  destroy  app01`.
             marked = e.marker.name if e.marker else ""
             log.info(
                 "%s",
@@ -562,16 +552,14 @@ def _destroy(
         try:
             out = backend.destroy(cfg, session, targets)
         except BaseException as exc:
-            # The teardown with a fatal problem is the run with the most to
-            # record, and it is the one that reaches `_guard` as an exception
-            # rather than a return value -- so the `destroyed`/`skipped` record
+            # A teardown with a fatal problem reaches `_guard` as an exception
+            # rather than a return value, so the `destroyed`/`skipped` record
             # below never runs for it. `BaseException`, because a Ctrl-C
-            # mid-teardown arrives here too and carries the same accumulator;
-            # widening this alone records nothing, though -- `destroy` has to
-            # attach `out` to the interrupt for there to be anything to read.
-            # `getattr` rather than catching the
-            # backend's own error type: core stays backend-agnostic, and a
-            # backend that carries no outcome simply records nothing extra.
+            # mid-teardown arrives here too and carries the same accumulator --
+            # it reads only what `destroy` attached to the exception. `getattr`
+            # rather than the backend's own error type: core stays
+            # backend-agnostic, and a backend that carries no outcome records
+            # nothing extra.
             partial = getattr(exc, "outcome", None)
             if partial is not None:
                 run.extra["destroyed"] = sorted(partial.destroyed)
@@ -584,9 +572,6 @@ def _destroy(
     # findings.md §1 names, and it is indistinguishable from success unless this
     # loop runs.
     for name in out.skipped:
-        # Through `_row`, like every other report line. This site hand-cut the
-        # name column to `{:<20}` -- the literal `_NAME_W` exists to stop, and the
-        # one the comment on `_row` was written about missed.
         log.info("%s", _row(name, "skipped", "not removed by this run"))
     for problem in out.problems:
         _problem(problem)
@@ -599,11 +584,11 @@ def _destroy(
     if out.failed:
         # `Outcome`'s docstring says a backend that returns this "without its
         # consumer reading it reproduces that defect exactly" -- the silent
-        # partial success findings.md §1 names. The libvirt
-        # backend raises on `out.failed`, so nothing reaches here through it; the
-        # branch exists because `Backend.destroy` explicitly permits a backend to
-        # return rather than raise, and until now such a backend got "ok" and
-        # exit 0. The problems themselves were printed above.
+        # partial success findings.md §1 names. The libvirt backend raises on
+        # `out.failed`, so nothing reaches here through it; the branch exists
+        # because `Backend.destroy` permits a backend to return rather than
+        # raise, and such a backend would otherwise get "ok" and exit 0. The
+        # problems themselves were printed above.
         log.error("the teardown reported a fatal problem; %s/run.json has it", run.path)
         return 1
     if out.skipped:
@@ -628,11 +613,10 @@ def _confirm(count: int, deployment: str, yes: bool) -> bool:
     have to say so rather than inherit an answer from an absent operator.
 
     **The prompt below is the only thing vcows writes that is not a log line**,
-    and the only thing left on stdout. ``input()`` writes it with no trailing
-    newline so the cursor stays where the operator types; a handler would add
-    both a newline and a prefix and put the cursor on the next line. Being the
-    sole unprefixed output, it is trivially separable from the log -- which is
-    the reason it is the exception rather than an oversight.
+    and the only thing on stdout. ``input()`` writes it with no trailing newline
+    so the cursor stays where the operator types; a handler would add both a
+    newline and a prefix and put the cursor on the next line. Being the sole
+    unprefixed output, it is trivially separable from the log.
     """
     if yes:
         return True
@@ -653,8 +637,8 @@ def _print_manifest() -> None:
 
     Absent and unreadable are different facts. Absent is ordinary -- a checkout is
     not a release, and it prints nothing. A file that exists and will not parse is
-    the R5 record of a delivered artifact being unreadable, which is worth a line
-    on stderr rather than the silence a dev box gets.
+    a delivered artifact's record being unreadable, which is worth a line on
+    stderr rather than the silence a dev box gets.
     """
     if not MANIFEST.is_file():
         return
@@ -711,10 +695,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # The run directory is 0700, and until this its *contents* were not: the seed
-    # ISOs are written by pycdlib, so vcows opens none of them and no per-file
-    # chmod can reach them. A umask is the only lever that covers a write vcows
-    # does not make itself, and it has to be set before the first verb runs.
+    # The run directory is 0700; this covers its *contents*. The seed ISOs are
+    # written by pycdlib, so vcows opens none of them and no per-file chmod can
+    # reach them. A umask is the only lever that covers a write vcows does not
+    # make itself, and it has to be set before the first verb runs.
     os.umask(0o077)
     args = _parser().parse_args(argv)
     try:

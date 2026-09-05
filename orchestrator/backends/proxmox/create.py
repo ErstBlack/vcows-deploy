@@ -1,10 +1,9 @@
 """The apply, through proxmoxer.
 
 One function per resource, in dependency order: the golden image when preflight
-found the cluster without it, then per VM a seed ISO and a VM. Ported from the
-#198 spike, whose sequence PVE 8.4.0 accepted and whose VM the shipped
-``vcows destroy`` removed (``docs/research/tofu-eval-2026-09-02.md`` M4) -- so the
-parameters here are the parameters that were measured.
+found the cluster without it, then per VM a seed ISO and a VM. The sequence and
+the parameters were measured against PVE 8.4.0, end to end through
+``vcows destroy``.
 
 **Every task goes through ``api.wait``**, the same function ``stop_vm`` and
 ``delete_vm`` use, so a task that stops badly is a failure here too rather than
@@ -68,8 +67,7 @@ def _made(what: str) -> Iterator[None]:
 def upload(
     session: api.Session, content: str, path: str, file_name: str, checksum: str
 ) -> str:
-    """``proxmox_virtual_environment_file``: one multipart POST to the storage's
-    upload endpoint, then the task wait.
+    """One multipart POST to the storage's upload endpoint, then the task wait.
 
     PVE names the file after the multipart part, and proxmoxer takes that from
     the file object's ``name``, so a ``FileIO`` is opened and renamed rather
@@ -103,8 +101,7 @@ def upload(
 def create_vm(
     session: api.Session, vmid: str, vm: dict, image_id: str, seed_id: str
 ) -> None:
-    """``proxmox_virtual_environment_vm``: one POST carrying what the module's
-    blocks carried, then a resize and a start.
+    """One POST carrying the whole VM, then a resize and a start.
 
     The resize is not optional decoration. ``import-from`` gives the disk the
     golden image's own size, so ``disk_gb`` is only honoured by growing it

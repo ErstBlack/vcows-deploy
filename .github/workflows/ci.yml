@@ -79,20 +79,20 @@ jobs:
   # the change and belongs on the pull request rather than in a monthly job
   # nobody opens.
   #
-  # Five shards of one run, summed by `mutation-verdict` below. Measured on run
-  # 33800120376, before sharding: `just mutants` took 8m31s, of which generation
-  # was 16s, the stats and clean and forced-fail runs 20s, and the mutant loop
-  # 7m53s over 4983 mutants. The loop is 93% of the job, per-mutant fixed cost is
-  # ~65 ms of warm pytest, and the only lever left is cores -- which on the Free
-  # plan means more runners rather than a bigger one.
+  # Five shards of one run, summed by `mutation-verdict` below. Measured
+  # unsharded: `just mutants` took 8m31s, of which generation was 16s, the stats
+  # and clean and forced-fail runs 20s, and the mutant loop 7m53s over 4983
+  # mutants. The loop is 93% of the job, per-mutant fixed cost is ~65 ms of warm
+  # pytest, and the only lever left is cores -- which on the Free plan means more
+  # runners rather than a bigger one.
   #
   # Measured sharded, on the same runners: the `just mutants` step is 1m54s and
   # the whole job 2m13s. Generation is 14s and the stats phase ~18s of that, so
   # the loop is about 80s for shard 1's 944 mutants, at 11.7 mutants/second
   # against 58.97 on a 16-core box. The fixed ~35s each shard repeats is the
-  # price of the split. Measured whole (run 33809956735): shard jobs 1m59s to
-  # 2m44s, the slowest of them queued 37s late, the verdict 19s, and the run
-  # green in 3m45s where the unsharded job alone took 8m31s.
+  # price of the split. Measured whole: shard jobs 1m59s to 2m44s, the slowest of
+  # them queued 37s late, the verdict 19s, and the run green in 3m45s where the
+  # unsharded job alone took 8m31s.
   mutation:
     runs-on: ubuntu-latest
     # `VCOWS_MUTANTS_SHARD=k/5` takes the mutants whose ordinal ends in a digit
@@ -109,11 +109,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5]
     # The shards' numbers, carried to the verdict as job outputs rather than as
-    # artifacts: every upload-artifact step here failed with "Artifact storage
-    # quota has been hit" (job 100822624337), because the 500 MB is shared across
-    # the account and recalculated every 6 to 12 hours, so bundles deleted hours
-    # ago still occupy it. Outputs have their own 1 MB per job, and five stats
-    # objects are a few hundred bytes.
+    # artifacts: an upload-artifact step here fails with "Artifact storage quota
+    # has been hit", because the 500 MB is shared across the account and
+    # recalculated every 6 to 12 hours, so bundles deleted hours ago still occupy
+    # it. Outputs have their own 1 MB per job, and five stats objects are a few
+    # hundred bytes.
     #
     # Each matrix job sets only its own key; the other four evaluate to empty in
     # it, and GitHub keeps the non-empty value across the matrix. That last claim
@@ -141,19 +141,14 @@ jobs:
           path: .cache/uv
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: uv-
-      # **No `mutants/` cache, and that is the whole point of the job.** One used
-      # to be restored here on the argument that a stale entry is only a verdict
-      # mutmut recomputes, "because it hashes each function and resets anything
-      # that moved". That is true of a source change and false of a test one:
-      # mutmut hashes *source* functions, so a test-only commit leaves every hash
-      # identical and every verdict is inherited. Measured on the branch that
-      # became #156, which added twenty-two tests and touched no source:
-      # `0.00 mutations/second`, and the survivor count reported was master's.
-      #
-      # It failed loudly there only because the number had gone *down*. The same
-      # cache is silent in the direction that matters -- weaken a test, inherit
-      # the old verdicts, and the gate is green. That is the vacuous pass
-      # scripts/mutants.sh exists to catch, arriving through the cache.
+      # **No `mutants/` cache, and that is the whole point of the job.** A cache
+      # here does not merely hold a verdict mutmut would recompute: mutmut hashes
+      # *source* functions, so a test-only commit leaves every hash identical and
+      # inherits every verdict. Measured on a branch adding twenty-two tests and
+      # touching no source: `0.00 mutations/second`, and master's survivor count
+      # reported. Weaken a test, inherit the old verdicts, and the gate is green
+      # -- the vacuous pass scripts/mutants.sh exists to catch, arriving through
+      # the cache.
       #
       # Keying on `tests/**` would fix this pipeline and not the GitLab one:
       # `cache:key:files` there takes at most two files and both are spent. So
@@ -180,7 +175,7 @@ jobs:
   # and one whose numbers never arrived, neither of which any single shard sees.
   #
   # The five numbers arrive as `needs.mutation.outputs`, not as artifacts, for
-  # the quota reason the `outputs:` block above records (job 100822624337).
+  # the quota reason the `outputs:` block above records.
   # scripts/mutants.sh writes each non-empty one back into a shard file, so the
   # summing code is the same one GitLab's artifacts feed.
   #
@@ -214,13 +209,11 @@ jobs:
   # /dev/kvm and the job is the same on a GitLab.com SaaS runner.
   smoke:
     runs-on: ubuntu-latest
-    # Measured green: 1m11s (run 33439584490), of which apt is about 24s and the
-    # whole apply-assert-destroy cycle is 16s. Was 1m05s and 10s before #122
-    # moved the assertions into pytest; the added `just dev-env` and two pytest
-    # startups are the difference. 30 rather than the 15 above, matching
+    # Measured green: 1m11s, of which apt is about 24s and the whole
+    # apply-assert-destroy cycle is 16s. 30 rather than the 15 above, matching
     # the image job, because the ceiling is sized against a wedge rather than a
-    # slow run -- a `create` stuck on a volume upload has no timeout of its
-    # own, for the reason the check job's note gives.
+    # slow run -- a `create` stuck on a volume upload has no timeout of its own,
+    # for the reason the check job's note gives.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -230,10 +223,10 @@ jobs:
           key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
       - run: ./scripts/os-deps.sh
       - run: ./scripts/install-tools.sh
-      # `just dev-env` is not optional here any more: the gate's assertions are
-      # tests/test_libvirt_smoke.py, which the script runs out of this venv
-      # (#122). os-deps.sh is needed for more than jq and xorriso for the same
-      # reason -- it also brings python3-libvirt, and --system-site-packages is
-      # what makes the binding visible to the venv.
+      # `just dev-env` is not optional: the gate's assertions are
+      # tests/test_libvirt_smoke.py, which the script runs out of this venv.
+      # os-deps.sh is needed for more than jq and xorriso for the same reason --
+      # it also brings python3-libvirt, and --system-site-packages is what makes
+      # the binding visible to the venv.
       - run: just dev-env
       - run: just smoke-libvirt

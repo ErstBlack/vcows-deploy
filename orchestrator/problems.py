@@ -3,14 +3,12 @@
 **Core, and not under ``backends/``, for an import reason rather than a taste
 one.** ``orchestrator/backends/__init__.py`` builds ``REGISTRY`` eagerly, so
 importing anything under ``backends`` runs that file, which imports every backend
-package. A core module that wanted ``Problem`` from ``backends.base`` therefore
-pulled the whole registry in behind it -- and once a backend imported that core
-module back, the cycle closed and the failure was a partially-initialised module
-several hops from either edit.
+package. A core module taking ``Problem`` from ``backends.base`` would pull the
+whole registry in behind it, and a backend importing that core module back closes
+the cycle: a partially-initialised module several hops from either edit.
 
-``Problem`` was never a backend type. ``config.py``, ``cloudinit.py``,
-``imagecheck.py`` and ``cli.py`` all produce or consume one, and only the
-dataclasses in ``backends/base.py`` made it look otherwise.
+``Problem`` is not a backend type. ``config.py``, ``cloudinit.py``,
+``imagecheck.py`` and ``cli.py`` all produce or consume one.
 """
 
 from __future__ import annotations
@@ -34,10 +32,10 @@ class Problem:
     message: str
     where: str = ""
 
-    # ``Severity.ERROR`` alone on the first line is what wrapped nearly every
-    # construction to three. The explicit three-argument form stays valid and
-    # stays in use: ``config._blame_the_filename`` propagates an existing
-    # severity rather than choosing one, so it cannot go through either of these.
+    # These exist because ``Severity.ERROR`` alone on the first line wraps most
+    # constructions to three lines. The explicit three-argument form stays valid
+    # and in use: ``config._blame_the_filename`` propagates an existing severity
+    # rather than choosing one, so it cannot go through either of these.
     @classmethod
     def error(cls, message: str, where: str = "") -> Problem:
         return cls(Severity.ERROR, message, where)

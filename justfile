@@ -20,10 +20,10 @@ default:
 # ships sdist only, and without the flag `import libvirt` fails everywhere.
 #
 # The export is how uv.lock reaches an install. `uv pip install -e . --group dev`
-# resolved against the `>=` bounds in pyproject.toml and read the lock never, so
-# a ruff or pytest release could turn a green PR red for reasons unrelated to the
-# PR. `uv sync` still cannot express the two flags above -- that argument is
-# unchanged -- but exporting the lock into this venv needs neither of them.
+# resolves against the `>=` bounds in pyproject.toml and reads the lock never, so
+# a ruff or pytest release can turn a green PR red for reasons unrelated to the
+# PR. `uv sync` cannot express the two flags above; exporting the lock into this
+# venv needs neither of them.
 #
 # `--locked` rather than `--frozen`: it also asserts uv.lock still matches
 # pyproject.toml, so editing a bound without re-locking stops here, with uv
@@ -31,9 +31,9 @@ default:
 #
 # **A file rather than a pipe, and that is the whole reason for the third line.**
 # `uv export --locked ... | uv pip install -r -` takes the pipeline's exit status
-# from the install, so a refused `--locked` made this recipe print a warning that
-# no dependencies were found on stdin and **exit 0 having installed nothing** --
-# measured. just runs each line in its own shell and stops on the first failure,
+# from the install, so a refused `--locked` prints a warning that no dependencies
+# were found on stdin and **exits 0 having installed nothing** -- measured.
+# just runs each line in its own shell and stops on the first failure,
 # so three lines check what one pipe did not. .venv/ is disposable and recreated
 # by the first line, so the export needs no cleanup and no temp directory.
 #
@@ -97,13 +97,13 @@ bundle:
 # Mutation testing, against docs/mutation-baseline.json. Fails only when the tree
 # got worse -- `mutmut run` itself exits 0 whatever it finds (measured: 964
 # survivors, exit 0), so a recipe that only called it would be green forever.
-# See pyproject.toml for what used to stop it completing and what fixed it.
+# See pyproject.toml for the settings a completing run needs.
 #
 # Measured on 16 cores: 5008 mutants in 2m07s. A hosted runner has fewer and took
 # 8m31s for the same work, of which the mutant loop was 7m53s. mutmut re-tests
 # only the mutants whose function changed, so a warm tree is far less.
 #
-# CI does not run this recipe whole any more: five parallel jobs each set
+# CI does not run this recipe whole: five parallel jobs each set
 # VCOWS_MUTANTS_SHARD to their k/5 and `just mutants-verdict` sums what they
 # leave behind. A local run sets nothing and stays one full run. The sharding
 # note in scripts/mutants.sh has the reasoning.

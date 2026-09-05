@@ -95,10 +95,10 @@ def core_schema(registry: dict[str, Any]) -> dict:
             # Flat values only. A mapping would need a merge rule and a per-VM
             # value replaces, so there is nothing to merge. `name` is identity;
             # `nics` collides on `ip_cidr` for any second VM, and the useful
-            # form is per-field (issue #239). `{"not": {}}` rather than `False`,
-            # measured: a `False` sub-schema files its error against `defaults`
-            # with no property in the path, so the message would not name the
-            # key the operator has to delete.
+            # form is per-field. `{"not": {}}` rather than `False`: a `False`
+            # sub-schema files its error against `defaults` with no property in
+            # the path, so the message would not name the key the operator has
+            # to delete.
             "defaults": {
                 "type": "object",
                 "additionalProperties": {"not": {"type": "object"}},
@@ -135,9 +135,8 @@ def load(
     typo.
 
     The warnings come back rather than being dropped because this is the only
-    place they are computed. Every verb loads, so every verb has them; returning
-    them is what stopped ``validate`` from being the one command that could see
-    them, and only by validating a second time.
+    place they are computed. Every verb loads, so every verb has them without
+    validating a second time.
     """
     path = Path(path)
     try:

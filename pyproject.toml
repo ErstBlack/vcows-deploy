@@ -14,13 +14,13 @@ requires-python = ">=3.12"
 #
 #   jsonschema        -> python3-jsonschema        (appstream)
 #   PyYAML            -> python3-pyyaml            (appstream)
-#   pycdlib           -> python3-pycdlib           (epel; 1.16.0, verified against the A1 API)
+#   pycdlib           -> python3-pycdlib           (epel; 1.16.0)
 #   libvirt           -> python3-libvirt           (appstream)
 #   requests          -> python3-requests          (appstream; proxmoxer's https backend)
 #   requests-toolbelt -> python3-requests-toolbelt (epel; 1.0.0)
 #
-# **`proxmoxer` is the one exception, and it is deliberate.** Measured
-# 2026-09-01: `dnf repoquery python3-proxmoxer` returns nothing across Rocky 10
+# **`proxmoxer` is the one exception, and it is deliberate.** Measured:
+# `dnf repoquery python3-proxmoxer` returns nothing across Rocky 10
 # baseos/appstream/crb/extras or EPEL 10 -- `python3-pycdlib` returns a hit from
 # the same query, so the absence is real and not a broken lookup -- and repology
 # shows no Fedora or RHEL-derived packaging anywhere. It is pure Python with
@@ -72,11 +72,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=6",
     # Shuffles the suite every run, so an ordering dependency fails somebody's
-    # build rather than waiting to fail a release. It found one immediately:
-    # `tests/test_seam.py` deleted `orchestrator*` from `sys.modules` without
-    # restoring it, which left two copies of every core class loaded and made
-    # `Severity.WARNING != Severity.WARNING` for anything that ran afterwards.
-    # That is also why `mutmut` could never finish its clean baseline.
+    # build rather than waiting to fail a release.
     #
     # mutmut passes `-p no:randomly` on every pytest invocation it makes, so
     # mutant runs stay in declaration order and are still comparable to each
@@ -105,21 +101,17 @@ source = ["orchestrator", "container"]
 
 [tool.coverage.report]
 exclude_also = ["if TYPE_CHECKING:"]
-# Nothing is omitted, and `container/manifest.py` is why this comment survives
-# the line it used to justify. It was omitted because `packages()` shells out to
-# `rpm -qa` and `main()` is the assembly around it -- neither of which can run
-# outside the image. That was the right reason to leave it unmeasured and the
-# wrong place to leave it: mutation
-# testing found 127 mutants in the file that no test reached at all, more than the
-# rest of both packages put together.
+# Nothing is omitted, `container/manifest.py` included. Its `packages()` shells
+# out to `rpm -qa` and `main()` is the assembly around it, neither of which can
+# run outside the image -- but omitting the file leaves 127 mutants in it that no
+# test reaches, more than the rest of both packages put together.
 #
-# `tests/test_manifest.py` now fakes `subprocess.run` and drives all three, which
-# closes the two behaviours the old comment recorded as measured and asserted
-# nowhere -- the `(none)` sentinel filter (rpm renders an absent tag as that
-# truthy literal, and the conditional query format was measured not to help on rpm
-# 4.19.1.1) and the `source_rpms` deduplication. What the fake cannot say is what
-# real rpm prints, so `test_image.test_the_build_manifest_records_what_shipped`
-# is still what asserts the shipped file, behind the image gate.
+# `tests/test_manifest.py` fakes `subprocess.run` and drives all three, which is
+# what asserts the `(none)` sentinel filter (rpm renders an absent tag as that
+# truthy literal, and the conditional query format was measured not to help on
+# rpm 4.19.1.1) and the `source_rpms` deduplication. What the fake cannot say is
+# what real rpm prints, so `test_image.test_the_build_manifest_records_what_shipped`
+# is what asserts the shipped file, behind the image gate.
 # `just test` passes `--cov`, and `just test` is inside `just check`, so this is a
 # real gate on every developer run and on CI -- see docs/ci.md.
 #
@@ -156,29 +148,19 @@ also_copy = ["docs", "Containerfile", "licenses", "config.example.yaml"]
 # time. Deselected rather than left to fail.
 pytest_add_cli_args = ["--deselect", "tests/test_scripts.py"]
 
-# **Why this used to fail, and what fixed it.** `mutmut run` got past mutant
-# collection and then died in its own clean-baseline run with
+# **A test must not leave `sys.modules` rewritten.** mutmut calls `pytest.main()`
+# in-process, three times in the parent process before it forks anything (stats,
+# clean baseline, forced fail). A test that deletes every `orchestrator*` entry
+# with a plain `del` and re-imports leaves a second set of core classes behind on
+# the first of those runs; the second run does not re-execute test modules
+# already imported, so one module holds the first `Severity` while another's
+# in-body import gets the second, and the clean baseline dies on
 #
 #   assert [<Severity.WARNING: 'warning'>] == [<Severity.WARNING: 'warning'>]
 #
-# -- two enum members that print identically and compare unequal, which means two
-# copies of `orchestrator.backends.base` were loaded at once.
-#
-# It was not sys.path and it was not the editable install; both were investigated
-# and neither is the cause. mutmut calls `pytest.main()` **in-process, three times
-# in the parent process** before it forks anything (stats, clean baseline, forced
-# fail). `tests/test_seam.py` deleted every `orchestrator*` entry from
-# `sys.modules` with a plain `del` and re-imported, so the first of those runs left
-# a second set of core classes behind. The second run did not re-execute test
-# modules already imported, so `tests/fake_backend.py` still held the first
-# `Severity` while `tests/test_config.py`'s in-body import got the second.
-#
-# The fix is in that test file, not here: `monkeypatch.delitem`, so teardown puts
-# the originals back. It was a real ordering defect rather than a mutmut quirk --
-# `pytest-randomly` trips it too, which is how it stopped being theoretical.
-#
-# No CI pipeline calls `just mutants`, and that is unchanged: it is a long run
-# whose value is a report to read, not a pass/fail a pipeline should block on.
+# -- two enum members that print identically and compare unequal. Use
+# `monkeypatch.delitem`, so teardown puts the originals back. This is an ordering
+# defect rather than a mutmut quirk: `pytest-randomly` trips it too.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -189,14 +171,13 @@ addopts = "--strict-markers --strict-config"
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-# Everything under docs/ is archived evidence rather than package code, and all
-# of it quotes source verbatim: the spike scripts are reproduced in docs/spikes/README.md,
-# and the review reports cite the code they are findings about. Reformatting any
-# of it would make the file and the code it quotes disagree.
+# Everything under docs/ is archived evidence rather than package code, and it
+# quotes source verbatim. Reformatting any of it would make the file and the code
+# it quotes disagree.
 #
-# ruff formats Python fences inside Markdown, so this covers the reports as well
-# as the .py files -- without it a review report quoting an aligned trailing
-# comment turns `just lint` red, which is how master broke on 4c00463.
+# ruff formats Python fences inside Markdown, so this covers the prose as well as
+# the .py files -- without it a document quoting an aligned trailing comment
+# turns `just lint` red.
 extend-exclude = ["docs"]
 
 [tool.ruff.lint]

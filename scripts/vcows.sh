@@ -8,10 +8,9 @@
 # line beginning with the word `shellcheck` is parsed as a directive, which is
 # why this one does not.)
 #
-# What it replaces is five lines of `podman run` in README.md carrying five
-# mounts and two SELinux label spellings, two of which were credentials the
-# config already named by path. Those are inline in the config now, so the
-# mounts left are the three that carry data, and each has a default.
+# It stands in for a `podman run` line carrying five mounts and two SELinux
+# label spellings. Credentials are inline in the config, so the three mounts
+# left all carry data and each has a default.
 #
 # `bundle.sh` substitutes IMAGE below with the tag stored inside `image.tar`,
 # which is what `podman load` restores -- worktree suffix included. Run out of
@@ -88,7 +87,7 @@ main() {
     # podman copies the value of a bare `-e NAME` from its own environment, so
     # this forwards whatever is set without the wrapper knowing any of the
     # names. VCOWS_LOG_LEVEL and the VCOWS_MAX_* ceilings are read from the
-    # container's environment and had no way through before.
+    # container's environment, and this is their only way in.
     for name in "${!VCOWS_@}"; do opts+=(-e "$name"); done
 
     case "$verb" in

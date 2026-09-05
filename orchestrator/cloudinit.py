@@ -1,13 +1,11 @@
 """The NoCloud seed ISO, and the MAC derivation cloud-init matches interfaces by.
 
 **Core, not the libvirt backend's, because nothing in the artifact is
-hypervisor-specific.**
-``docs/archive/orchestrator-architecture.md`` §6.4 chose this before there was a second
-backend to prove it: Proxmox's own ``cicustom`` reads a snippet, packages it into
-an ISO and attaches it as a CD-ROM at every VM start, so shipping the ISO
+hypervisor-specific.** Proxmox's own ``cicustom`` reads a snippet, packages it
+into an ISO and attaches it as a CD-ROM at every VM start, so shipping the ISO
 directly is doing that packaging here -- where libvirt already needed it -- and
-is what would keep a Proxmox backend on an API token alone, with no SSH
-credential for the snippet upload the API cannot do.
+is what keeps the Proxmox backend on an API token alone, with no SSH credential
+for the snippet upload the API cannot do.
 
 Split pure/impure on purpose: ``seed_files`` decides what cloud-init is told and
 is testable without touching a filesystem, ``build_seed_iso`` only writes it out.
@@ -40,7 +38,7 @@ from .problems import Problem, problems_from
 #: Both cloud-init and libvirt find a NoCloud datasource by this volume label.
 VOLUME_LABEL = "cidata"
 
-#: Exactly the settings spike A1 verified, cross-read against xorrisofs output.
+#: Cross-read against xorrisofs output.
 ISO_ARGS = {
     "interchange_level": 3,
     "joliet": 3,
@@ -49,8 +47,8 @@ ISO_ARGS = {
 }
 
 #: QEMU's OUI. Locally administered, and what every libvirt-generated MAC uses.
-#: Correct for Proxmox too, which is QEMU/KVM and assigns from the same range --
-#: which is why this derivation moved here whole rather than being parameterised.
+#: Correct for Proxmox too, which is QEMU/KVM and assigns from the same range,
+#: so the derivation takes no per-backend parameter.
 MAC_OUI = (0x52, 0x54, 0x00)
 
 
@@ -133,13 +131,13 @@ def _network_config(vm: dict, deployment: str) -> dict:
     from here.
 
     The default route is written as ``0.0.0.0/0``, **not** netplan's ``default``.
-    That distinction cost the first acceptance run: cloud-init 24.4 accepts the
-    document, reads it, logs "Applying network configuration from ds", and then
-    throws ``ValueError: Address default is not a valid ip address`` out of its
-    own v2-to-v1 route normaliser. `default` is a netplan idiom that cloud-init's
-    parser does not implement, and the failure is the worst shape available: the
-    guest boots, falls back to DHCP, and comes up healthy on an address nobody
-    asked for. ``gateway4`` would also work and is deprecated; a CIDR is neither.
+    cloud-init 24.4 accepts a document saying ``default``, logs "Applying network
+    configuration from ds", then throws ``ValueError: Address default is not a
+    valid ip address`` out of its own v2-to-v1 route normaliser: `default` is a
+    netplan idiom its parser does not implement. The failure is the worst shape
+    available -- the guest boots, falls back to DHCP, and comes up healthy on an
+    address nobody asked for. ``gateway4`` would also work and is deprecated; a
+    CIDR is neither.
 
     **Only the primary NIC gets it.** One default route per NIC leaves a
     multi-NIC guest choosing its egress by metric, which is the same shape of
@@ -236,9 +234,7 @@ def build_all(cfg: dict, workdir: Path) -> dict[str, str]:
     and the same one both ``destroy`` paths check a candidate against before
     unlinking it, so a second copy of the rule is a second place for it to drift
     -- and the drift would be silent on this side, since a seed built under one
-    name and looked for under another is just a file nothing claims. Carried over
-    from #147, which made the same change while this function still lived in the
-    libvirt backend.
+    name and looked for under another is just a file nothing claims.
     """
     return {
         vm["name"]: str(
@@ -268,28 +264,25 @@ def nic_checks_are_safe(vm: object, structural: list[Problem]) -> bool:
     any of them, and skipping anyway costs the operator the edit round trip
     `config.load`'s every-problem contract rules out.
 
-    **The container's shape is only half the question, and asking only it was a
-    regression.** A nic that is a mapping with one wrongly-typed *field* passes
-    every clause below: `ip_cidr:` left blank in YAML is `None`, `nics` is still
-    a list of dicts, and `check_addressing` then reached `"/" not in raw` in
-    `_parse_interface` with `None` and raised an uncaught `TypeError` that lost
-    every other problem in the document -- the same class of unwind the libvirt
-    `_check_target` wraps `urlsplit` against, added by the same commit that added
-    this guard (#112). So the schema's own verdict is consulted first, and
+    **The container's shape is only half the question.** A nic that is a mapping
+    with one wrongly-typed *field* passes every clause below: `ip_cidr:` left
+    blank in YAML is `None`, `nics` is still a list of dicts, and
+    `check_addressing` would reach `"/" not in raw` in `_parse_interface` with
+    `None` and raise an uncaught `TypeError` that loses every other problem in
+    the document -- the same class of unwind the libvirt `_check_target` wraps
+    `urlsplit` against. So the schema's own verdict is consulted first, and
     `problems_from` has already computed it: it puts the failing path in `where`
     (`vms[0].nics[0].ip_cidr`) and `structural` is one VM's problems, so a
-    `.nics` anywhere in it places the failure inside the data these checks
-    index, and the skip is the only answer that does not crash. A `vcpus` out of
-    range is `vms[0].vcpus`, which names no nic, so the case this guard was
-    written for still runs the checks and still reports a duplicate address
-    alongside it.
+    `.nics` anywhere in it places the failure inside the data these checks index,
+    and the skip is the only answer that does not crash. A `vcpus` out of range
+    is `vms[0].vcpus`, which names no nic, so it still runs the checks and still
+    reports a duplicate address alongside it.
 
     ``object`` and not ``dict``: the first clause is the one that matters when a
     VM is not a mapping at all, and annotating the parameter as the thing it is
     testing for would make that clause unreachable by declaration.
 
-    One copy for every backend (#179): the guard exists because of #112, and a
-    fix to it was being made twice.
+    One copy for every backend, so a fix to it is made once.
     """
     if any(".nics" in p.where for p in structural):
         return False
@@ -310,12 +303,11 @@ def check_addressing(
 ) -> list[Problem]:
     """Everything about a NIC that is true for every backend.
 
-    Split out of the libvirt backend ahead of a second one: these are
-    checks on the values ``_network_config`` above consumes -- the address, its
-    prefix, the gateway, the nameservers, the MAC -- so they belong beside it and
-    not in either backend. What is *not* here is how a NIC attaches to a network,
-    which is the half that genuinely differs: libvirt takes a network or a
-    bridge, Proxmox only ever a bridge.
+    These are checks on the values ``_network_config`` above consumes -- the
+    address, its prefix, the gateway, the nameservers, the MAC -- so they belong
+    beside it and not in either backend. What is *not* here is how a NIC attaches
+    to a network, which is the half that genuinely differs: libvirt takes a
+    network or a bridge, Proxmox only ever a bridge.
 
     ``seen_ips`` and ``seen_macs`` are threaded across every VM in one config, so
     a duplicate is reported against the second use and names the first.
