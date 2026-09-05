@@ -142,7 +142,7 @@ class Marker:
         libvirt requires ``<metadata>`` to have at least one *element* child, and
         deep-copies the subtree into the persistent domain XML. Verified to
         survive define -> dumpxml byte-identical and un-reindented; see
-        docs/spikes.md A2.
+        docs/spikes/README.md A2.
         """
         return (
             f'<{MARKER_ELEMENT} xmlns="{MARKER_XMLNS}">'

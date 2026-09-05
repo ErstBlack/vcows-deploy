@@ -58,7 +58,7 @@ SCRIPTS = REPO / "scripts"
 CONTAINERFILE = "FROM scratch\nARG VCOWS_VERSION=9.9.9.9\n"
 
 #: A synthetic baseline of exactly 100 ids, so a `gone` count reads as a
-#: percentage and the rows below are the table in `docs/plans/issue-83.md` §5.
+#: percentage and the rows below are the table in `docs/archive/plans/issue-83.md` §5.
 #: Synthetic rather than `docs/cve-baseline.json` so the thresholds asserted here
 #: do not move when that file is trimmed.
 BASELINE_IDS = [f"CVE-2026-{n:05d}" for n in range(100)]
@@ -386,7 +386,7 @@ def test_the_bundled_wrapper_names_the_tag_the_archive_stores(tmp_path):
 # diagnostic -- the shape all four `.gitlab-ci.yml` jobs use. The gate was blind
 # to hostile content in every anchored job and said nothing.
 #
-# It has been covered by nothing since. `docs/review-workflow-gate/REVIEW.md`
+# It has been covered by nothing since. `docs/review/workflow-gate/REVIEW.md`
 # records the test being offered twice and declined as surface, with the
 # consequence written down instead: "a future edit to `lines()` has no
 # automated guard". This is that guard.

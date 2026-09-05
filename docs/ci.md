@@ -131,7 +131,7 @@ so an override that no longer matches `create.py` stops the gate rather than
 silently doing nothing. `scripts/smoke-libvirt.sh` carries the reasoning.
 
 **It boots no guest and observes no guest address.** The domain reaches firmware
-and stops. `docs/acceptance.md` defect 5 — guests healthy on the wrong addresses
+and stops. `docs/archive/acceptance.md` defect 5 — guests healthy on the wrong addresses
 — is outside what this gate can see.
 
 It is not the rig gate and does not touch it: `tests/test_libvirt_rig.py` and
@@ -297,8 +297,8 @@ mismatch, which reads as tampering rather than as a packaging bug. No pipeline o
 either platform ever called it, so it only ever ran on one developer's box.
 
 It comes back once the artifact above is the thing being signed. That work does
-not have to rediscover anything: `docs/tooling-2026-08-30.md` section 4.2 has the
-cosign 3 API, and `docs/review-2026-08-30/finders/G-build-pipeline.md`'s
+not have to rediscover anything: `docs/research/tooling-2026-08-30.md` section 4.2 has the
+cosign 3 API, and `docs/review/2026-08-30/finders/G-build-pipeline.md`'s
 "`sign.sh --verify` works with no network" section has the verified air-gapped
 reproduction. The short version, because it cost a session to find. `sign-blob` requires `--bundle`, since a bare detached signature
 is no longer a complete artifact. `--tlog-upload=false` is refused against the

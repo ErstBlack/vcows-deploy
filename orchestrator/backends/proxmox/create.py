@@ -3,7 +3,7 @@
 One function per resource, in dependency order: the golden image when preflight
 found the cluster without it, then per VM a seed ISO and a VM. Ported from the
 #198 spike, whose sequence PVE 8.4.0 accepted and whose VM the shipped
-``vcows destroy`` removed (``docs/tofu-eval-2026-09-02.md`` M4) -- so the
+``vcows destroy`` removed (``docs/research/tofu-eval-2026-09-02.md`` M4) -- so the
 parameters here are the parameters that were measured.
 
 **Every task goes through ``api.wait``**, the same function ``stop_vm`` and

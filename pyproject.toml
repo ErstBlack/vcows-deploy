@@ -190,7 +190,7 @@ addopts = "--strict-markers --strict-config"
 line-length = 88
 target-version = "py312"
 # Everything under docs/ is archived evidence rather than package code, and all
-# of it quotes source verbatim: the spike scripts are reproduced in spikes.md,
+# of it quotes source verbatim: the spike scripts are reproduced in docs/spikes/README.md,
 # and the review reports cite the code they are findings about. Reformatting any
 # of it would make the file and the code it quotes disagree.
 #

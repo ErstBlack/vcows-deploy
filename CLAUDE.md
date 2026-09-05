@@ -147,7 +147,7 @@ deliberately not pointed at the `Containerfile`.
 grype, bandit, and making `VCOWS_GATES=all` the default were each investigated
 and rejected with measurements, as were several plausible-looking
 simplifications. Proposing one again is re-deriving settled
-work. The reasoning lives in `docs/tooling-*.md`, `docs/review-*/`,
+work. The reasoning lives in `docs/research/tooling-*.md`, `docs/review/`,
 `docs/archive/` and `docs/findings.md` — read the rejection before reopening it.
 
 The governing constraint, from the review brief: a previous implementation of

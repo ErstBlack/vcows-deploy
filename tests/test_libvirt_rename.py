@@ -4,7 +4,7 @@
 is the other half: that `destroy` then removes what the domain owns. The
 destroy path re-reads the XML after the marker re-verify and takes the disks
 from it (`preflight.disks_of`), so the name the domain carries should not
-matter. kcli, evaluated in `docs/kcli-eval-2026-09-02.md`, reads its disks
+matter. kcli, evaluated in `docs/research/kcli-eval-2026-09-02.md`, reads its disks
 from the XML too and then keeps only the paths matching the current name, so
 a rename deletes the domain and leaks both volumes. That is the failure this
 pins against. `#200`.

@@ -11,7 +11,7 @@ resource's ``os`` block was commented for.
 **The upload is dense, and there is no second path.** On the golden image
 ``vol.upload`` plus ``stream.sendAll`` and
 ``VIR_STORAGE_VOL_UPLOAD_SPARSE_STREAM`` plus ``sparseSendAll`` both took 2.5 s
-(``docs/tofu-eval-2026-09-02.md`` M3): 617 MiB is allocated of 646 MB, so there
+(``docs/research/tofu-eval-2026-09-02.md`` M3): 617 MiB is allocated of 646 MB, so there
 are no holes for the sparse stream to skip, and it would be a second code path
 earning nothing.
 
