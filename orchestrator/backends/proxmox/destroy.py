@@ -14,11 +14,10 @@ file that no longer exists.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from ...cloudinit import seed_name
 from ...problems import Problem
-from ..base import Existing, Outcome
+from ..base import Existing, Outcome, carrying
 from . import api
 
 log = logging.getLogger(__name__)
@@ -68,17 +67,10 @@ def _reverify(session: api.Session, target: Existing) -> bool:
 
 def destroy(cfg: dict, session: api.Session, targets: list[Existing]) -> Outcome:
     out = Outcome()
-    try:
+    # `DestroyError` below is the only other route `out` takes out of here.
+    with carrying(outcome=out):
         for target in targets:
             _one(session, target, out)
-    except BaseException as exc:
-        # A Ctrl-C mid-teardown still reports what was already removed. Same
-        # carrier the libvirt backend uses, annotated the same way and for the
-        # same reason -- `BaseException` has no `outcome`, and `cli._destroy`
-        # reads it back with `getattr` rather than importing this module.
-        carrier: Any = exc
-        carrier.outcome = out
-        raise
     if out.failed:
         raise DestroyError(out)
     return out

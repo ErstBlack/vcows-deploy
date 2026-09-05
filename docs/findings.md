@@ -191,15 +191,14 @@ class Backend(ABC):
     def connect(self, cfg) -> ContextManager[Any]: ...  # opens and closes the session
     @abstractmethod
     def preflight(self, cfg, session) -> Discovered: ...
-    @abstractmethod
-    def prepare(self, cfg, workdir, discovered) -> dict: ...  # opaque to core
+    def prepare(self, cfg, workdir, discovered) -> dict: ...  # concrete; opaque to core
     @abstractmethod
     def create(self, cfg, session, prepared) -> dict: ...  # the inventory map
     @abstractmethod
     def destroy(self, cfg, session, targets) -> Outcome: ...
 ```
 
-**ABC with `@abstractmethod`, and no default implementations.** The thing to avoid is *noop defaults*, not ABCs — a backend that forgets `destroy` and inherits a no-op deletes nothing and exits successfully; one that forgets `preflight` skips the safety check entirely. An ABC fails loudly at instantiation, which beats a `Protocol` that only complains if someone remembers to run mypy.
+**ABC with `@abstractmethod`, and one default implementation.** The thing to avoid is *noop defaults*, not ABCs — a backend that forgets `destroy` and inherits a no-op deletes nothing and exits successfully; one that forgets `preflight` skips the safety check entirely. An ABC fails loudly at instantiation, which beats a `Protocol` that only complains if someone remembers to run mypy. **Corrected by #265**: the two shipped `prepare` overrides turned out to be the same body bar the artifact key, so it is concrete on `Backend` now. It is the only method that passes the test this paragraph sets — forgetting to override it builds the seed ISOs and forwards every artifact, and a backend needing more fails in `create` on the key it did not build.
 
 **`connect` — who builds the session.** The signatures above take `session` as a
 parameter without saying where it comes from. Somebody must build it, and if that is
@@ -224,7 +223,7 @@ live domain XML at discovery time rather than stored, so it cannot go stale. Nev
 
 Core parses the marker, applies the rules from §2, and decides skip/create/refuse. **The dangerous logic is written once** — a backend author cannot implement the refusal incorrectly because they never implement it. Core also owns the marker's content and serialization (`marker.py`); the backend owns only where it is stored and how it is read back.
 
-**`prepare` builds what `create` consumes, and reaches nothing.** Both shipped backends write the seed ISOs and return; `orchestrator/cloudinit.py` builds them, because nothing in that is hypervisor-specific. Proxmox's additionally carries `discovered.artifacts["image"]` through to `render`, because the pure half has no way to ask a storage what `import` content it already holds — `ProxmoxBackend.prepare` says so beside the line. The `workdir` parameter is sized for vSphere: a qcow2→VMDK→OVA conversion needs it plus a cache path, and a conversion product that must exist for the create has to live somewhere. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring, whereas it costs nothing today.
+**`prepare` builds what `create` consumes, and reaches nothing.** It writes the seed ISOs and returns; `orchestrator/cloudinit.py` builds them, because nothing in that is hypervisor-specific. It also forwards whatever `preflight` found — libvirt's `base_volume`, Proxmox's `image` — because the pure half has no way to ask a pool for its target directory or a storage for the `import` content it already holds. Neither backend writes any of that itself: `Backend.prepare` does it for both, and being written in core is what makes "reaches nothing" structural rather than a rule per backend. The `workdir` parameter is sized for vSphere: a qcow2→VMDK→OVA conversion needs it plus a cache path, and a conversion product that must exist for the create has to live somewhere. That has no place in a four-stage pipeline as the original document describes it, and retrofitting it would mean restructuring, whereas it costs nothing today.
 
 **The reason this section originally gave was wrong, and is corrected here by name.** It said Proxmox might need the orchestrator to serve the qcow2 over HTTP on the local network so PVE could pull it through the download-url API, holding a listening socket open. The backend that shipped in #149 does not do that and cannot want to: `create.upload` posts a local file to PVE's own upload endpoint for the `import` and `iso` content types, so vcows pushes and serves nothing. The decision survives; that justification does not.
 

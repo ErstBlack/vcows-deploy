@@ -1,10 +1,8 @@
-"""The Proxmox VE backend: seven methods, bound together.
+"""The Proxmox VE backend: six methods, bound together.
 
-Three delegate to free functions in ``schema.py``, which imports nothing
-hypervisor-specific, and to ``orchestrator/cloudinit.py``, which is core because
-this backend and the libvirt one build the identical seed ISO. The four that
-hold a session live in ``api.py``, ``preflight.py``, ``create.py`` and
-``destroy.py``.
+Two delegate to free functions in ``schema.py``, which imports nothing
+hypervisor-specific. The four that hold a session live in ``api.py``,
+``preflight.py``, ``create.py`` and ``destroy.py``.
 
 **No ``proxmoxer`` import at module level, here or in any module this one imports
 at import time.** ``orchestrator/backends/__init__.py`` names this class, so
@@ -12,9 +10,9 @@ importing the registry drags this file in on every run -- including runs that
 only ever talk to libvirt. ``api.py`` imports ``proxmoxer`` inside the functions
 that need it; ``tests/test_seam.py`` is the gate.
 
-**Why there is no ``prepare.py`` here.** The seed ISOs are built by
-``cloudinit.build_all``, and this backend adds nothing to that -- unlike the
-libvirt backend, which also has to carry its base-volume lookup through. The
+**Why there is no ``prepare`` here, in any form.** The seed ISOs are built by
+``cloudinit.build_all`` and the ``image`` this backend needs is carried through
+from ``preflight``, so the inherited ``Backend.prepare`` is the whole of it. The
 Proxmox research predicted this backend would be the one that had to hold a
 socket open while the image was pulled. **It is not.** Serving the image over
 HTTP for PVE to pull was the ``download_file`` design; what shipped uploads over
@@ -23,10 +21,8 @@ the same API token, so nothing is held open.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from ... import cloudinit as _cloudinit
 from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome
 from . import api as _api
@@ -58,22 +54,6 @@ class ProxmoxBackend(Backend):
         return _destroy.destroy(cfg, session, targets)
 
     # -- apply -----------------------------------------------------------
-
-    def prepare(
-        self, cfg: dict, workdir: Path, discovered: Discovered
-    ) -> dict[str, Any]:
-        """Build the seed ISOs and carry preflight's findings through to ``create``.
-
-        Nothing is torn down afterwards -- the run directory keeps the ISOs so a
-        VM that will not boot can be debugged by inspecting the one it was given.
-        """
-        return {
-            "seed_isos": _cloudinit.build_all(cfg, workdir),
-            # Discovered while connected, because nothing downstream can find
-            # it out: `create` is handed data rather than the ability to list
-            # a storage's import content.
-            "image": discovered.artifacts["image"],
-        }
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         """Render the values, then make the objects they describe.

@@ -1,7 +1,8 @@
 """The backend seam: an ABC, the records that cross it, and the ownership policy.
 
 Adding a second backend should require no edit to any core file. Every method on
-``Backend`` is a signature, not an implementation.
+``Backend`` is a signature rather than an implementation, bar the one named
+below.
 
 **One core block is the exception, and it is known.** ``config.IMAGE_SCHEMA`` is
 written in qcow2-and-libvirt terms -- ``source_qcow2`` and ``base_volume_name``
@@ -13,23 +14,29 @@ exactly one backend. Neither is speculative to fix and both are cheap to move
 when there is a second backend to move them for; they are named here so the "no
 core edit" claim is not read as complete.
 
-**No default implementations, deliberately.** The thing to avoid is *noop
-defaults*, not ABCs: a backend that forgets ``destroy`` and inherits a no-op
-deletes nothing and exits successfully; one that forgets ``preflight`` skips the
-safety check entirely. An ABC fails loudly at instantiation, which beats a
-Protocol that only complains if someone remembers to run a type checker.
+**One default implementation, and the test it had to pass.** The thing to avoid
+is *noop defaults*, not ABCs: a backend that forgets ``destroy`` and inherits a
+no-op deletes nothing and exits successfully; one that forgets ``preflight``
+skips the safety check entirely. An ABC fails loudly at instantiation, which
+beats a Protocol that only complains if someone remembers to run a type checker.
+So a default is allowed only where forgetting to override cannot silently do
+nothing, and ``prepare`` is the only method that clears it: both shipped backends
+had written the identical body, the work is core's ``cloudinit`` either way, and
+a backend that needed more than the default builds fails in ``create`` on the key
+it did not build.
 """
 
 from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import cloudinit
 from ..marker import Marker
 from ..problems import Problem
 
@@ -149,6 +156,31 @@ class Outcome:
     @property
     def failed(self) -> bool:
         return any(p.fatal for p in self.problems)
+
+
+@contextmanager
+def carrying(**attrs: Any) -> Iterator[None]:
+    """Attach ``attrs`` to whatever exception leaves this block, then re-raise.
+
+    Both backends accumulate their result in a local -- ``create``'s inventory
+    dict, ``destroy``'s ``Outcome`` -- which the return is the only thing to
+    carry out. So a failure on the third VM lost every record of the two that
+    are running, and an interrupt mid-teardown lost the account of what had
+    already been removed, which is the record an operator cannot re-derive.
+
+    ``BaseException`` because a Ctrl-C is exactly the case this exists for, and
+    an attribute on the exception rather than a backend exception type because
+    ``cli._deploy`` and ``cli._destroy`` read it back with ``getattr``. Core
+    never imports a backend class -- which is what findings.md section 3 buys by
+    giving the backends no exception hierarchy, and what this helper has to keep:
+    nothing here knows libvirt or proxmoxer, or either one's error type.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        for name, value in attrs.items():
+            setattr(exc, name, value)
+        raise
 
 
 class Action(enum.Enum):
@@ -359,24 +391,34 @@ class Backend(ABC):
         carried out in ``Discovered``.
         """
 
-    @abstractmethod
     def prepare(
         self, cfg: dict, workdir: Path, discovered: Discovered
     ) -> dict[str, Any]:
         """Build whatever ``create`` needs, under ``workdir``, and record it.
 
         The dict it returns is opaque to core, which carries it from this call to
-        ``create`` and reads nothing in it. For both shipped backends that is the
-        seed ISOs, written into the run directory and kept there so a VM that
-        will not boot can be debugged from the media it was actually given, plus
-        the one fact preflight had to look up while connected.
+        ``create`` and reads nothing in it. What both shipped backends need is
+        the seed ISOs, written into the run directory and kept there -- nothing
+        tears them down -- so a VM that will not boot can be debugged from the
+        media it was actually given, plus whatever preflight had to look up while
+        connected: libvirt's ``base_volume``, Proxmox's ``image``. The artifacts
+        are forwarded whole rather than picked out by key, since picking would
+        mean core naming ``base_volume``.
+
+        **The one concrete method here.** The module docstring says why a default
+        is allowed for this one and for nothing else; ``cloudinit`` is core
+        because nothing in a seed ISO is hypervisor-specific, so the default
+        reaches no hypervisor either.
 
         **Takes what ``preflight`` found, not a connection.** It needs the
         target's state -- which of the things ``create`` would make already
         exist -- but not the ability to go and look, which ``preflight`` has
-        already done. Passing data rather than a session also makes "prepare
-        runs after preflight" a type dependency instead of a convention.
+        already done. Being written here rather than in each backend makes that
+        structural: there is no session in this scope to reach with. Passing data
+        rather than a session also makes "prepare runs after preflight" a type
+        dependency instead of a convention.
         """
+        return {"seed_isos": cloudinit.build_all(cfg, workdir), **discovered.artifacts}
 
     @abstractmethod
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
