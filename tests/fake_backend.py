@@ -58,7 +58,7 @@ class FakeBackend(Backend):
             "properties": {"endpoint": {"type": "string", "minLength": 1}},
         }
 
-    def validate(self, cfg: dict) -> list[Problem]:
+    def validate(self, cfg: dict, *, verify_digest: bool = True) -> list[Problem]:
         target = cfg["target"][self.name]
         where = f"target.{self.name}.endpoint"
         if target["endpoint"].startswith("bad://"):

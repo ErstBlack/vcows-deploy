@@ -363,7 +363,7 @@ class PerVmBackend(FakeBackend):
     backend's schema in a core test.
     """
 
-    def validate(self, cfg):
+    def validate(self, cfg, *, verify_digest=True):
         from orchestrator.cloudinit import check_vm_structure
 
         problems = []

@@ -235,23 +235,28 @@ def test_the_backend_delegates_every_call_with_its_arguments_intact(monkeypatch)
     backend = LibvirtBackend()
     calls = []
 
+    # `validate` forwards a keyword as well, so the record carries both halves:
+    # dropping `verify_digest` on the way would make `destroy` hash the golden
+    # image again with nothing else failing.
     delegations = [
-        ("validate", schema_mod, "validate", ("cfg",)),
-        ("connect", preflight_mod, "connect", ("cfg",)),
-        ("preflight", preflight_mod, "preflight", ("cfg", "session")),
-        ("destroy", destroy_mod, "destroy", ("cfg", "session", "targets")),
+        ("validate", schema_mod, "validate", ("cfg",), {"verify_digest": True}),
+        ("connect", preflight_mod, "connect", ("cfg",), {}),
+        ("preflight", preflight_mod, "preflight", ("cfg", "session"), {}),
+        ("destroy", destroy_mod, "destroy", ("cfg", "session", "targets"), {}),
     ]
-    for _, module, function, _ in delegations:
+    for _, module, function, _, _ in delegations:
         monkeypatch.setattr(
             module,
             function,
-            lambda *args, _f=function: calls.append((_f, args)) or f"{_f}() said so",
+            lambda *args, _f=function, **kwargs: (
+                calls.append((_f, args, kwargs)) or f"{_f}() said so"
+            ),
         )
 
-    for method, _, function, args in delegations:
+    for method, _, function, args, _ in delegations:
         assert getattr(backend, method)(*args) == f"{function}() said so"
 
-    assert calls == [(function, args) for _, _, function, args in delegations]
+    assert calls == [(f, args, kwargs) for _, _, f, args, kwargs in delegations]
     assert backend.config_schema() is schema_mod.TARGET_SCHEMA
 
 
