@@ -69,11 +69,11 @@ jobs:
 
   # Mutation testing, which asks the question coverage cannot: the suite executes
   # this line, but would it notice if the line were wrong? `just check` already
-  # enforces a 90% coverage floor, and 964 of these mutants sit in code that floor
-  # calls covered.
+  # enforces a 90% coverage floor, and the survivors in
+  # docs/mutation-baseline.json all sit in code that floor calls covered.
   #
   # It is a real gate, not a report. `mutmut run` exits 0 whatever it finds --
-  # measured: 3835 mutants, 964 surviving, exit 0 -- so `scripts/mutants.sh`
+  # measured: exit 0 with 964 survivors -- so `scripts/mutants.sh`
   # compares against docs/mutation-baseline.json and fails only when a number
   # rose. Red means this change made the suite blinder, which is a question about
   # the change and belongs on the pull request rather than in a monthly job
