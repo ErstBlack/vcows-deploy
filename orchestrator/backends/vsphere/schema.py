@@ -73,6 +73,16 @@ IMPORT_DEFAULT = "ovf"
 #: default only.
 CLONE_DEFAULT = "linked"
 
+#: The config's word, and vSphere's own: a ``ConfigSpec`` takes ``efi`` or
+#: ``bios`` unchanged, so ``render`` translates nothing the way the Proxmox
+#: backend translates into ``ovmf``/``seabios``.
+FIRMWARE_DEFAULT = "efi"
+
+#: VMware's paravirtual adapter, and the one a RHEL-family guest has a driver
+#: for out of the box. The ``e1000`` pair in ``NIC_SCHEMA`` are for a guest that
+#: does not.
+NIC_MODEL_DEFAULT = "vmxnet3"
+
 NIC_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,

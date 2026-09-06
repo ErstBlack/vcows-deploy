@@ -17,6 +17,7 @@ everywhere, which is what makes that possible.
 from __future__ import annotations
 
 import builtins
+import inspect
 import logging
 import ssl
 import sys
@@ -26,8 +27,14 @@ import pytest
 import yaml
 from pyVmomi import vim
 
-from orchestrator.backends.base import Backend
-from orchestrator.backends.vsphere import VsphereBackend, api, preflight, schema
+from orchestrator.backends.base import Backend, Discovered
+from orchestrator.backends.vsphere import (
+    VsphereBackend,
+    api,
+    convert,
+    preflight,
+    schema,
+)
 from orchestrator.config import core_schema, load
 from tests.conftest import VSPHERE_CA_CERT, VSPHERE_CONFIG
 from tests.fake_vsphere import (
@@ -37,6 +44,7 @@ from tests.fake_vsphere import (
     disconnect,
     smart_connect,
 )
+from tests.test_qcow2 import make_qcow2
 
 REGISTRY = {"vsphere": VsphereBackend()}
 
@@ -176,18 +184,125 @@ def test_the_two_unwritten_methods_refuse_rather_than_doing_nothing(
             call()
 
 
-def test_prepare_builds_a_seed_per_vm(backend, vsphere_cfg, tmp_path):
-    """The inherited `Backend.prepare`, reached through this backend: nothing in
-    a seed ISO is hypervisor-specific, so there is nothing here to override yet.
-    The conversion chunk is what overrides it."""
-    from orchestrator.backends.base import Discovered
+# -- prepare -------------------------------------------------------------
 
+
+@pytest.fixture
+def converted(monkeypatch):
+    """`convert.to_vmdk`, recording its arguments and writing nothing.
+
+    What the real call does is `tests/test_vsphere_convert.py`'s subject and the
+    smoke chunk's. What is asked here is whether `prepare` makes it at all, and
+    with what.
+    """
+    calls: list[tuple] = []
+
+    def fake(source, dest, subformat):
+        calls.append((str(source), dest, subformat))
+        return dest
+
+    monkeypatch.setattr(convert, "to_vmdk", fake)
+    return calls
+
+
+@pytest.fixture
+def golden_image(vsphere_cfg, tmp_path):
+    """A header-only qcow2 where the config says the golden image is.
+
+    `prepare` reads its virtual size, which is a real read of a real file: the
+    conversion is faked above, the size is not.
+    """
+    source = make_qcow2(tmp_path / "golden.qcow2", 20 * 2**30)
+    vsphere_cfg["image"]["source_qcow2"] = str(source)
+    return source
+
+
+def test_prepare_builds_a_seed_per_vm(backend, vsphere_cfg, tmp_path):
+    """The inherited half, still inherited: nothing in a seed ISO is
+    hypervisor-specific, and preflight's answer is forwarded whole rather than
+    picked at."""
     prepared = backend.prepare(
-        vsphere_cfg, tmp_path, Discovered(vms=(), artifacts={"image": {"create": True}})
+        vsphere_cfg,
+        tmp_path,
+        Discovered(
+            vms=(), artifacts={"image": {"create": False, "template": "golden.qcow2"}}
+        ),
     )
     assert set(prepared["seed_isos"]) == {"app01", "app02"}
-    assert prepared["image"]["create"] is True
+    assert prepared["image"]["template"] == "golden.qcow2"
     assert (tmp_path / "app01-seed.iso").is_file()
+
+
+def test_prepare_converts_only_when_the_template_is_missing(
+    backend, vsphere_cfg, tmp_path, converted, golden_image
+):
+    """Converting a multi-GB image to import nothing is what this branch avoids,
+    and it is the only reason `preflight` reports on the template at all.
+
+    The two keys are absent rather than empty when nothing was converted:
+    `render` is what renders their absence, and a `prepare` that always set them
+    would hand `create` the path of a file it never wrote.
+    """
+    already_there = backend.prepare(
+        vsphere_cfg,
+        tmp_path,
+        Discovered(
+            vms=(), artifacts={"image": {"create": False, "template": "golden.qcow2"}}
+        ),
+    )
+    assert converted == []
+    assert "vmdk" not in already_there
+    assert "capacity" not in already_there
+
+    prepared = backend.prepare(
+        vsphere_cfg,
+        tmp_path,
+        Discovered(
+            vms=(), artifacts={"image": {"create": True, "template": "golden.qcow2"}}
+        ),
+    )
+    assert len(converted) == 1
+    source, dest, _ = converted[0]
+    assert source == str(golden_image)
+    # Into the run directory, named after the template it becomes: a
+    # `monolithicFlat` conversion writes its `-flat` extent beside it.
+    assert dest == tmp_path / "golden.vmdk"
+    assert prepared["vmdk"] == str(tmp_path / "golden.vmdk")
+    # Read from the image itself, here rather than in `render`, which does no
+    # I/O. The OVF descriptor the import chunk builds declares it.
+    assert prepared["capacity"] == 20 * 2**30
+
+
+@pytest.mark.parametrize(
+    ("knob", "subformat"),
+    [
+        (None, "streamOptimized"),
+        ("ovf", "streamOptimized"),
+        ("datastore", "monolithicFlat"),
+    ],
+)
+def test_the_import_knob_picks_the_subformat(
+    backend, vsphere_cfg, tmp_path, converted, golden_image, knob, subformat
+):
+    """An `ImportVApp` lease reads `streamOptimized` and nothing else, and a
+    datastore PUT wants the descriptor-plus-extent pair. Handing either path the
+    other's format fails at the far end, mid-upload."""
+    if knob is not None:
+        vsphere_cfg["target"]["vsphere"]["import"] = knob
+    backend.prepare(
+        vsphere_cfg, tmp_path, Discovered(vms=(), artifacts={"image": {"create": True}})
+    )
+    assert converted[0][2] == subformat
+
+
+def test_the_override_takes_what_the_base_takes(backend):
+    """`tests/test_seam.py` asserts the signature on the ABC, and this is the
+    only backend that overrides it: an override taking a session would leave
+    that check green while reaching the target from the one phase that cannot.
+    """
+    assert inspect.signature(type(backend).prepare) == inspect.signature(
+        Backend.prepare
+    )
 
 
 # -- connect -------------------------------------------------------------
