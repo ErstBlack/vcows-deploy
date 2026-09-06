@@ -4,6 +4,12 @@ findings.md §5 cut vSphere and Proxmox from v0.1 and directed that the research
 move here rather than be lost. This file is **not a plan and not a commitment**.
 Nothing in it is built.
 
+> **The vSphere half of this file is superseded.** The backend is built and
+> registered; the design that was actually taken, with its decisions, its
+> measured API facts and the items only first contact can settle, is epic #308
+> and the chunk issues under it. What is below is the research that preceded it
+> and is kept for the rejections it records, not as a description of the backend.
+
 > Migration status: only the image-conversion chain below has been moved and
 > re-verified. The rest of the vSphere/Proxmox material still sits in
 > `docs/archive/orchestrator-architecture.md` §6.1, §6.3, §6.4, §7 and has **not** been

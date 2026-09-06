@@ -192,6 +192,22 @@ def test_two_backends_compose(registry):
     assert len(schema["allOf"]) == 2
 
 
+def test_the_shipped_registry_composes_three_backends():
+    """The same composition against the registry a run actually uses, rather
+    than against two fakes. It is the check the register chunk adds: a backend
+    whose sub-schema collided with another's, or whose package failed to import,
+    fails here and nowhere else in this file."""
+    schema = core_schema(REGISTRY)
+
+    assert schema["properties"]["backend"]["enum"] == ["libvirt", "proxmox", "vsphere"]
+    assert set(schema["properties"]["target"]["properties"]) == {
+        "libvirt",
+        "proxmox",
+        "vsphere",
+    }
+    assert len(schema["allOf"]) == 3
+
+
 def test_target_accepts_exactly_one_backend_block(registry):
     registry["other"] = FakeBackend(name="other")
     cfg = {

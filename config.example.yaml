@@ -13,7 +13,7 @@
 
 schema_version: 1                # the only accepted value
 deployment: <lab-a>              # optional; defaults to this file's stem, and every marker carries it
-backend: libvirt                 # libvirt | proxmox
+backend: libvirt                 # libvirt | proxmox | vsphere
 
 # Exactly one key, matching `backend` above.
 target:
@@ -43,6 +43,28 @@ target:
   #     -----END CERTIFICATE-----
   #   insecure: true                   # skip verification instead, for a self-signed certificate
 
+  # vSphere instead of either block above: uncomment this one, delete the other,
+  # and set `backend: vsphere`. The target is vCenter; a standalone ESXi host has
+  # no clone API and is refused by the connection, not by this file.
+  # vsphere:
+  #   endpoint: https://<vcenter>      # https, host[:port], no path, no credentials
+  #   user: <vcows@vsphere.local>      # an SSO login; vCenter has no token form
+  #   password: <secret>               # both are required, and there is no other credential
+  #   datacenter: <dc-a>               # every name below is resolved inside it
+  #   datastore: <ds-a>                # the template's disk, the clones and the seed ISOs
+  #   network: <pg-vcows>              # the port group every NIC attaches to; it carries the VLAN
+  #   cluster: <cluster-a>             # exactly one of cluster or host
+  #   host: <esx1.example.com>         # the other form; never both, never neither
+  #   folder: <vcows>                  # optional; the datacenter's VM folder otherwise
+  #   resource_pool: <vcows>           # optional; the cluster's or host's root pool otherwise
+  #   ca_cert: |                       # the PEM itself, for a vCenter certificate from a private CA
+  #     -----BEGIN CERTIFICATE-----
+  #     <the certificate>
+  #     -----END CERTIFICATE-----
+  #   insecure: true                   # skip verification instead; validate warns
+  #   import: ovf                      # ovf | datastore; how the golden image reaches the datastore
+  #   clone: linked                    # linked | full; linked moves no bytes and cannot grow disk_gb
+
 image:
   source_qcow2: /images/<golden.qcow2>   # absolute, and inside the container: the ./images mount
   base_volume_name: <golden.qcow2>       # shared per host, uploaded once, an overlay per VM
@@ -54,7 +76,7 @@ defaults:                          # optional; folded into every VM that omits t
   firmware: efi
 
 vms:
-  - name: <app01>                  # libvirt domain name; on Proxmox a DNS name, so no underscore
+  - name: <app01>                  # libvirt domain name; on Proxmox and vSphere a DNS name, so no underscore
     vcpus: 2
     memory_mib: 4096
     disk_gb: 40
@@ -70,10 +92,11 @@ vms:
     nics:                          # the first is primary unless one says otherwise
       - network: <default>         # libvirt: exactly one of network or bridge
         # bridge: <br0>            # the other form, and the only one Proxmox has
+        #                          # vSphere has neither: the port group is named once, under the target
         ip_cidr: <192.168.122.60/24>
         gateway: <192.168.122.1>
         nameservers: [<192.168.122.1>]
         # mac: <52:54:00:11:22:33> # optional; derived from deployment, VM name and index otherwise
-        # model: virtio            # optional device model
+        # model: virtio            # optional device model; vmxnet3 | e1000 | e1000e on vSphere
         # primary: true            # optional; makes this NIC's gateway the default route
         # vlan_id: 42              # Proxmox only, 1-4094

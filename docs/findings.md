@@ -10,7 +10,7 @@
 
 | | |
 |---|---|
-| Backend | **Two ship, `libvirt` and `proxmox`** — `REGISTRY` in `orchestrator/backends/__init__.py`. The seams are §3. |
+| Backend | **Three ship, `libvirt`, `proxmox` and `vsphere`** — `REGISTRY` in `orchestrator/backends/__init__.py`. The seams are §3. |
 | Provisioning | **`python3-libvirt` directly**, the same client destroy uses. |
 | Destroy | **`python3-libvirt` directly**, via marker discovery. |
 | Identity | **The marker, never the name.** Renaming a VM is a plausible accident; editing a marker is deliberate. |
@@ -150,14 +150,14 @@ Marked VMs from other deployments are **reported as found and skipped, with thei
 
 Adding a backend should require no edit to any core file. Nothing speculative is implemented — every seam is a signature or a directory boundary.
 
-**One block does not hold, and it is the same one in both places.** `config.IMAGE_SCHEMA` is written in qcow2 and libvirt terms — `source_qcow2` and `base_volume_name` are the field *names* — and it is wired into the core schema directly rather than composed from the registry the way `target` is. A backend wanting an OVA path or a template id edits `config.py`. The format reader behind it, `orchestrator/qcow2.py`, is a core module imported by exactly one backend. Proxmox reuses both field names as they stand, so the cost has not been paid: that is two core sites, not a layer, and a backend wanting different names is what would make moving them worth it. Recorded rather than fixed, so the seam claim above reads as "one known exception" rather than "verified complete".
+**One block does not hold, and it is the same one in both places.** `config.IMAGE_SCHEMA` is written in qcow2 and libvirt terms — `source_qcow2` and `base_volume_name` are the field *names* — and it is wired into the core schema directly rather than composed from the registry the way `target` is. A backend wanting an OVA path or a template id edits `config.py`. The format reader behind it, `orchestrator/qcow2.py`, is a core module imported by exactly one backend. Proxmox reuses both field names as they stand, and vSphere reuses both names too — `base_volume_name` is its template VM's name — so the cost has not been paid: that is two core sites, not a layer, and a backend wanting different names is what would make moving them worth it. Recorded rather than fixed, so the seam claim above reads as "one known exception" rather than "verified complete".
 
 ### A backend is a package
 
 ```
 orchestrator/
   backends/
-    __init__.py          # REGISTRY = {"libvirt": LibvirtBackend(), "proxmox": ProxmoxBackend()}
+    __init__.py          # REGISTRY = {"libvirt": ..., "proxmox": ..., "vsphere": ...}
     base.py              # ABC, shared records, and `decide()` -- the ownership policy
     libvirt/
       __init__.py        # the Backend implementation
@@ -175,6 +175,15 @@ orchestrator/
       render.py          # pure: config -> the values create consumes
       create.py          # proxmoxer upload, import, define
       destroy.py         # proxmoxer teardown
+    vsphere/
+      __init__.py        # the Backend implementation; the one that overrides `prepare`
+      schema.py          # the target.vsphere sub-schema, and the linked-clone disk rule
+      api.py             # SmartConnect, the property reads, the task waiter
+      convert.py         # qemu-img: the golden qcow2 -> VMDK, at the site
+      preflight.py       # marker read + collision detection
+      render.py          # pure: config -> the values create consumes
+      create.py          # OVF lease import, template, seed upload, clone
+      destroy.py         # power off, Destroy_Task, the seed ISO
   cloudinit.py           # seed ISO, MAC derivation, the NIC addressing checks
   config.py              # core schema; composes `target` from the registry
   imagecheck.py          # digest and capacity checks on the golden image
