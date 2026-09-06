@@ -85,7 +85,7 @@ dev = [
     # the releases this project has reason to fear. Every other pin here -- the
     # Containerfile's digests, the tool digests in scripts/install-tools.sh --
     # is fixed the same way, and a bump is a deliberate edit CI exercises.
-    "ty==0.0.75",
+    "ty==0.0.78",
     # PyYAML ships no inline types and jsonschema/pycdlib are both PEP 561, so
     # this is the one stub gap worth closing. `libvirt.py` is the permanent
     # ceiling -- the RPM binding is untyped and has no stub package anywhere.
