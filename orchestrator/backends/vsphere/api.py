@@ -40,7 +40,12 @@ DEFAULT_PORT = 443
 #: to succeed.
 TASK_TIMEOUT = 600
 
-#: How long ``wait`` sleeps between two reads of ``task.info``. One pair of
+#: What ``wait`` reads off a task, and the whole of it: the state it is in, the
+#: fault it ended on and the object it produced. Leaf paths, never ``info``
+#: itself -- ``wait`` says what a whole-object read costs.
+TASK_PROPERTIES = ("info.state", "info.error", "info.result")
+
+#: How long ``wait`` sleeps between two reads of a task's state. One pair of
 #: numbers for every task, rather than a ceiling per call site: a wait that is
 #: right for a clone is right for a search, and one place to change is what
 #: stops the two drifting.
@@ -206,13 +211,27 @@ def wait(task: Any, what: str) -> Any:
     blocks until vCenter answers or the connection dies, so a wedged task hangs
     the run instead of failing it.
 
-    **Every read below is a leaf, and that is a measurement rather than a
-    style.** The vcsim spike found that fetching a whole property object off a
-    managed object -- ``task.info``, ``vm.runtime``, ``vm.summary`` -- raises
-    ``AttributeError`` under pyVmomi 9, because vcsim emits an empty
-    ``faultToleranceState`` the deserialiser will not take. Leaf reads are fine.
-    So nothing here binds ``info`` to a local and reads fields off it, and the
-    C9 smoke gate is what would catch a change that did.
+    **Every read below goes through the PropertyCollector as a leaf path, and
+    that is a measurement rather than a style.** ``task.info`` is one property,
+    so reading ``task.info.state`` fetches the whole ``TaskInfo`` however it is
+    spelt -- binding it to a local is not what makes a read whole, and an earlier
+    version of this docstring claimed otherwise while doing exactly that. What it
+    costs was measured by the C9 smoke gate: vcsim answers a
+    ``FileManager.DeleteDatastoreFile_Task`` with ``TaskInfo.entity`` set to the
+    FileManager, which is not a ``vim.ManagedEntity``, and pyVmomi 9 refuses to
+    deserialise it -- ``TypeError: For "entity" expected type
+    vim.ManagedEntity, but got vim.FileManager`` -- while the delete itself
+    succeeds and a leaf read of ``info.state`` answers ``success``. The same
+    class of failure the spike recorded for ``vm.runtime`` and ``vm.summary``,
+    and the reason its section 5 required the waiter to poll through the
+    collector.
+
+    The collector comes off the task's own stub rather than through a parameter,
+    which is what keeps this a change to one function: threading a ``content``
+    argument in would have touched ten call sites and the signatures of
+    ``make_template``, which documents taking no session, and
+    ``datastore_files``, which is handed a datastore and nothing else.
+    ``connect`` already reaches into ``si._stub`` for the SOAP cookie.
     """
     from pyVmomi import vim
 
@@ -224,22 +243,46 @@ def wait(task: Any, what: str) -> Any:
         POLL_INTERVAL,
         TASK_TIMEOUT,
     )
+    content = content_of(task)
     deadline = time.monotonic() + TASK_TIMEOUT
-    while task.info.state in (vim.TaskInfo.State.queued, vim.TaskInfo.State.running):
+    while True:
+        found = properties(content, task, TASK_PROPERTIES, vim.Task)
+        state = found.get("info.state")
+        if state not in (vim.TaskInfo.State.queued, vim.TaskInfo.State.running):
+            break
         if time.monotonic() >= deadline:
             raise VsphereApiError(
                 f"{what}: the task had not finished after {TASK_TIMEOUT}s. It may "
                 f"still be running on the vCenter; check it before retrying."
             )
         time.sleep(POLL_INTERVAL)
-    if task.info.state != vim.TaskInfo.State.success:
+    if state != vim.TaskInfo.State.success:
         # `.msg` rather than the fault itself: pyvmomi renders a fault as its
-        # whole field list, which buries the one sentence vCenter wrote.
+        # whole field list, which buries the one sentence vCenter wrote. Read
+        # without a default, as the whole-object version was: a task vCenter
+        # reports as failed carries the fault that failed it, and inventing a
+        # fallback for a shape no server produces only adds an unkillable
+        # mutant.
         raise VsphereApiError(
-            f"{what}: the task ended as {task.info.state} ({task.info.error.msg})"
+            f"{what}: the task ended as {state} ({found['info.error'].msg})"
         )
     log.debug("%s: task ok", what)
-    return task.info.result
+    return found.get("info.result")
+
+
+def content_of(managed_object: Any) -> Any:
+    """``RetrieveContent()`` over the connection a managed object came from.
+
+    The PropertyCollector is on the content, and the objects vCenter hands back
+    through a task or a lookup carry their stub and no way to the session that
+    made them. This is pyvmomi's own idiom -- ``pyVim.connect`` builds the
+    service instance from the moid and a stub in exactly this shape -- and
+    ``ServiceInstance`` is a fixed moid on every vCenter, not a value to look up.
+    """
+    from pyVmomi import vim
+
+    si = vim.ServiceInstance("ServiceInstance", managed_object._stub)
+    return si.RetrieveContent()
 
 
 def find_by_name(content: Any, vim_type: Any, name: str, root: Any = None) -> Any:
@@ -323,8 +366,8 @@ def vms(content: Any) -> list[dict]:
     ]
 
 
-def properties(content: Any, vm: Any, paths: Sequence[str]) -> dict:
-    """The named leaf properties of one VM, in one ``RetrieveContents`` call.
+def properties(content: Any, obj: Any, paths: Sequence[str], kind: Any = None) -> dict:
+    """The named leaf properties of one object, in one ``RetrieveContents`` call.
 
     ``vms`` above answers the same question for the whole inventory; this is the
     single-object form the apply needs, where the VM is one the run just made
@@ -335,16 +378,21 @@ def properties(content: Any, vm: Any, paths: Sequence[str]) -> dict:
     ``vm.summary.config.uuid`` -- which fetches the whole ``summary`` first --
     is not a leaf read however it is spelt. This is.
 
+    ``kind`` is the managed object type the paths are read against, and it
+    defaults to ``vim.VirtualMachine`` because that is what every caller but
+    ``wait`` reads. It cannot be a default *argument*: this module imports
+    pyvmomi inside function bodies and there is no ``vim`` at definition time.
+
     A property vCenter did not answer for is absent rather than None, the shape
     ``vms`` returns and for the same reason.
     """
     from pyVmomi import vim, vmodl
 
     spec = vmodl.query.PropertyCollector.FilterSpec(
-        objectSet=[vmodl.query.PropertyCollector.ObjectSpec(obj=vm)],
+        objectSet=[vmodl.query.PropertyCollector.ObjectSpec(obj=obj)],
         propSet=[
             vmodl.query.PropertyCollector.PropertySpec(
-                type=vim.VirtualMachine, pathSet=list(paths)
+                type=kind or vim.VirtualMachine, pathSet=list(paths)
             )
         ],
     )
@@ -365,6 +413,10 @@ def datastore_files(datastore: Any, path: str, pattern: str) -> list[str]:
     **A folder that is not there is not an error.** The first deploy against a
     datastore runs before anything has created ``vcows/``, so the fault that
     says so is the ordinary answer and comes back as no files.
+
+    The fault is read back the way ``wait`` reads it, through the collector: a
+    ``task.info`` here would be the same whole-object read, on the one task a
+    preflight waits for.
     """
     from pyVmomi import vim
 
@@ -375,7 +427,8 @@ def datastore_files(datastore: Any, path: str, pattern: str) -> list[str]:
     try:
         results = wait(task, f"search {path}")
     except VsphereApiError:
-        if isinstance(task.info.error, vim.fault.FileNotFound):
+        fault = properties(content_of(task), task, ("info.error",), vim.Task)
+        if isinstance(fault.get("info.error"), vim.fault.FileNotFound):
             return []
         raise
     return [

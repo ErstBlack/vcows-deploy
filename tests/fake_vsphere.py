@@ -369,14 +369,97 @@ class FakeVm:
 MAX_POLLS = 50
 
 
-class FakeTask:
+class _TaskCollector:
+    """The PropertyCollector one task answers its own leaf paths through.
+
+    Its own rather than ``FakeContent``'s: a task is handed back by whatever
+    made it, and most of the tasks here are made by a ``FakeVm`` that no
+    inventory holds.
+    """
+
+    def __init__(self, task: FakeTask):
+        self.task = task
+
+    def RetrieveContents(self, specSet: list) -> list:
+        [spec] = specSet
+        if spec.propSet[0].type is not vim.Task:
+            raise AssertionError(f"this collector answers for tasks, not {spec}")
+        answered = self.task.leaves()
+        return [
+            vmodl.query.PropertyCollector.ObjectContent(
+                obj=self.task,
+                # Absent rather than None, which is what vCenter answers for an
+                # unset property: a task that produced nothing has no
+                # `info.result` and one that succeeded has no `info.error`.
+                propSet=[
+                    vmodl.DynamicProperty(name=path, val=answered[path])
+                    for path in spec.propSet[0].pathSet
+                    if answered.get(path) is not None
+                ],
+            )
+        ]
+
+
+class _TaskStub:
+    """Just enough of a pyvmomi stub for ``api.content_of`` to reach the
+    collector above.
+
+    ``api.wait`` builds ``vim.ServiceInstance("ServiceInstance", task._stub)``
+    and calls ``RetrieveContent()`` on it, which is a real pyvmomi managed
+    object however fake the task is -- so this has to answer pyvmomi's own
+    invocation protocol: a ``version`` it checks the method against, and
+    ``InvokeMethod``. Measured against pyVmomi 9.1.1; if a later one changes
+    either, this is the file that says so.
+    """
+
+    version = "vim.version.version12"
+
+    def __init__(self, task: FakeTask):
+        self.content = _TaskContent(task)
+
+    def InvokeMethod(self, mo: Any, info: Any, args: Any, outerStub: Any = None) -> Any:
+        # The moid as much as the method: `RetrieveContent` is answered by the
+        # ServiceInstance and by nothing else, so a caller reaching it from any
+        # other moid is addressing an object no vCenter has -- which is a thing
+        # only a real one would refuse, and this fake is what stands in for one.
+        if (mo._moId, info.name) != ("ServiceInstance", "RetrieveContent"):
+            raise AssertionError(
+                f"this stub answers ServiceInstance.RetrieveContent, not "
+                f"{mo._moId}.{info.name}"
+            )
+        return self.content
+
+
+class _TaskContent:
+    """What that ``RetrieveContent()`` hands back: the collector and nothing
+    else, because a task read is all it is reached for."""
+
+    def __init__(self, task: FakeTask):
+        self.propertyCollector = _TaskCollector(task)
+
+
+class FakeTask(vim.Task):
     """A vCenter task, as ``api.wait`` polls it.
+
+    A real ``vim.Task`` carrying a fake stub, for the reason ``mo`` above builds
+    real managed objects: ``api.wait`` puts the task into a
+    ``PropertyCollector.ObjectSpec``, and pyvmomi type-checks that field, so an
+    object of this fake's own making is refused there before any assertion is
+    reached.
 
     ``running`` is how many reads report the task still going before it reaches
     its final state, which is what a wait that polls once and believes the
     answer gets wrong. ``never_finishes`` never reaches one: the fake stops
     answering after ``MAX_POLLS`` so a wait carrying no ceiling fails the test
     rather than running until something else kills it.
+
+    **``info`` raises, and that is the point of this class.** vcsim answers a
+    ``FileManager.DeleteDatastoreFile_Task`` with ``TaskInfo.entity`` set to the
+    FileManager, which is not a ``vim.ManagedEntity``, and pyVmomi 9 refuses to
+    deserialise the whole ``TaskInfo`` -- measured against vcsim 0.56.0 by the
+    C9 smoke gate, with the delete itself succeeding and a leaf read of
+    ``info.state`` answering ``success``. Nothing in this backend may read
+    ``task.info``, so nothing here answers it.
     """
 
     def __init__(
@@ -386,6 +469,11 @@ class FakeTask:
         running: int = 0,
         never_finishes: bool = False,
     ):
+        # Built with no stub and given one last, which is `mo`'s trick above in
+        # a different shape: pyvmomi refuses every attribute write on a managed
+        # object that has a stub, so the fields below have to be in place before
+        # this becomes something `api.content_of` can reach a collector through.
+        super().__init__("task-fake", stub=None)
         self.running = running
         self.never_finishes = never_finishes
         self.polls = 0
@@ -401,10 +489,21 @@ class FakeTask:
             result=result,
             error=error,
         )
+        self._stub = _TaskStub(self)
 
     @property
     def info(self) -> Any:
-        self.polls += 1
+        raise TypeError(
+            'For "entity" expected type vim.ManagedEntity, but got vim.FileManager'
+        )
+
+    def leaves(self) -> dict:
+        """One poll's worth of ``TASK_PROPERTIES``, as the collector answers
+        them."""
+        # `object.__setattr__` because the stub is on by now and pyvmomi's
+        # managed object refuses an ordinary write. The count is this fake's
+        # own bookkeeping and nothing the SDK knows about.
+        object.__setattr__(self, "polls", self.polls + 1)
         if self.polls > MAX_POLLS:
             raise AssertionError(
                 f"the task has been read {self.polls} times; the caller is "
@@ -412,7 +511,11 @@ class FakeTask:
             )
         if not self.never_finishes and self.polls > self.running:
             self._info.state = self._final
-        return self._info
+        return {
+            "info.state": self._info.state,
+            "info.error": self._info.error,
+            "info.result": self._info.result,
+        }
 
 
 class FakeBrowser:
