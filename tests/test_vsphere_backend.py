@@ -1,10 +1,12 @@
 """The backend class, and the one function that reads the credential.
 
 `connect` gets its own tests because it is where the credential is read, where
-TLS verification is decided, and the only place pyvmomi is constructed. None of
-that is reachable from anywhere else in the package yet: `preflight`, `create`
-and `destroy` are stubs until the chunks that write them land, and one test
-below pins that they say so rather than doing nothing.
+TLS verification is decided, and the only place pyvmomi is constructed. `wait`
+gets its own for the reason the Proxmox backend's does: every task any phase
+starts goes through it, so what it does with a task that fails or never
+finishes is decided once. `create` and `destroy` are stubs until the chunks
+that write them land, and one test below pins that they say so rather than
+doing nothing.
 
 The registry here is a dict this module builds. `orchestrator.backends.REGISTRY`
 does not name this backend until the register chunk, so master never carries a
@@ -22,12 +24,19 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pyVmomi import vim
 
 from orchestrator.backends.base import Backend
-from orchestrator.backends.vsphere import VsphereBackend, api, schema
+from orchestrator.backends.vsphere import VsphereBackend, api, preflight, schema
 from orchestrator.config import core_schema, load
 from tests.conftest import VSPHERE_CA_CERT, VSPHERE_CONFIG
-from tests.fake_vsphere import COOKIE, FakeServiceInstance, disconnect, smart_connect
+from tests.fake_vsphere import (
+    COOKIE,
+    FakeServiceInstance,
+    FakeTask,
+    disconnect,
+    smart_connect,
+)
 
 REGISTRY = {"vsphere": VsphereBackend()}
 
@@ -121,6 +130,7 @@ def test_the_backend_delegates_every_call_with_its_arguments_intact(
     delegations = [
         ("validate", schema, "validate", ("cfg",), {"verify_digest": True}),
         ("connect", api, "connect", ("cfg",), {}),
+        ("preflight", preflight, "preflight", ("cfg", "session"), {}),
     ]
     for _, module, function, _, _ in delegations:
         monkeypatch.setattr(
@@ -153,15 +163,12 @@ def test_the_backend_forwards_the_digest_flag(backend, vsphere_cfg, monkeypatch)
     assert seen == [True, False]
 
 
-def test_the_three_unwritten_methods_refuse_rather_than_doing_nothing(
+def test_the_two_unwritten_methods_refuse_rather_than_doing_nothing(
     backend, vsphere_cfg
 ):
-    """The ABC's own argument, applied to a half-built backend: a `preflight`
-    that returned an empty `Discovered` would skip the safety check, and a
-    `destroy` that returned an empty `Outcome` would delete nothing and exit
-    successfully."""
+    """The ABC's own argument, applied to a half-built backend: a `destroy` that
+    returned an empty `Outcome` would delete nothing and exit successfully."""
     for call in (
-        lambda: backend.preflight(vsphere_cfg, "session"),
         lambda: backend.create(vsphere_cfg, "session", {}),
         lambda: backend.destroy(vsphere_cfg, "session", []),
     ):
@@ -278,3 +285,104 @@ def test_the_password_never_reaches_the_log(vsphere_cfg, fake_vcenter, caplog):
         pass
     assert "vcows@vsphere.local" in caplog.text
     assert "SUPERSECRETVALUE" not in caplog.text
+
+
+# -- tasks ---------------------------------------------------------------
+
+
+def test_a_finished_task_hands_back_what_it_produced(vsphere_cfg):
+    """vCenter returns the object a task made through the task itself, and there
+    is no second call that would fetch it."""
+    assert api.wait(FakeTask(result="a-new-vm"), "clone app01") == "a-new-vm"
+
+
+def test_the_wait_polls_until_the_task_leaves_running(_no_vsphere_polling_delay):
+    """A wait that reads `info.state` once and believes it reports a clone that
+    has not happened yet."""
+    task = FakeTask(result="a-new-vm", running=3)
+    assert api.wait(task, "clone app01") == "a-new-vm"
+    assert task.polls > 3
+
+
+def test_a_task_that_ended_in_error_is_refused_with_the_fault(vsphere_cfg):
+    """**A task that stopped is not a task that worked.** Taking `stopped` for
+    success is exactly the silent partial teardown `Outcome` exists to
+    prevent."""
+    task = FakeTask(error=vim.fault.NoPermission(msg="Permission to perform this"))
+    with pytest.raises(api.VsphereApiError) as bad:
+        api.wait(task, "destroy app01")
+    # The whole message: which task, what state it reached, and vCenter's own
+    # sentence rather than pyvmomi's field dump of the fault around it.
+    assert str(bad.value) == (
+        "destroy app01: the task ended as error (Permission to perform this)"
+    )
+
+
+def test_a_task_that_never_finishes_times_out_rather_than_hanging(
+    monkeypatch, _no_vsphere_polling_delay
+):
+    """The ceiling is ours: pyvmomi's own `WaitForTask` blocks until vCenter
+    answers or the connection dies, so a wedged task hangs the run.
+
+    The clock is pinned so that reaching the deadline exactly is what the wait
+    is asked about: on a real clock the check is a fraction past it either way,
+    and the boundary would never be the thing under test. The interval is
+    zeroed with it, so a wait that missed the boundary runs into the fake's poll
+    ceiling in milliseconds rather than sitting in `time.sleep`.
+    """
+    monkeypatch.setattr(api, "TASK_TIMEOUT", 0)
+    monkeypatch.setattr(api.time, "monotonic", lambda: 1000.0)
+    with pytest.raises(api.VsphereApiError, match="had not finished after 0s"):
+        api.wait(FakeTask(never_finishes=True), "import golden.qcow2")
+
+
+def test_the_wait_says_both_numbers_before_it_goes_quiet(caplog):
+    """One line before the wait rather than one per poll: what it says is how
+    long the silence can legitimately last."""
+    with caplog.at_level(logging.DEBUG):
+        api.wait(FakeTask(), "clone app01")
+    assert (
+        f"clone app01: waiting on a task, polling every {api.POLL_INTERVAL}s for "
+        f"up to {api.TASK_TIMEOUT}s"
+    ) in caplog.text
+
+
+# -- a login vCenter refuses ---------------------------------------------
+
+
+def test_a_rejected_credential_is_re_raised_as_our_own_error(vsphere_cfg, monkeypatch):
+    """So nothing above this package imports `vim` to catch a fault. The message
+    names the endpoint, the user and the config block -- and not the password,
+    which pyvmomi's own fault does not carry either."""
+    import pyVim.connect
+
+    monkeypatch.setattr(
+        pyVim.connect,
+        "SmartConnect",
+        smart_connect({}, error=vim.fault.InvalidLogin(msg="Cannot complete login")),
+    )
+    with (
+        pytest.raises(api.VsphereApiError, match="rejected the credentials") as bad,
+        api.connect(vsphere_cfg),
+    ):
+        pass
+    assert "vcenter.example.com" in str(bad.value)
+    assert VSPHERE_CONFIG["target"]["vsphere"]["password"] not in str(bad.value)
+
+
+def test_any_other_login_fault_is_re_raised_too(vsphere_cfg, monkeypatch):
+    """A vCenter that answers with anything else -- a locked account, a service
+    that is still starting -- still must not reach `cli.main`'s catch-all as a
+    pyvmomi repr."""
+    import pyVim.connect
+
+    monkeypatch.setattr(
+        pyVim.connect,
+        "SmartConnect",
+        smart_connect({}, error=vim.fault.NotAuthenticated(msg="Not authenticated")),
+    )
+    with (
+        pytest.raises(api.VsphereApiError, match="Not authenticated"),
+        api.connect(vsphere_cfg),
+    ):
+        pass

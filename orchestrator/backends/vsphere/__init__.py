@@ -1,10 +1,10 @@
-"""The vSphere backend: six methods, three of them not written yet.
+"""The vSphere backend: six methods, two of them not written yet.
 
 Two delegate to free functions in ``schema.py``, which imports nothing
-hypervisor-specific. ``connect`` lives in ``api.py``, the one module that
-reaches vCenter. ``preflight``, ``create`` and ``destroy`` raise
-``NotImplementedError`` here and gain their modules in the chunks that write
-them.
+hypervisor-specific. ``connect`` and the lookups live in ``api.py``, the one
+module that reaches vCenter, and ``preflight`` drives its phase through them.
+``create`` and ``destroy`` raise ``NotImplementedError`` here and gain their
+modules in the chunks that write them.
 
 **This package is deliberately not in ``orchestrator/backends/__init__.py``'s
 ``REGISTRY``** until the last of those chunks lands, so no config can name a
@@ -27,6 +27,7 @@ from typing import Any
 from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome
 from . import api as _api
+from . import preflight as _preflight
 from . import schema as _schema
 
 
@@ -45,7 +46,7 @@ class VsphereBackend(Backend):
         return _api.connect(cfg)
 
     def preflight(self, cfg: dict, session: Any) -> Discovered:
-        raise NotImplementedError("the vSphere preflight chunk has not landed")
+        return _preflight.preflight(cfg, session)
 
     def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
         raise NotImplementedError("the vSphere destroy chunk has not landed")
