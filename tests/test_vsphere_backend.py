@@ -20,6 +20,7 @@ import inspect
 import logging
 import ssl
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -347,9 +348,9 @@ def test_connect_verifies_tls_by_default(vsphere_cfg, fake_vcenter):
 
 
 def test_a_ca_certificate_becomes_the_ssl_context(vsphere_cfg, fake_vcenter):
-    """The config carries the certificate and `ssl` takes the certificate, so --
-    unlike the Proxmox backend, whose `requests` wants a path -- nothing is
-    written to disk."""
+    """The config carries the certificate and `ssl` takes the certificate, so
+    the SDK half of this backend needs no file. The datastore uploads are the
+    other half and do; the test below is that one."""
     vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
     with api.connect(vsphere_cfg):
         pass
@@ -357,6 +358,52 @@ def test_a_ca_certificate_becomes_the_ssl_context(vsphere_cfg, fake_vcenter):
     assert isinstance(context, ssl.SSLContext)
     assert context.verify_mode == ssl.CERT_REQUIRED
     assert "vcows test CA" in str(context.get_ca_certs())
+
+
+def test_a_ca_certificate_is_also_written_out_for_the_datastore_uploads(
+    vsphere_cfg, fake_vcenter
+):
+    """`requests` takes a CA bundle by path and nothing else, and the uploads go
+    through `requests`. Written once here rather than per upload, and removed on
+    the way out: the run directory is the container's, but /tmp outlives it when
+    the container is not `--rm`."""
+    vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
+    with api.connect(vsphere_cfg) as session:
+        pem = Path(str(session.verify))
+        assert pem.read_text() == VSPHERE_CA_CERT
+    assert not pem.exists()
+
+
+def test_the_pem_is_removed_even_when_the_login_fails(vsphere_cfg, monkeypatch):
+    """The file is written before `SmartConnect` is called, so the failure path
+    is the one that leaks it."""
+    import pyVim.connect
+
+    written: list[str] = []
+    real = tempfile.NamedTemporaryFile
+
+    def record(*args, **kw):
+        handle = real(*args, **kw)
+        written.append(handle.name)
+        return handle
+
+    monkeypatch.setattr(api.tempfile, "NamedTemporaryFile", record)
+    monkeypatch.setattr(
+        pyVim.connect,
+        "SmartConnect",
+        smart_connect({}, error=vim.fault.InvalidLogin(msg="Cannot complete login")),
+    )
+    vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
+    with pytest.raises(api.VsphereApiError), api.connect(vsphere_cfg):
+        pass
+    assert written and not Path(written[0]).exists()
+
+
+def test_neither_knob_leaves_the_uploads_verifying(vsphere_cfg, fake_vcenter):
+    """`True` is what `requests` reads as its own trust store, which is what a
+    vCenter with a publicly-trusted certificate needs and all a default is."""
+    with api.connect(vsphere_cfg) as session:
+        assert session.verify is True
 
 
 def test_insecure_turns_verification_off_and_outranks_a_ca_certificate(
@@ -367,8 +414,9 @@ def test_insecure_turns_verification_off_and_outranks_a_ca_certificate(
     reads as one thing and behaves as another. No context is built either."""
     vsphere_cfg["target"]["vsphere"]["insecure"] = True
     vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
-    with api.connect(vsphere_cfg):
-        pass
+    with api.connect(vsphere_cfg) as session:
+        # Both halves, or a config could verify over SOAP and not over HTTP.
+        assert session.verify is False
     assert fake_vcenter["disableSslCertValidation"] is True
     assert "sslContext" not in fake_vcenter
 
