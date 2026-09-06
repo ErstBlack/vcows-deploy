@@ -11,6 +11,13 @@ in-container use is the "disk_gb >= golden image virtual size" check, because
 every volume operation (create, upload, overlay via ``backing_store``) happens on
 the *hypervisor* through libvirt. Verified byte-for-byte against
 ``qemu-img info --output=json``.
+
+**The size-and-licence half of that is now spent**: the vSphere backend converts
+the golden image to VMDK at the site, so the Containerfile installs ``qemu-img``
+and the binary is there whatever this module does. What still holds is the rest
+of it -- this is a pure function every backend's ``validate`` calls in the
+offline phase, and ``validate`` runs where no subprocess should be needed to
+answer a question about a local file.
 """
 
 from __future__ import annotations

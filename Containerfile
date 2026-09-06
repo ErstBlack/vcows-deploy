@@ -147,11 +147,21 @@ RUN dnf -y install --nodocs --setopt=install_weak_deps=0 epel-release \
       python3-pyyaml \
       python3-jsonschema \
       python3-pycdlib \
+      # The vSphere SDK, an EPEL package like python3-pycdlib -- which is why it
+      # is installed here, while epel-release is still present, and not after
+      # the removal below.
+      python3-pyvmomi \
       python3-requests \
       # proxmoxer streams a multipart upload only if it can import this; without
       # it the golden image is read whole into memory and >2 GiB raises OverflowError.
       python3-requests-toolbelt \
       openssh-clients \
+      # vSphere takes a VMDK and the golden image is a qcow2, so the site
+      # converts it here, inside `prepare`, rather than on the hypervisor --
+      # nothing on an ESXi host will change a disk's format for us. This is the
+      # converter only: `orchestrator/qcow2.py` still reads the header itself,
+      # for the reason its docstring gives.
+      qemu-img \
  && dnf -y remove epel-release \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/libdnf5 /etc/yum.repos.d/epel*.repo

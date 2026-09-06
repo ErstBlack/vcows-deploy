@@ -18,6 +18,7 @@ requires-python = ">=3.12"
 #   libvirt           -> python3-libvirt           (appstream)
 #   requests          -> python3-requests          (appstream; proxmoxer's https backend)
 #   requests-toolbelt -> python3-requests-toolbelt (epel; 1.0.0)
+#   pyvmomi           -> python3-pyvmomi           (epel; 9.0.0.0)
 #
 # **`proxmoxer` is the one exception, and it is deliberate.** Measured:
 # `dnf repoquery python3-proxmoxer` returns nothing across Rocky 10
@@ -58,6 +59,7 @@ dependencies = [
     "PyYAML>=6.0",
     "pycdlib>=1.16",
     "proxmoxer>=2.3",
+    "pyvmomi>=9.0",
     "requests>=2.32",
     "requests-toolbelt>=1.0",
 ]
