@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.backends.proxmox import api
+from orchestrator.backends.vsphere import api as vsphere_api
 from tests.fake_proxmox import FakeProxmox
 
 REPO = Path(__file__).resolve().parent.parent
@@ -158,6 +159,18 @@ def _no_polling_delay(monkeypatch):
     fake tasks name it in their `pytestmark`.
     """
     monkeypatch.setattr(api, "POLL_INTERVAL", 0)
+
+
+@pytest.fixture
+def _no_vsphere_polling_delay(monkeypatch):
+    """`vsphere/api.wait` sleeps between two reads of a task. Fine against a
+    vCenter, pure latency here.
+
+    Opt-in for the reason the Proxmox one is: `test_vsphere_backend.py` reads
+    `POLL_INTERVAL` to assert `wait` says what it is about to do, so zeroing it
+    suite-wide would make that gate agree with itself whatever the value is.
+    """
+    monkeypatch.setattr(vsphere_api, "POLL_INTERVAL", 0)
 
 
 def pytest_configure(config) -> None:
