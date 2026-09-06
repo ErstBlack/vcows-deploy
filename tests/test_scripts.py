@@ -535,13 +535,13 @@ def test_need_names_the_installer_that_provides_the_missing_tool(
         assert "run scripts/" not in done.stderr, done.stderr
 
 
-#: The five `install-tools.sh` walks, in `main`'s order. `syft` is last, which is
-#: what makes it the marker for "the run got past the tool under test".
-PINNED_TOOLS = ("uv", "just", "hadolint", "trivy", "syft")
+#: The tools `_tools_tree` fakes, in `main`'s order. `syft` comes after `trivy`,
+#: which is what makes it the marker for "the run got past the tool under test".
+PINNED_TOOLS = ("uv", "just", "hadolint", "trivy", "syft", "vcsim")
 
 
 def _tools_tree(tmp_path: Path, **bodies: str) -> Path:
-    """A scratch root where all five pinned tools are already on PATH.
+    """A scratch root where the pinned tools are already on PATH.
 
     On PATH but *not* in `.tools/bin`: `installed` is tested before `have`, so a
     fake in `.tools/bin` returns at "already in .tools/bin" and never reaches
@@ -549,7 +549,7 @@ def _tools_tree(tmp_path: Path, **bodies: str) -> Path:
     nothing, so nothing here touches /usr/local/bin or reaches for sudo.
 
     Every tool prints a dotted version unless `bodies` overrides it, so one test
-    can make one tool misbehave and read the other four as the control.
+    can make one tool misbehave and read the rest as the control.
     """
     tree = _tree(tmp_path, "install-tools.sh")
     fakebin = tree / "fakebin"
