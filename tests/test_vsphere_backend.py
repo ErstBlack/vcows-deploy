@@ -309,15 +309,29 @@ def test_a_task_that_ended_in_error_is_refused_with_the_fault(vsphere_cfg):
     success is exactly the silent partial teardown `Outcome` exists to
     prevent."""
     task = FakeTask(error=vim.fault.NoPermission(msg="Permission to perform this"))
-    with pytest.raises(api.VsphereApiError, match="Permission to perform this") as bad:
+    with pytest.raises(api.VsphereApiError) as bad:
         api.wait(task, "destroy app01")
-    assert "destroy app01" in str(bad.value), "which task, not just that one failed"
+    # The whole message: which task, what state it reached, and vCenter's own
+    # sentence rather than pyvmomi's field dump of the fault around it.
+    assert str(bad.value) == (
+        "destroy app01: the task ended as error (Permission to perform this)"
+    )
 
 
-def test_a_task_that_never_finishes_times_out_rather_than_hanging(monkeypatch):
+def test_a_task_that_never_finishes_times_out_rather_than_hanging(
+    monkeypatch, _no_vsphere_polling_delay
+):
     """The ceiling is ours: pyvmomi's own `WaitForTask` blocks until vCenter
-    answers or the connection dies, so a wedged task hangs the run."""
+    answers or the connection dies, so a wedged task hangs the run.
+
+    The clock is pinned so that reaching the deadline exactly is what the wait
+    is asked about: on a real clock the check is a fraction past it either way,
+    and the boundary would never be the thing under test. The interval is
+    zeroed with it, so a wait that missed the boundary runs into the fake's poll
+    ceiling in milliseconds rather than sitting in `time.sleep`.
+    """
     monkeypatch.setattr(api, "TASK_TIMEOUT", 0)
+    monkeypatch.setattr(api.time, "monotonic", lambda: 1000.0)
     with pytest.raises(api.VsphereApiError, match="had not finished after 0s"):
         api.wait(FakeTask(never_finishes=True), "import golden.qcow2")
 

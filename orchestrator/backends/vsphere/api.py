@@ -194,10 +194,10 @@ def wait(task: Any, what: str) -> Any:
             )
         time.sleep(POLL_INTERVAL)
     if task.info.state != vim.TaskInfo.State.success:
-        error = task.info.error
+        # `.msg` rather than the fault itself: pyvmomi renders a fault as its
+        # whole field list, which buries the one sentence vCenter wrote.
         raise VsphereApiError(
-            f"{what}: the task ended as {task.info.state} "
-            f"({getattr(error, 'msg', None) or error})"
+            f"{what}: the task ended as {task.info.state} ({task.info.error.msg})"
         )
     log.debug("%s: task ok", what)
     return task.info.result

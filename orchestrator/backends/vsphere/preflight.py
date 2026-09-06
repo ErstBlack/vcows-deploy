@@ -264,7 +264,7 @@ def _orphan_seeds(cfg: dict, datastore: Any, existing: list[Existing]) -> list[P
             )
         ]
 
-    present = {path.rsplit("/", 1)[-1]: path for path in found}
+    present = {path.rpartition("/")[-1]: path for path in found}
     return [
         Problem.error(
             f"{present[seed_name(vm['name'])]!r} is already on the datastore, but "

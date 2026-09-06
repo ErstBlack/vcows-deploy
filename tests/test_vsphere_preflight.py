@@ -161,9 +161,17 @@ def test_a_template_is_never_a_target(vsphere_cfg):
     never as a VM: `decide()` would otherwise see a marked VM it did not want
     and `destroy` would take it, and every other deployment's linked clones are
     overlays on its disk."""
-    w = world(vms=[marked("golden.qcow2", template=True), marked("app01")])
+    # A VM either side of the template: `_image` has to walk past the first to
+    # find it, and `_existing` has to walk past it to find the second.
+    w = world(
+        vms=[
+            marked("app01"),
+            marked("golden.qcow2", template=True),
+            marked("app02"),
+        ]
+    )
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert [e.name for e in d.vms] == ["app01"]
+    assert [e.name for e in d.vms] == ["app01", "app02"]
     assert d.artifacts["image"]["create"] is False
 
 
@@ -173,9 +181,11 @@ def test_a_vm_with_no_uuid_is_reported_rather_than_dropped(vsphere_cfg):
     nameless = marked("app01")
     del nameless.props["summary.config.uuid"]
     del nameless.props["name"]
-    w = world(vms=[nameless])
+    # The VM after it is discovered: one unidentifiable VM is not the end of the
+    # walk, and the rest of the vCenter still has to be reported.
+    w = world(vms=[nameless, marked("app02")])
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert d.vms == ()
+    assert [e.name for e in d.vms] == ["app02"]
     assert wheres(d.problems) == ["<unnamed>"]
     assert "cannot identify it" in messages(d.problems)
     assert errors(d) == []
@@ -211,6 +221,14 @@ def test_every_property_is_asked_for_in_one_call(vsphere_cfg):
     preflight.preflight(vsphere_cfg, session(w))
     retrieved = [c for c in w.calls if c[0] == "RetrieveContents"]
     assert retrieved == [("RetrieveContents", "vim.VirtualMachine", api.VM_PROPERTIES)]
+
+
+def test_the_managed_object_comes_back_beside_the_properties(vsphere_cfg):
+    """The later phases reconfigure, power off and destroy the object itself.
+    Re-resolving it by name would not find a VM somebody renamed, and identity
+    here is the marker rather than the name."""
+    w = world(vms=[marked("app01"), marked("app02")])
+    assert [props["obj"] for props in api.vms(w)] == [vm.mo for vm in w.vms]
 
 
 def test_every_view_is_destroyed(vsphere_cfg):
@@ -373,7 +391,7 @@ def test_a_vm_holding_the_image_name_is_refused_rather_than_cloned(vsphere_cfg):
     assert "rather than a template" in messages(d.problems)
     # Present is present: there is nothing to create over it, and the fatal
     # problem is what stops the deploy.
-    assert d.artifacts["image"]["create"] is False
+    assert d.artifacts["image"] == {"create": False, "template": "golden.qcow2"}
 
 
 def test_an_unmarked_template_is_not_adopted(vsphere_cfg):

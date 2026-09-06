@@ -330,6 +330,11 @@ class FakeContent:
         )
         if self.view_error is not None:
             raise self.view_error
+        if container is None:
+            # vCenter answers a null container with InvalidArgument. Modelled,
+            # because a caller that lost its root would otherwise get a view of
+            # the whole inventory here and nothing would say so.
+            raise AssertionError("a container view needs a container to walk")
         if not recursive:
             raise AssertionError(
                 "a non-recursive view sees only the container's own children; "
