@@ -95,6 +95,23 @@ def test_a_failure_that_wrote_nothing_to_stderr_still_names_the_image(
         convert.to_vmdk("/images/golden.qcow2", tmp_path / "g.vmdk", "streamOptimized")
 
 
+def test_stderr_that_is_not_utf8_still_becomes_the_error(monkeypatch, tmp_path):
+    """`errors="replace"` is the whole of why this path cannot fail twice.
+
+    A strict decode -- and every unknown handler name is a strict decode, because
+    the lookup happens at the first bad byte -- raises out of the `except` block
+    that was building the message, and what an operator then sees names neither
+    the image nor qemu-img.
+    """
+    monkeypatch.setattr(
+        convert.subprocess, "run", failing(1, b"qemu-img: \xff\xfe not utf-8")
+    )
+    with pytest.raises(convert.ConversionError) as bad:
+        convert.to_vmdk("/images/golden.qcow2", tmp_path / "g.vmdk", "streamOptimized")
+    assert "qemu-img: " in str(bad.value)
+    assert "not utf-8" in str(bad.value)
+
+
 def test_the_two_import_paths_take_the_two_subformats():
     """An `ImportVApp` lease reads `streamOptimized` and nothing else; a
     datastore PUT wants the descriptor-plus-extent pair. The mapping lives beside
@@ -108,9 +125,14 @@ def test_the_two_import_paths_take_the_two_subformats():
 def test_it_says_what_it_is_converting_before_it_goes_quiet(recorded, caplog, tmp_path):
     """A multi-GB conversion is the longest silence in a deploy that has not
     reached the network yet."""
+    dest = tmp_path / "g.vmdk"
     with caplog.at_level(logging.INFO):
-        convert.to_vmdk("/images/golden.qcow2", tmp_path / "g.vmdk", "monolithicFlat")
+        convert.to_vmdk("/images/golden.qcow2", dest, "monolithicFlat")
     assert "/images/golden.qcow2" in caplog.text
+    # The destination too: it is in the run directory under a name derived from
+    # the config, and an operator looking for the converted file has only this
+    # line to find it by.
+    assert str(dest) in caplog.text
     assert "monolithicFlat" in caplog.text
 
 
