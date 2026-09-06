@@ -507,6 +507,26 @@ def test_a_task_that_never_finishes_times_out_rather_than_hanging(
         api.wait(FakeTask(never_finishes=True), "import golden.qcow2")
 
 
+def test_the_wait_reads_the_task_through_the_collector_and_never_its_info():
+    """`task.info` is one property, so `task.info.state` fetches the whole
+    `TaskInfo` however it is spelt.
+
+    What that costs was measured by the C9 smoke gate against vcsim 0.56.0: a
+    `FileManager.DeleteDatastoreFile_Task` comes back with `TaskInfo.entity` set
+    to the FileManager, which is not a `vim.ManagedEntity`, and pyVmomi 9
+    refuses to deserialise it -- while the delete succeeds and a leaf read of
+    `info.state` answers `success`. So `vcows destroy` failed on a teardown that
+    had worked.
+
+    `FakeTask.info` raises what pyvmomi raises, which is what makes this a gate:
+    a wait that goes back to reading it fails here rather than in the smoke job.
+    """
+    task = FakeTask(result="a-new-vm")
+    assert api.wait(task, "delete the seed ISO") == "a-new-vm"
+    with pytest.raises(TypeError, match=r"vim\.ManagedEntity"):
+        _ = task.info
+
+
 def test_the_wait_says_both_numbers_before_it_goes_quiet(caplog):
     """One line before the wait rather than one per poll: what it says is how
     long the silence can legitimately last."""

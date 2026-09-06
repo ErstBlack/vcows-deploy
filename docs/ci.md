@@ -27,6 +27,7 @@ nothing, because nothing lives there.
 | `mutation` | `ci.yml` | PRs/MRs and master pushes | `just mutants`, five shards selected by `VCOWS_MUTANTS_SHARD=k/5` |
 | `mutation-verdict` | `ci.yml` | after `mutation` | `just mutants-verdict` — the five shards summed, then the gate |
 | `smoke` | `ci.yml` | PRs/MRs and master pushes | `just smoke-libvirt` — the create path against a real libvirtd, then destroyed |
+| `smoke-vsphere` | `ci.yml` | PRs/MRs and master pushes | `just smoke-vsphere` — `vcows deploy` then `vcows destroy` against the pinned vcsim |
 | `image` | `image.yml` | master, tags, and PR/MRs touching the image's inputs | `just image`, `just test-image`, `just scan`, `just bundle` |
 | `rebuild-scan` | `scheduled.yml` | monthly schedule | `just image`, `just scan`; never blocks |
 
@@ -153,15 +154,15 @@ with **no whitespace stripping** and is case-sensitive, so `rig,image` is correc
 and `rig, image` silently demands only `rig`. The closed set of names is `KNOWN`
 in `tests/test_gates.py`, and README's "Test gates" says what each one needs.
 
-CI supplies four of the eight. `image` is demanded in the image job, which builds
+CI supplies five of the eight. `image` is demanded in the image job, which builds
 the image and has podman; `smoke` is demanded by `scripts/smoke-libvirt.sh`,
 which builds the host it asserts about; `libvirt` and `pycdlib` are satisfied
 everywhere, because `scripts/os-deps.sh` installs `python3-libvirt` in every job
 that builds a venv and `pycdlib` is a runtime dependency `just dev-env` brings.
 `rig`, `proxmox` and `vsphere` are never supplied: they need a reachable
 hypervisor, a reachable Proxmox cluster with a token and a reachable vCenter, and
-no hosted runner has any of them. `vcsim` is the name reserved for the simulator
-smoke gate and nothing demands it yet.
+no hosted runner has any of them. `vcsim` is demanded by
+`scripts/smoke-vsphere.sh`, which starts the simulator it asserts against.
 
 `VCOWS_GATES=all` is therefore never set. Demanding it would either fail every
 run or get "fixed" by re-adding a skip, which is the vacuous-pass pattern the

@@ -230,3 +230,43 @@ jobs:
       # the binding visible to the venv.
       - run: just dev-env
       - run: just smoke-libvirt
+
+  # The same shape for the third backend, with the pinned govmomi simulator
+  # standing in for a vCenter: `vcows deploy` then `vcows destroy` through the
+  # shipped CLI, asserted against what vcsim holds. It proves the call shapes and
+  # the ordering and nothing about acceptance -- vcsim negotiates apiVersion 6.5
+  # and validates almost nothing, and scripts/smoke-vsphere.sh says what that
+  # rules out.
+  #
+  # A job of its own rather than a step in `smoke` above: that one installs
+  # libvirt, writes /etc/libvirt and re-execs under sudo, and none of this needs
+  # root or a package beyond the bootstrap.
+  smoke-vsphere:
+    runs-on: ubuntu-latest
+    # Measured green locally end to end: 12s, of which vcsim takes 2s to answer,
+    # the deploy 6.5s, the two assertion phases 1.5s and the teardown 2s. The
+    # three bootstrap steps are the ones the `smoke` job above measures. 15
+    # rather than that job's 30 because nothing here installs a package: the
+    # ceiling is sized against a wedge, and the wedge this job can produce is one
+    # vCenter task at `api.TASK_TIMEOUT`, which is 600s.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .tools/bin
+          key: tools-${{ hashFiles('scripts/install-tools.sh', 'Containerfile') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: .cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
+      # os-deps.sh for qemu-img -- `prepare` converts the golden image to VMDK
+      # with it -- and install-tools.sh for the pinned vcsim, which has no
+      # version flag and so is never taken from PATH.
+      - run: ./scripts/os-deps.sh
+      - run: ./scripts/install-tools.sh
+      # Not optional, for the reason the job above gives: the assertions are
+      # tests/test_vsphere_smoke.py and the script runs them out of this venv.
+      - run: just dev-env
+      - run: just smoke-vsphere
