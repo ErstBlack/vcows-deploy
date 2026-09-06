@@ -115,7 +115,8 @@ def test_the_rpm_binding_is_visible_to_the_interpreter_that_runs():
     `python3 -c 'import libvirt'` kept working elsewhere on the same box."""
     result = run(
         "-c",
-        "import libvirt, yaml, jsonschema, pycdlib, proxmoxer, requests_toolbelt; "
+        "import libvirt, yaml, jsonschema, pycdlib, proxmoxer, requests_toolbelt, "
+        "pyVmomi; "
         "print(libvirt.getVersion())",
         entrypoint="python3",
     )
