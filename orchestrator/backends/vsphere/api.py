@@ -17,9 +17,11 @@ single implementation: every task any phase starts is checked the same way.
 from __future__ import annotations
 
 import logging
+import os
 import ssl
+import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -85,6 +87,17 @@ class Session:
     into pyvmomi's internals a second time.
     """
 
+    verify: bool | str = True
+    """What those uploads hand ``requests`` as its ``verify=``.
+
+    The same TLS decision the SDK connection made, in the vocabulary the other
+    half of this backend speaks: ``False`` for ``insecure``, otherwise the path
+    to the certificate ``connect`` wrote out, otherwise ``True``. Resolved there
+    rather than at the call site so that "insecure outranks ca_cert" is stated
+    once -- a second copy of that rule is a config that verifies over SOAP and
+    not over HTTP, or the reverse, with nothing saying so.
+    """
+
 
 @contextmanager
 def connect(cfg: dict):
@@ -98,8 +111,10 @@ def connect(cfg: dict):
     TLS follows the Proxmox backend: ``insecure`` outranks ``ca_cert``, so a
     config that got past ``validate`` with both gets no verification rather than
     a certificate that reads as one thing and behaves as another. ``ca_cert``
-    becomes an ``ssl`` context directly -- ``ssl`` takes the certificate itself,
-    so unlike the Proxmox backend nothing is written to a file.
+    becomes an ``ssl`` context directly -- ``ssl`` takes the certificate itself
+    -- and *also* a file, because the datastore uploads go through ``requests``,
+    which takes a CA bundle by path and nothing else. The file is this
+    function's to remove, which is why the yield sits inside a second ``try``.
 
     A login vCenter refuses comes back as ``VsphereApiError``, the way
     proxmoxer's ``AuthenticationError`` does on the other backend: a raw
@@ -118,38 +133,61 @@ def connect(cfg: dict):
     # path, so what reaches here is a bare origin.
     host = parts.hostname
     tls: dict[str, Any] = {}
+    verify: bool | str = True
+    pem: str | None = None
     if target.get("insecure"):
         tls["disableSslCertValidation"] = True
+        verify = False
     elif target.get("ca_cert") is not None:
         tls["sslContext"] = ssl.create_default_context(cadata=target["ca_cert"])
+        # `mkstemp`, which NamedTemporaryFile is built on, creates it 0600
+        # whatever the umask is, so `cli.main`'s `os.umask(0o077)` is not what
+        # protects it. `delete=False` because requests opens the path by name
+        # after this handle is closed.
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as written:
+            written.write(target["ca_cert"])
+        verify = pem = written.name
 
     log.info("connecting to %s as %s", host, target["user"])
     try:
-        si = SmartConnect(
-            host=host,
-            port=parts.port or DEFAULT_PORT,
-            user=target["user"],
-            pwd=target["password"],
-            **tls,
-        )
-    # `.msg` through `getattr` in both: pyvmomi builds its fault classes at
-    # import time out of the WSDL, so no type checker can see the field.
-    except vim.fault.InvalidLogin as exc:
-        raise VsphereApiError(
-            f"{host} rejected the credentials in target.vsphere: "
-            f"{getattr(exc, 'msg', exc)}"
-        ) from exc
-    except vmodl.MethodFault as exc:
-        # Every SOAP fault, not just `vim.fault.VimFault`: a locked account
-        # comes back as `NotAuthenticated`, which descends from `RuntimeFault`
-        # instead, and the two share only this base.
-        raise VsphereApiError(f"{host}: {getattr(exc, 'msg', exc)}") from exc
-    try:
-        yield Session(si=si, content=si.RetrieveContent(), cookie=si._stub.cookie)
+        try:
+            si = SmartConnect(
+                host=host,
+                port=parts.port or DEFAULT_PORT,
+                user=target["user"],
+                pwd=target["password"],
+                **tls,
+            )
+        # `.msg` through `getattr` in both: pyvmomi builds its fault classes at
+        # import time out of the WSDL, so no type checker can see the field.
+        except vim.fault.InvalidLogin as exc:
+            raise VsphereApiError(
+                f"{host} rejected the credentials in target.vsphere: "
+                f"{getattr(exc, 'msg', exc)}"
+            ) from exc
+        except vmodl.MethodFault as exc:
+            # Every SOAP fault, not just `vim.fault.VimFault`: a locked account
+            # comes back as `NotAuthenticated`, which descends from
+            # `RuntimeFault` instead, and the two share only this base.
+            raise VsphereApiError(f"{host}: {getattr(exc, 'msg', exc)}") from exc
+        try:
+            yield Session(
+                si=si,
+                content=si.RetrieveContent(),
+                cookie=si._stub.cookie,
+                verify=verify,
+            )
+        finally:
+            # vCenter keeps an idle session for half an hour, and a run that
+            # raised is exactly the one an operator retries at once.
+            Disconnect(si)
     finally:
-        # vCenter keeps an idle session for half an hour, and a run that raised
-        # is exactly the one an operator retries at once.
-        Disconnect(si)
+        if pem is not None:
+            # Suppressed rather than checked: the only thing that removes this
+            # file is this line, so a miss means something outside the process
+            # took it, and failing the run over that would lose the real error.
+            with suppress(FileNotFoundError):
+                os.unlink(pem)
 
 
 def wait(task: Any, what: str) -> Any:

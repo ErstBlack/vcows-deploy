@@ -178,11 +178,19 @@ class FakeVm:
         self.destroyed = False
         self.power_off_error: Any = None
         self.destroy_error: Any = None
+        #: Every `ConfigSpec` this VM was reconfigured with, and every snapshot
+        #: taken of it, so a test reads what `make_template` asked for rather
+        #: than that it asked.
+        self.reconfigured: list[Any] = []
+        self.snapshots: list[Any] = []
         self.mo = mo(
             vim.VirtualMachine,
             moid or f"vm-{name}",
             PowerOffVM_Task=self._power_off,
             Destroy_Task=self._destroy,
+            ReconfigVM_Task=self._reconfigure,
+            CreateSnapshot_Task=self._snapshot,
+            MarkAsTemplate=self._mark_as_template,
         )
         self.props: dict[str, Any] = {
             "name": name,
@@ -213,6 +221,41 @@ class FakeVm:
             )
         self.destroyed = True
         return FakeTask()
+
+    def _reconfigure(self, spec: Any) -> FakeTask:
+        self.log.append(("ReconfigVM_Task", self.props["name"]))
+        if self.props["config.template"]:
+            # A template's config is read-only until it is turned back into a
+            # VM. Modelled for the reason the destroy of a running VM is: a
+            # `make_template` that marked before it reconfigured would otherwise
+            # pass here and fail on a vCenter.
+            return FakeTask(
+                error=vmodl.fault.NotSupported(msg="this VM is a template now")
+            )
+        self.reconfigured.append(spec)
+        if spec.annotation is not None:
+            self.props["config.annotation"] = spec.annotation
+        return FakeTask()
+
+    def _snapshot(
+        self, name: str, description: str, memory: bool, quiesce: bool
+    ) -> FakeTask:
+        self.log.append(("CreateSnapshot_Task", self.props["name"], name))
+        if self.props["config.template"]:
+            # Same rule as the reconfigure above: a template cannot be
+            # snapshotted, so the snapshot a linked clone needs has to be taken
+            # while it is still a VM.
+            return FakeTask(
+                error=vmodl.fault.NotSupported(msg="this VM is a template now")
+            )
+        self.snapshots.append((name, description, memory, quiesce))
+        return FakeTask()
+
+    def _mark_as_template(self) -> None:
+        """Not a task: `MarkAsTemplate` returns nothing and is done when it
+        returns, which is what the caller must not wait on."""
+        self.log.append(("MarkAsTemplate", self.props["name"]))
+        self.props["config.template"] = True
 
 
 #: How long this fake plays along with a task that never finishes. Small,
@@ -402,6 +445,7 @@ class FakeContent:
         self.vms = list(vms)
         self.calls: list[tuple] = []
         self.fileManager = FakeFileManager(self.calls)
+        self.ovfManager = FakeOvfManager(self.calls)
         for vm in self.vms:
             vm.log = self.calls
         #: Views handed out, and the ones destroyed. vCenter holds a view until
@@ -473,3 +517,249 @@ class FakeContent:
         return container is self.rootFolder or getattr(obj, "container", None) is (
             container
         )
+
+
+# -- the import ----------------------------------------------------------
+
+
+class FakeOvfManager:
+    """vCenter's ``OvfManager``, for the one descriptor an import builds.
+
+    ``error`` is what vCenter refused the descriptor with -- a list, because
+    that is the shape ``CreateImportSpecResult`` carries and a caller reading
+    only the first would pass here and hide the rest on a real one.
+
+    The descriptor itself is kept rather than parsed: what a test asks is
+    whether the capacity and the file size reached the XML, and reading them out
+    of the string is the same question a vCenter's own parser answers.
+    """
+
+    def __init__(self, log: list | None = None, error: Sequence = ()):
+        self.log = [] if log is None else log
+        self.error = list(error)
+        #: Every call: the descriptor, the pool, the datastore and the params.
+        self.specs: list[tuple] = []
+
+    def CreateImportSpec(
+        self, ovfDescriptor: str, resourcePool: Any, datastore: Any, cisp: Any
+    ) -> Any:
+        self.log.append(("CreateImportSpec", cisp.entityName))
+        self.specs.append((ovfDescriptor, resourcePool, datastore, cisp))
+        return vim.OvfManager.CreateImportSpecResult(
+            importSpec=None if self.error else vim.vm.VmImportSpec(),
+            error=list(self.error),
+            warning=[],
+        )
+
+
+#: What vCenter is expected to answer with (#308, A4): a URL whose host is a
+#: ``*`` standing for "whichever address you reached me on". vcsim answers with
+#: its own listen address instead, which is why a test uses each.
+DEVICE_URL = "https://*/nfc/session/52ab-not-a-session/disk-0.vmdk"
+
+
+class FakeLease:
+    """An ``HttpNfcLease``, as an import holds one.
+
+    ``initializing`` is how many reads report the lease not ready yet, which is
+    what a caller that reads the state once and believes it gets wrong.
+
+    **Every read after ``HttpNfcLeaseComplete`` faults**, because that is what
+    vcsim does: the call deletes the lease object, and reading ``state`` or
+    ``info`` off it afterwards raises ``ManagedObjectNotFound``. So a caller that
+    reads ``info.entity`` after completing rather than before fails here rather
+    than against a vCenter.
+    """
+
+    def __init__(
+        self,
+        entity: Any,
+        urls: Sequence = (DEVICE_URL,),
+        initializing: int = 0,
+        error: Any = None,
+        never_ready: bool = False,
+        log: list | None = None,
+    ):
+        self.entity = entity
+        self.urls = list(urls)
+        self.initializing = initializing
+        self.error = error
+        self.never_ready = never_ready
+        self.log = [] if log is None else log
+        self.polls = 0
+        self.completed = False
+        #: Every percentage the lease was told, in order.
+        self.progress: list[int] = []
+
+    def _alive(self) -> None:
+        if self.completed:
+            raise vmodl.fault.ManagedObjectNotFound(
+                msg="The object has already been deleted or has not been "
+                "completely created"
+            )
+
+    @property
+    def state(self) -> Any:
+        self._alive()
+        self.polls += 1
+        if self.polls > MAX_POLLS:
+            raise AssertionError(
+                f"the lease has been read {self.polls} times; the caller is "
+                f"waiting on it without a ceiling"
+            )
+        if self.error is not None:
+            return vim.HttpNfcLease.State.error
+        if self.never_ready or self.polls <= self.initializing:
+            return vim.HttpNfcLease.State.initializing
+        return vim.HttpNfcLease.State.ready
+
+    @property
+    def info(self) -> Any:
+        self._alive()
+        return vim.HttpNfcLease.Info(
+            entity=self.entity,
+            deviceUrl=[vim.HttpNfcLease.DeviceUrl(url=url) for url in self.urls],
+        )
+
+    def HttpNfcLeaseProgress(self, percent: int) -> None:
+        self._alive()
+        self.progress.append(percent)
+
+    def HttpNfcLeaseComplete(self) -> None:
+        self._alive()
+        self.log.append(("HttpNfcLeaseComplete", getattr(self.entity, "name", "")))
+        self.completed = True
+
+
+class FakePool:
+    """A resource pool, for the one ``ImportVApp`` an import makes.
+
+    ``mo`` is what a lookup finds and what a cluster's ``resourcePool`` points
+    at; the lease it hands out is the caller's to set, so a test that wants a
+    lease that never becomes ready builds one and passes it here.
+    """
+
+    def __init__(
+        self,
+        lease: Any = None,
+        name: str = "Resources",
+        container: Any = None,
+        log: list | None = None,
+        error: Exception | None = None,
+    ):
+        self.lease = lease
+        self.error = error
+        self.log = [] if log is None else log
+        #: Every import: the spec, the folder and the host it was given.
+        self.imports: list[tuple] = []
+        self.mo = mo(
+            vim.ResourcePool,
+            "resgroup-1",
+            name=name,
+            container=container,
+            ImportVApp=self._import,
+        )
+
+    def _import(self, spec: Any, folder: Any, host: Any) -> Any:
+        self.log.append(("ImportVApp", getattr(folder, "name", "")))
+        self.imports.append((spec, folder, host))
+        if self.error is not None:
+            raise self.error
+        return self.lease
+
+
+class FakeFolder:
+    """A VM folder, for the ``CreateVM_Task`` the datastore import path makes."""
+
+    def __init__(
+        self,
+        created: Any = None,
+        name: str = "vm",
+        container: Any = None,
+        log: list | None = None,
+        error: Any = None,
+    ):
+        self.created = created
+        self.error = error
+        self.log = [] if log is None else log
+        #: Every create: the config spec, the pool and the host.
+        self.creates: list[tuple] = []
+        self.mo = mo(
+            vim.Folder,
+            "group-v1",
+            name=name,
+            container=container,
+            CreateVM_Task=self._create,
+        )
+
+    def _create(self, config: Any, pool: Any, host: Any) -> FakeTask:
+        self.log.append(("CreateVM_Task", config.name))
+        self.creates.append((config, pool, host))
+        if self.error is not None:
+            return FakeTask(error=self.error)
+        return FakeTask(result=self.created)
+
+
+#: What urllib3 reads a request body in. The recorder below reads the same way,
+#: so a body that reports its own progress reports it as often here as it would
+#: against a vCenter.
+CHUNK = 8192
+
+
+class FakeResponse:
+    """The two fields ``create`` reads off a ``requests`` answer."""
+
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+
+class FakeHttp:
+    """vCenter's two HTTP endpoints: the ``/folder`` PUT and the lease POST.
+
+    Installed over ``requests`` itself rather than over the module under test,
+    because ``create`` calls ``requests.put`` by attribute -- which is what makes
+    a stand-in possible without the product knowing about one.
+
+    The body is read in ``CHUNK``-sized pieces the way urllib3 reads one, and
+    both what came out of it and what it declared as its length are recorded: a
+    body with no length would be sent chunked, which the NFC endpoint refuses.
+    """
+
+    def __init__(self, status_code: int = 200, text: str = "", chunk: int = CHUNK):
+        self.status_code = status_code
+        self.text = text
+        #: How much of the body is read at a time. urllib3's own size unless a
+        #: test wants the reads finer than that.
+        self.chunk = chunk
+        #: One dict per request, in order.
+        self.calls: list[dict] = []
+
+    def install(self, monkeypatch: Any) -> FakeHttp:
+        import requests
+
+        monkeypatch.setattr(requests, "put", self.put)
+        monkeypatch.setattr(requests, "post", self.post)
+        return self
+
+    def put(self, url: str, **kw: Any) -> FakeResponse:
+        return self._record("PUT", url, kw)
+
+    def post(self, url: str, **kw: Any) -> FakeResponse:
+        return self._record("POST", url, kw)
+
+    def _record(self, method: str, url: str, kw: dict) -> FakeResponse:
+        body = kw.pop("data")
+        read = b""
+        while chunk := body.read(self.chunk):
+            read += chunk
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "body": read,
+                "length": len(body) if hasattr(body, "__len__") else None,
+                **kw,
+            }
+        )
+        return FakeResponse(self.status_code, self.text)
