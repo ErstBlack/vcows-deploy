@@ -698,6 +698,10 @@ def _cdrom(seed_path: str) -> Any:
     with no addresses and no keys. ``connected`` as well, because the VM is
     powered on in the same call chain and only ``startConnected`` would leave
     the first boot without it.
+
+    ``allowGuestControl`` is not stated, and its absence is the deliberate
+    answer: pyvmomi defaults it to False, which is what a seed ISO wants -- a
+    guest that could eject it makes a re-run's cloud-init read nothing.
     """
     from pyVmomi import vim
 
@@ -707,7 +711,7 @@ def _cdrom(seed_path: str) -> Any:
         unitNumber=0,
         backing=vim.vm.device.VirtualCdrom.IsoBackingInfo(fileName=seed_path),
         connectable=vim.vm.device.VirtualDevice.ConnectInfo(
-            startConnected=True, connected=True, allowGuestControl=False
+            startConnected=True, connected=True
         ),
     )
 

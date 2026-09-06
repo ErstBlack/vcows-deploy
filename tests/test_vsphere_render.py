@@ -164,3 +164,31 @@ def test_only_the_vms_it_is_given_are_rendered(vsphere_cfg, prepared):
     ever creates."""
     vsphere_cfg["vms"] = [vsphere_cfg["vms"][0]]
     assert set(render(vsphere_cfg, prepared)["vms"]) == {"app01"}
+
+
+def test_the_target_block_carries_the_names_create_resolves(vsphere_cfg, prepared):
+    """`create` takes the session and these values and no config, so every name
+    its lookups resolve has to travel -- including the two optional ones, which
+    are absent from the golden config and would otherwise render as None
+    whatever key they were read from."""
+    vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
+    vsphere_cfg["target"]["vsphere"]["resource_pool"] = "vcows-pool"
+    assert render(vsphere_cfg, prepared)["target"] == {
+        "endpoint": "https://vcenter.example.com",
+        "datacenter": "dc-a",
+        "datastore": "ds-a",
+        "cluster": "cluster-a",
+        "host": None,
+        "folder": "vcows",
+        "resource_pool": "vcows-pool",
+    }
+
+
+def test_the_template_carries_a_marker_of_its_own(vsphere_cfg, prepared):
+    """`preflight._image` refuses to clone from a template that has none, so a
+    run that imported one without this would refuse its own work on the next
+    deploy. The logical name is `base_volume_name`, not a VM's."""
+    marker = from_description(render(vsphere_cfg, prepared)["image"]["annotation"])
+    assert marker is not None
+    assert marker.name == "golden.qcow2"
+    assert marker.deployment == "lab-a"

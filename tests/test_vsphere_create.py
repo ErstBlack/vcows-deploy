@@ -1180,7 +1180,15 @@ def test_the_seed_iso_is_in_a_drive_the_guest_finds_connected(
     assert drive.operation == "add"
     assert drive.device.backing.fileName == "[ds-a] vcows/app01/app01-seed.iso"
     assert drive.device.connectable.startConnected is True
+    # And now, because the VM is powered on in the same call chain: only
+    # `startConnected` would leave that first boot without the drive.
+    assert drive.device.connectable.connected is True
+    # Not the guest's to eject, which pyvmomi's default already gives.
+    assert drive.device.connectable.allowGuestControl is False
+    # ide0 unit 0, which is where a VM without a CD-ROM has the free slot.
     assert drive.device.controllerKey == create_mod.IDE_CONTROLLER_KEY
+    assert drive.device.unitNumber == 0
+    assert drive.device.key == create_mod.CDROM_KEY
 
 
 def test_every_nic_is_a_manual_mac_on_the_resolved_port_group(
@@ -1205,21 +1213,51 @@ def test_every_nic_is_a_manual_mac_on_the_resolved_port_group(
         "52:54:00:d3:8b:f5",
     ]
     assert [nic.backing.deviceName for nic in nics] == ["pg-vcows", "pg-vcows"]
-    # Distinct, and negative: vCenter numbers the devices itself and reads these
-    # only as references inside this one spec.
-    assert nics[0].key != nics[1].key
+    # Connected at the first boot, like the drive: a NIC vCenter attaches but
+    # leaves down is a guest cloud-init configures and cannot reach.
+    assert [nic.connectable.startConnected for nic in nics] == [True, True]
+    # Counting *down* from `NIC_KEY`, and negative: vCenter numbers the devices
+    # itself and reads these only as references inside this one spec. Counting
+    # up would put the second NIC on the CD-ROM's key.
+    assert [nic.key for nic in nics] == [create_mod.NIC_KEY, create_mod.NIC_KEY - 1]
+    assert create_mod.CDROM_KEY not in {nic.key for nic in nics}
     assert max(nic.key for nic in nics) < 0
 
 
+@pytest.mark.parametrize(
+    ("model", "device"),
+    [
+        ("vmxnet3", vim.vm.device.VirtualVmxnet3),
+        ("e1000", vim.vm.device.VirtualE1000),
+        ("e1000e", vim.vm.device.VirtualE1000e),
+    ],
+)
 def test_the_adapter_class_is_the_one_the_config_named(
-    vsphere_cfg, vcenter, prepared, http
+    vsphere_cfg, vcenter, prepared, http, model, device
 ):
-    """The schema offers three, so a value it accepts has to reach a device
-    class -- and vmxnet3 needs the guest driver the golden image ships."""
-    vsphere_cfg["vms"][0]["nics"][0]["model"] = "e1000e"
+    """All three the schema offers, because each is a separate device class and
+    a name the table spells wrongly is a KeyError mid-apply rather than a config
+    error -- vmxnet3 needs the guest driver the golden image ships, and e1000 is
+    what an image without it has to fall back to."""
+    vsphere_cfg["vms"][0]["nics"][0]["model"] = model
     deployed(only_app01(vsphere_cfg), vcenter, prepared)
     _, spec, _ = cloned(vcenter)
-    assert isinstance(spec.config.deviceChange[1].device, vim.vm.device.VirtualE1000e)
+    assert isinstance(spec.config.deviceChange[1].device, device)
+
+
+def test_the_port_group_resolves_inside_the_configured_datacenter(
+    vsphere_cfg, prepared, http
+):
+    """Two datacenters on one vCenter may each hold a port group of the same
+    name, and a NIC on the wrong one is a VM with no route off its host. The
+    decoys are listed first, so a lookup that lost its root finds one of them."""
+    vcenter = Vcenter(decoys=True)
+    deployed(only_app01(vsphere_cfg), vcenter, already_there(vcenter, prepared))
+    _, spec, _ = cloned(vcenter)
+    assert spec.config.deviceChange[1].device.backing.deviceName == "pg-vcows"
+    assert [call for call in vcenter.content.calls if call[0] == "CreateContainerView"][
+        -1
+    ] == ("CreateContainerView", "dc-a", ("vim.Network",))
 
 
 def test_each_nic_gets_its_own_check_mac_address_override(
