@@ -7,7 +7,8 @@ imports ``pyVmomi`` at module scope the way ``tests/fake_libvirt.py`` imports
 test cannot assert against a shape the SDK does not have.
 
 ``connect`` needs content and the stub the SOAP session cookie hangs off;
-``preflight`` needs an inventory to walk, and that is the rest of this file.
+``preflight`` needs an inventory to walk and ``destroy`` needs to change it, and
+that is the rest of this file.
 
 **Two kinds of stand-in, and the split is pyvmomi's.** Data objects --
 ``TaskInfo``, a device, a search result, an ``ObjectContent`` -- are constructed
@@ -144,6 +145,14 @@ class FakeVm:
     ``props`` is the *answer*, not the VM, so a test models a property vCenter
     did not return by deleting its key -- the shape a VM being created right now
     has, with a name and no ``config`` at all.
+
+    The two tasks a teardown starts hang off the managed object, because that is
+    where the code holding it calls them: ``props["obj"]``, straight off the
+    property collector's answer. ``power_off_error`` and ``destroy_error`` follow
+    ``FakeBrowser``'s convention with the constructor's half left out: the caller
+    decides what vCenter refused with and the fake ends the task with it, and
+    setting them on the instance keeps a signature every other test would pass
+    nothing to.
     """
 
     def __init__(
@@ -161,7 +170,20 @@ class FakeVm:
         power_state: str = "poweredOn",
         moid: str | None = None,
     ):
-        self.mo = vim.VirtualMachine(moid or f"vm-{name}", stub=None)
+        #: Every task this VM was asked to start. `FakeContent` replaces it with
+        #: its own call log, so one list orders a power off against a datastore
+        #: delete made through the file manager -- which is the ordering a
+        #: teardown has to get right and no per-object list can check.
+        self.log: list[tuple] = []
+        self.destroyed = False
+        self.power_off_error: Any = None
+        self.destroy_error: Any = None
+        self.mo = mo(
+            vim.VirtualMachine,
+            moid or f"vm-{name}",
+            PowerOffVM_Task=self._power_off,
+            Destroy_Task=self._destroy,
+        )
         self.props: dict[str, Any] = {
             "name": name,
             "config.template": template,
@@ -170,6 +192,27 @@ class FakeVm:
             "summary.config.uuid": uuid if uuid is not None else f"uuid-{name}",
             "runtime.powerState": power_state,
         }
+
+    def _power_off(self) -> FakeTask:
+        self.log.append(("PowerOffVM_Task", self.props["name"]))
+        if self.power_off_error is not None:
+            return FakeTask(error=self.power_off_error)
+        self.props["runtime.powerState"] = "poweredOff"
+        return FakeTask()
+
+    def _destroy(self) -> FakeTask:
+        self.log.append(("Destroy_Task", self.props["name"]))
+        if self.destroy_error is not None:
+            return FakeTask(error=self.destroy_error)
+        if self.props["runtime.powerState"] == "poweredOn":
+            # vCenter refuses to destroy a running VM. Modelled, so a teardown
+            # that stopped ordering the two fails loudly here rather than
+            # passing against a fake that would delete anything.
+            return FakeTask(
+                error=vim.fault.InvalidPowerState(msg="the VM is powered on")
+            )
+        self.destroyed = True
+        return FakeTask()
 
 
 #: How long this fake plays along with a task that never finishes. Small,
@@ -272,6 +315,48 @@ class FakeBrowser:
         )
 
 
+class FakeFileManager:
+    """vCenter's ``FileManager``, for the one delete a teardown makes.
+
+    ``files`` are datastore paths as vCenter writes them --
+    ``[ds-a] vcows/app01/app01-seed.iso`` -- and a delete of a path this
+    datastore does not hold ends its task with ``FileNotFound``, the way vCenter
+    answers one. ``error`` is a fault to end every delete with instead, for the
+    read-only datastore a seed cannot be removed from.
+
+    ``deleted`` records the datacenter each delete named as well as the path,
+    because vCenter cannot resolve ``[ds] path`` without one and a teardown that
+    passed none would fail against a vCenter and pass against a fake that
+    ignored it.
+    """
+
+    def __init__(self, log: list | None = None, files: Sequence = ()):
+        self.files = list(files)
+        self.error: Any = None
+        self.log = [] if log is None else log
+        self.deleted: list[tuple[str, str]] = []
+
+    def DeleteDatastoreFile_Task(self, name: str, datacenter: Any) -> FakeTask:
+        self.log.append(("DeleteDatastoreFile_Task", name))
+        if datacenter is None:
+            # What vCenter answers a datastore path it has no datacenter to
+            # resolve in. A fault rather than an assertion, because a datacenter
+            # that stopped resolving between preflight and teardown is a real
+            # run and the seed it leaves is a leak to report.
+            return FakeTask(
+                error=vmodl.fault.InvalidArgument(
+                    msg="a datastore path needs a datacenter"
+                )
+            )
+        if self.error is not None:
+            return FakeTask(error=self.error)
+        if name not in self.files:
+            return FakeTask(error=vim.fault.FileNotFound(msg=f"{name} is not there"))
+        self.files.remove(name)
+        self.deleted.append((name, datacenter.name))
+        return FakeTask()
+
+
 class _ViewManager:
     def __init__(self, world: FakeContent):
         self.world = world
@@ -301,7 +386,12 @@ class FakeContent:
 
     ``calls`` is every call reached, in order: the fake has no API path to
     dispatch on the way ``tests/fake_proxmox.py`` does, so this is what stands
-    in for one.
+    in for one. The VMs and the file manager append to it too, which is what
+    lets a test order a power off, a destroy and a datastore delete against each
+    other.
+
+    A VM a teardown destroyed stops being visible here, so the walk a second
+    target makes sees the vCenter the first one left.
     """
 
     def __init__(self, objects: Sequence = (), vms: Sequence = ()):
@@ -311,6 +401,9 @@ class FakeContent:
         self.objects = list(objects)
         self.vms = list(vms)
         self.calls: list[tuple] = []
+        self.fileManager = FakeFileManager(self.calls)
+        for vm in self.vms:
+            vm.log = self.calls
         #: Views handed out, and the ones destroyed. vCenter holds a view until
         #: it is destroyed or the session ends, so a run that makes one per
         #: configured name and destroys none leaks them for half an hour.
@@ -342,7 +435,10 @@ class FakeContent:
             )
         found = [
             obj
-            for obj in [*self.objects, *(vm.mo for vm in self.vms)]
+            for obj in [
+                *self.objects,
+                *(vm.mo for vm in self.vms if not vm.destroyed),
+            ]
             if isinstance(obj, tuple(types)) and self._visible(obj, container)
         ]
         view = mo(vim.view.ContainerView, f"view-{len(self.views)}", view=found)

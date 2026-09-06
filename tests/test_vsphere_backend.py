@@ -4,9 +4,8 @@
 TLS verification is decided, and the only place pyvmomi is constructed. `wait`
 gets its own for the reason the Proxmox backend's does: every task any phase
 starts goes through it, so what it does with a task that fails or never
-finishes is decided once. `create` and `destroy` are stubs until the chunks
-that write them land, and one test below pins that they say so rather than
-doing nothing.
+finishes is decided once. `create` is a stub until the chunk that writes it
+lands, and one test below pins that it says so rather than doing nothing.
 
 The registry here is a dict this module builds. `orchestrator.backends.REGISTRY`
 does not name this backend until the register chunk, so master never carries a
@@ -171,17 +170,13 @@ def test_the_backend_forwards_the_digest_flag(backend, vsphere_cfg, monkeypatch)
     assert seen == [True, False]
 
 
-def test_the_two_unwritten_methods_refuse_rather_than_doing_nothing(
-    backend, vsphere_cfg
-):
-    """The ABC's own argument, applied to a half-built backend: a `destroy` that
-    returned an empty `Outcome` would delete nothing and exit successfully."""
-    for call in (
-        lambda: backend.create(vsphere_cfg, "session", {}),
-        lambda: backend.destroy(vsphere_cfg, "session", []),
-    ):
-        with pytest.raises(NotImplementedError, match="chunk has not landed"):
-            call()
+def test_the_unwritten_method_refuses_rather_than_doing_nothing(backend, vsphere_cfg):
+    """The ABC's own argument, applied to a half-built backend: a `create` that
+    returned an empty inventory would make nothing and exit successfully.
+    `destroy` landed with its own chunk, and `tests/test_vsphere_destroy.py`
+    holds the test that it reaches this backend's module."""
+    with pytest.raises(NotImplementedError, match="chunk has not landed"):
+        backend.create(vsphere_cfg, "session", {})
 
 
 # -- prepare -------------------------------------------------------------

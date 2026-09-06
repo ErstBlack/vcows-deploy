@@ -1,10 +1,10 @@
-"""The vSphere backend: six methods, two of them not written yet.
+"""The vSphere backend: six methods, one of them not written yet.
 
 Two delegate to free functions in ``schema.py``, which imports nothing
 hypervisor-specific. ``connect`` and the lookups live in ``api.py``, the one
-module that reaches vCenter, and ``preflight`` drives its phase through them.
-``create`` and ``destroy`` raise ``NotImplementedError`` here and gain their
-modules in the chunks that write them. ``prepare`` is the seventh and is
+module that reaches vCenter, and ``preflight`` and ``destroy`` drive their
+phases through them. ``create`` raises ``NotImplementedError`` here and gains
+its module in the chunk that writes it. ``prepare`` is the seventh and is
 overridden rather than inherited, the only one of the three backends to do so:
 the conversion in ``convert.py`` is what the inherited body does not do.
 
@@ -32,6 +32,7 @@ from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome
 from . import api as _api
 from . import convert as _convert
+from . import destroy as _destroy
 from . import preflight as _preflight
 from . import schema as _schema
 
@@ -54,7 +55,7 @@ class VsphereBackend(Backend):
         return _preflight.preflight(cfg, session)
 
     def destroy(self, cfg: dict, session: Any, targets: list[Existing]) -> Outcome:
-        raise NotImplementedError("the vSphere destroy chunk has not landed")
+        return _destroy.destroy(cfg, session, targets)
 
     # -- apply -----------------------------------------------------------
 
