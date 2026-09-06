@@ -4,7 +4,9 @@ Two delegate to free functions in ``schema.py``, which imports nothing
 hypervisor-specific. ``connect`` and the lookups live in ``api.py``, the one
 module that reaches vCenter, and ``preflight`` and ``destroy`` drive their
 phases through them. ``create`` raises ``NotImplementedError`` here and gains
-its module in the chunk that writes it.
+its module in the chunk that writes it. ``prepare`` is the seventh and is
+overridden rather than inherited, the only one of the three backends to do so:
+the conversion in ``convert.py`` is what the inherited body does not do.
 
 **This package is deliberately not in ``orchestrator/backends/__init__.py``'s
 ``REGISTRY``** until the last of those chunks lands, so no config can name a
@@ -22,11 +24,14 @@ run, including runs that will never speak to a vCenter. ``api.py`` imports
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from ... import qcow2
 from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome
 from . import api as _api
+from . import convert as _convert
 from . import destroy as _destroy
 from . import preflight as _preflight
 from . import schema as _schema
@@ -53,6 +58,46 @@ class VsphereBackend(Backend):
         return _destroy.destroy(cfg, session, targets)
 
     # -- apply -----------------------------------------------------------
+
+    def prepare(
+        self, cfg: dict, workdir: Path, discovered: Discovered
+    ) -> dict[str, Any]:
+        """The inherited seed ISOs, plus the golden image as a VMDK.
+
+        **The first backend to override ``prepare``**, which ``base.Backend``
+        allows for exactly this: the seed ISOs are core's work either way, and
+        what is added here is the format conversion vSphere needs and the other
+        two backends do not.
+
+        It happens here rather than in ``create`` because this is the phase that
+        may touch the local filesystem and cannot reach the target, and because
+        the file it writes belongs to the run: ``workdir`` is the run directory,
+        and nothing tears the VMDK down.
+
+        Skipped entirely once ``preflight`` has found the template already on the
+        vCenter. Converting a multi-GB image to import nothing is the cost this
+        branch exists to avoid, and it is the same reason the other two backends
+        carry an ``image``/``base_volume`` ``create`` flag at all.
+
+        ``capacity`` is read here rather than in ``render`` for the one reason
+        ``render`` gives: it is a read of the golden image, and ``render`` does
+        no I/O. Both keys are absent when nothing was converted, which is what
+        ``render`` renders as empty.
+        """
+        prepared = super().prepare(cfg, workdir, discovered)
+        if not discovered.artifacts["image"]["create"]:
+            return prepared
+        source = cfg["image"]["source_qcow2"]
+        subformat = _convert.SUBFORMAT[
+            cfg["target"]["vsphere"].get("import", _schema.IMPORT_DEFAULT)
+        ]
+        # Named after the template it becomes, in the run directory beside the
+        # seed ISOs: a `monolithicFlat` conversion writes its `-flat` extent
+        # alongside, so the stem has to be predictable.
+        dest = workdir / f"{Path(cfg['image']['base_volume_name']).stem}.vmdk"
+        prepared["vmdk"] = str(_convert.to_vmdk(source, dest, subformat))
+        prepared["capacity"] = qcow2.virtual_size(source)
+        return prepared
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
         raise NotImplementedError("the vSphere create chunk has not landed")
