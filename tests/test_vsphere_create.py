@@ -73,6 +73,7 @@ class Vcenter:
         never_ready: bool = False,
         ovf_error=(),
         create_error: Any = None,
+        decoys: bool = False,
     ):
         self.imported = entity if entity is not None else FakeVm(TEMPLATE)
         self.content = FakeContent()
@@ -86,35 +87,104 @@ class Vcenter:
             log=self.content.calls,
         )
         self.datacenter = mo(vim.Datacenter, "datacenter-1", name="dc-a", vmFolder=None)
-        self.pool = FakePool(
-            self.lease, container=self.datacenter, log=self.content.calls
+        here = self.datacenter
+        calls = self.content.calls
+        #: The cluster's own root pool, which is where a cluster placement lands.
+        self.pool = FakePool(self.lease, container=here, log=calls)
+        #: What `target.vsphere.resource_pool` names when it is set.
+        self.named_pool = FakePool(
+            self.lease, name="vcows-pool", container=here, log=calls
         )
+        #: The datacenter's own VM folder, and the one a config can name instead.
         self.folder = FakeFolder(
+            self.imported.mo, container=here, log=calls, error=create_error
+        )
+        self.named_folder = FakeFolder(
             self.imported.mo,
-            container=self.datacenter,
-            log=self.content.calls,
+            name="vcows",
+            container=here,
+            log=calls,
             error=create_error,
         )
         self.datacenter.vmFolder = self.folder.mo
+        self.datastore = mo(
+            vim.Datastore, "datastore-1", name="ds-a", container=self.datacenter
+        )
+        self.cluster = mo(
+            vim.ClusterComputeResource,
+            "domain-c1",
+            name="cluster-a",
+            container=self.datacenter,
+            resourcePool=self.pool.mo,
+        )
+        #: A host placement's pool is its own compute resource's, not a
+        #: cluster's, which is what an unclustered host has.
+        self.host_pool = FakePool(self.lease, container=here, log=calls)
+        self.host = mo(
+            vim.HostSystem,
+            "host-1",
+            name="esx1.example.com",
+            container=self.datacenter,
+            parent=mo(vim.ComputeResource, "domain-s1", resourcePool=self.host_pool.mo),
+        )
         self.content.objects = [
             self.datacenter,
-            mo(vim.Datastore, "datastore-1", name="ds-a", container=self.datacenter),
-            mo(
-                vim.ClusterComputeResource,
-                "domain-c1",
-                name="cluster-a",
-                container=self.datacenter,
-                resourcePool=self.pool.mo,
-            ),
+            self.datastore,
+            self.cluster,
             self.folder.mo,
+            self.named_folder.mo,
             self.pool.mo,
+            self.named_pool.mo,
+            self.host,
         ]
+        if decoys:
+            # First, so that a lookup which lost its datacenter finds one of
+            # these rather than the object it was asked for.
+            self.content.objects[:0] = _decoys()
 
     @property
     def session(self) -> api.Session:
         return api.Session(
             si=FakeServiceInstance(self.content), content=self.content, cookie=COOKIE
         )
+
+
+def _decoys() -> list:
+    """A second datacenter holding one of everything, under the same names.
+
+    vCenter allows it, which is why every lookup this module makes is rooted at
+    the datacenter `target.vsphere` names. Nothing here can stand in silently:
+    the folder makes no VM and the pools hand out no lease, so an import that
+    resolved one of them fails rather than passing against the wrong object.
+    """
+    other = mo(vim.Datacenter, "datacenter-2", name="dc-b", vmFolder=None)
+    stray = FakeFolder(name="vm", container=other)
+    other.vmFolder = stray.mo
+    return [
+        other,
+        mo(vim.Datastore, "datastore-2", name="ds-a", container=other),
+        mo(
+            vim.ClusterComputeResource,
+            "domain-c2",
+            name="cluster-a",
+            container=other,
+            resourcePool=FakePool(name="Resources", container=other).mo,
+        ),
+        stray.mo,
+        FakeFolder(name="vcows", container=other).mo,
+        FakePool(name="vcows-pool", container=other).mo,
+        mo(
+            vim.HostSystem,
+            "host-2",
+            name="esx1.example.com",
+            container=other,
+            parent=mo(
+                vim.ComputeResource,
+                "domain-s2",
+                resourcePool=FakePool(name="Resources", container=other).mo,
+            ),
+        ),
+    ]
 
 
 @pytest.fixture
@@ -158,6 +228,18 @@ def test_the_url_names_the_datacenter_and_the_datastore(vsphere_cfg, vcenter, vm
     assert stored == "[ds-a] vcows/app01/app01-seed.iso"
 
 
+def test_an_endpoint_with_a_trailing_slash_makes_the_same_url(
+    vsphere_cfg, vcenter, vmdk, http
+):
+    """`https://vc/` and `https://vc` are the same vCenter, and `//folder/` is
+    not the same path: vCenter answers it with a 404 that names nothing."""
+    vsphere_cfg["target"]["vsphere"]["endpoint"] = "https://vcenter.example.com/"
+    create_mod.upload(vsphere_cfg, vcenter.session, vmdk, "vcows/x/golden.vmdk")
+    assert http.calls[0]["url"].startswith(
+        "https://vcenter.example.com/folder/vcows/x/golden.vmdk?"
+    )
+
+
 def test_the_file_goes_over_the_wire_as_it_is(vsphere_cfg, vcenter, vmdk, http):
     create_mod.upload(vsphere_cfg, vcenter.session, vmdk, "vcows/x/golden.vmdk")
     assert http.calls[0]["body"] == VMDK_BYTES
@@ -194,6 +276,20 @@ def test_the_upload_carries_a_timeout(vsphere_cfg, vcenter, vmdk, http):
     assert http.calls[0]["timeout"] == create_mod.HTTP_TIMEOUT
 
 
+def test_a_cookie_value_carrying_an_equals_sign_survives_the_split(
+    vsphere_cfg, vcenter, vmdk, http
+):
+    """A session cookie is base64 and base64 pads with `=`, so the pair splits
+    at the first one and not the last."""
+    session = api.Session(
+        si=FakeServiceInstance(vcenter.content),
+        content=vcenter.content,
+        cookie='vmware_soap_session="c2Vzc2lvbg=="; Path=/; HttpOnly; Secure;',
+    )
+    create_mod.upload(vsphere_cfg, session, vmdk, "vcows/x/golden.vmdk")
+    assert http.calls[0]["cookies"] == {"vmware_soap_session": "c2Vzc2lvbg=="}
+
+
 def test_a_refused_upload_says_what_vcenter_answered(vsphere_cfg, vcenter, vmdk):
     """The body is where vCenter says why a datastore refused a write, and a
     status code on its own names neither the file nor the reason."""
@@ -211,6 +307,28 @@ def test_a_refused_upload_says_what_vcenter_answered(vsphere_cfg, vcenter, vmdk)
     )
 
 
+def test_the_first_status_that_is_not_a_success_is_refused(vsphere_cfg, vcenter, vmdk):
+    """400 itself, not one past it: vCenter answers a malformed datastore path
+    with exactly that and a run that took it for a success would carry on to a
+    `CreateVM_Task` naming a file that is not there."""
+    with pytest.MonkeyPatch.context() as patch:
+        FakeHttp(status_code=400, text="Bad Request").install(patch)
+        with pytest.raises(api.VsphereApiError, match="HTTP 400"):
+            create_mod.upload(vsphere_cfg, vcenter.session, vmdk, "vcows/x/g.vmdk")
+
+
+def test_a_fault_page_is_truncated_rather_than_printed_whole(
+    vsphere_cfg, vcenter, vmdk
+):
+    """vCenter answers some refusals with an HTML page, and the run's `error`
+    field is what an air-gapped site ships back."""
+    with pytest.MonkeyPatch.context() as patch:
+        FakeHttp(status_code=500, text="x" * 500).install(patch)
+        with pytest.raises(api.VsphereApiError) as bad:
+            create_mod.upload(vsphere_cfg, vcenter.session, vmdk, "vcows/x/g.vmdk")
+    assert str(bad.value).endswith(f"({'x' * 200})")
+
+
 def test_the_size_is_logged_before_the_bytes_move(
     vsphere_cfg, vcenter, vmdk, http, caplog
 ):
@@ -219,6 +337,16 @@ def test_the_size_is_logged_before_the_bytes_move(
     with caplog.at_level(logging.INFO):
         create_mod.upload(vsphere_cfg, vcenter.session, vmdk, "vcows/x/golden.vmdk")
     assert "uploading vcows/x/golden.vmdk (0 MiB)" in caplog.text
+
+
+def test_the_size_is_logged_in_mebibytes(vsphere_cfg, vcenter, tmp_path, http, caplog):
+    """A golden image is measured in gibibytes and its seed ISO in kibibytes, so
+    the unit is what makes the line worth printing at all."""
+    big = tmp_path / "big.vmdk"
+    big.write_bytes(b"\0" * (2 * 1024**2))
+    with caplog.at_level(logging.INFO):
+        create_mod.upload(vsphere_cfg, vcenter.session, big, "vcows/x/big.vmdk")
+    assert "uploading vcows/x/big.vmdk (2 MiB)" in caplog.text
 
 
 # -- the OVF lease import ------------------------------------------------
@@ -246,6 +374,18 @@ def descriptor(vcenter) -> Any:
     return ET.fromstring(vcenter.content.ovfManager.specs[0][0])
 
 
+def test_the_import_says_what_it_is_moving_and_where_it_is_going(
+    vsphere_cfg, vcenter, tmp_path, http, caplog
+):
+    """One line before a transfer that answers nothing until the last byte is
+    in. The name is the template it becomes, which is not the file's."""
+    big = tmp_path / "big.vmdk"
+    big.write_bytes(b"\0" * (2 * 1024**2))
+    with caplog.at_level(logging.INFO):
+        create_mod.import_ovf(vsphere_cfg, vcenter.session, big, TEMPLATE, CAPACITY)
+    assert f"importing {big} as {TEMPLATE} (2 MiB)" in caplog.text
+
+
 def test_the_descriptor_declares_the_capacity_and_the_transfer_size(
     vsphere_cfg, vcenter, ovf, http
 ):
@@ -270,7 +410,11 @@ def test_the_descriptor_names_the_template_and_the_stream_optimized_format(
     imported(vsphere_cfg, vcenter)
     root = descriptor(vcenter)
     assert root.find(f"{OVF_NS}VirtualSystem").get(f"{OVF_NS}id") == TEMPLATE
-    assert vcenter.content.ovfManager.specs[0][3].entityName == TEMPLATE
+    params = vcenter.content.ovfManager.specs[0][3]
+    assert params.entityName == TEMPLATE
+    # Thin, because the golden image is mostly empty and the template is only
+    # ever a clone source: nothing runs on it, so nothing writes to it.
+    assert params.diskProvisioning == "thin"
     assert (
         root.find(f"{OVF_NS}DiskSection/{OVF_NS}Disk")
         .get(f"{OVF_NS}format")
@@ -306,6 +450,10 @@ def test_the_disk_is_posted_to_the_lease_url_with_the_endpoint_host(
         "Content-Type": "application/x-vnd.vmware-streamVmdk"
     }
     assert http.calls[0]["body"] == VMDK_BYTES
+    # The lease upload is the same HTTPS endpoint as the `/folder` PUT, so it
+    # verifies the way the session resolved it and goes quiet for as long.
+    assert http.calls[0]["verify"] is True
+    assert http.calls[0]["timeout"] == create_mod.HTTP_TIMEOUT
 
 
 def test_a_device_url_that_already_names_a_host_is_left_alone(vsphere_cfg, ovf, http):
@@ -353,15 +501,22 @@ def test_a_lease_that_comes_back_in_error_is_refused(vsphere_cfg, ovf, http):
     """vCenter answers a lease it could not open with the fault on the lease
     itself, and nothing else says the import failed."""
     vcenter = Vcenter(lease_error=vim.fault.NoDiskSpace(msg="the datastore is full"))
-    with pytest.raises(api.VsphereApiError, match="the datastore is full"):
+    with pytest.raises(api.VsphereApiError) as bad:
         imported(vsphere_cfg, vcenter)
+    # The sentence vCenter wrote and the template it was writing about. Compared
+    # whole because pyvmomi renders a fault as its entire field list, which
+    # carries the same sentence buried in it.
+    assert str(bad.value) == (
+        f"import {TEMPLATE}: the lease came back error (the datastore is full)"
+    )
     assert http.calls == []
 
 
 def test_a_lease_with_no_device_url_is_refused(vsphere_cfg, ovf, http):
     """Rather than an IndexError naming nothing."""
-    with pytest.raises(api.VsphereApiError, match="named no device URL"):
+    with pytest.raises(api.VsphereApiError) as bad:
         imported(vsphere_cfg, Vcenter(urls=()))
+    assert str(bad.value) == f"import {TEMPLATE}: the lease named no device URL"
 
 
 def test_the_imported_vm_is_read_before_the_lease_is_completed(
@@ -391,6 +546,79 @@ def test_a_refused_descriptor_names_every_fault_vcenter_gave(vsphere_cfg, ovf, h
         "the disk format is not supported; vmx-13 is too old"
     )
     assert vcenter.pool.imports == []
+
+
+def test_a_refused_lease_post_fails_the_import_and_names_the_file(
+    vsphere_cfg, vcenter, ovf
+):
+    """The lease is the one call vCenter answers over HTTP rather than SOAP, so
+    nothing else would say the import failed."""
+    with pytest.MonkeyPatch.context() as patch:
+        FakeHttp(status_code=500, text="the lease has expired").install(patch)
+        with pytest.raises(api.VsphereApiError) as bad:
+            imported(vsphere_cfg, vcenter)
+    assert str(bad.value) == (
+        "POST golden.vmdk to the lease: vCenter answered HTTP 500 "
+        "(the lease has expired)"
+    )
+    assert not vcenter.lease.completed
+
+
+def test_a_one_byte_disk_is_reported_rather_than_dividing_by_its_size(
+    vsphere_cfg, vcenter, tmp_path, http
+):
+    """The percentage is a division by the file's size, and a conversion that
+    wrote almost nothing must fail at vCenter rather than here."""
+    tiny = tmp_path / "tiny.vmdk"
+    tiny.write_bytes(b"\0")
+    create_mod.import_ovf(vsphere_cfg, vcenter.session, tiny, TEMPLATE, CAPACITY)
+    assert vcenter.lease.progress == [99, 100]
+
+
+def test_an_empty_disk_reports_progress_rather_than_raising(
+    vsphere_cfg, vcenter, tmp_path, http
+):
+    """Zero bytes is a conversion that failed silently, and dividing by it here
+    would replace vCenter's answer with a ZeroDivisionError."""
+    empty = tmp_path / "empty.vmdk"
+    empty.write_bytes(b"")
+    create_mod.import_ovf(vsphere_cfg, vcenter.session, empty, TEMPLATE, CAPACITY)
+    assert vcenter.lease.progress == [100]
+
+
+def test_the_lease_is_told_every_step_and_not_every_read(
+    vsphere_cfg, vcenter, tmp_path, monkeypatch
+):
+    """Read a byte at a time, so that every percentage between 0 and 100 is
+    reached: what the lease hears is one call per `PROGRESS_STEP` and not one
+    per read, which would be a SOAP call per 8 KiB of a golden image."""
+    http = FakeHttp(chunk=1).install(monkeypatch)
+    hundred = tmp_path / "hundred.vmdk"
+    hundred.write_bytes(b"\0" * 100)
+    create_mod.import_ovf(vsphere_cfg, vcenter.session, hundred, TEMPLATE, CAPACITY)
+    assert vcenter.lease.progress == [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+    ]
+    assert http.calls[0]["body"] == b"\0" * 100
 
 
 def test_the_lease_hears_progress_while_the_upload_is_happening(
@@ -437,12 +665,48 @@ def test_the_vm_attaches_the_file_that_was_just_uploaded(
     create_mod.import_flat(vsphere_cfg, vcenter.session, vmdk, TEMPLATE, CAPACITY)
     spec, pool, host = vcenter.folder.creates[0]
     assert spec.name == TEMPLATE
-    [_, disk] = spec.deviceChange
+    [controller, disk] = spec.deviceChange
+    assert (controller.operation, disk.operation) == ("add", "add")
     assert disk.fileOperation is None
     assert disk.device.backing.fileName == f"[ds-a] vcows/{TEMPLATE}/golden.vmdk"
     assert disk.device.capacityInKB == CAPACITY // 1024
+    assert disk.device.backing.diskMode == "persistent"
+    assert disk.device.backing.thinProvisioned is True
     assert pool is vcenter.pool.mo
     assert host is None
+
+
+def test_the_disk_hangs_off_the_controller_the_same_spec_adds(
+    vsphere_cfg, vcenter, vmdk, http
+):
+    """One `CreateVM_Task` builds both, so the disk's `controllerKey` has to be
+    the key the controller was given in the same call. vCenter numbers new
+    devices itself and takes these only as references, which is why they are
+    negative -- a positive key names a device that is already there."""
+    create_mod.import_flat(vsphere_cfg, vcenter.session, vmdk, TEMPLATE, CAPACITY)
+    spec, _, _ = vcenter.folder.creates[0]
+    [controller, disk] = spec.deviceChange
+    assert isinstance(controller.device, vim.vm.device.VirtualLsiLogicController)
+    assert controller.device.key < 0
+    assert controller.device.busNumber == 0
+    assert controller.device.sharedBus == "noSharing"
+    assert disk.device.key < 0
+    assert disk.device.key != controller.device.key
+    assert disk.device.controllerKey == controller.device.key
+    assert disk.device.unitNumber == 0
+
+
+def test_the_shell_the_template_is_created_as_is_the_one_the_ovf_declares(
+    vsphere_cfg, vcenter, vmdk, http
+):
+    """Every clone overrides the CPU and the memory from its own config, so
+    these are never what a VM runs with. The datastore is named without a folder
+    so that vCenter picks the VM's directory itself."""
+    create_mod.import_flat(vsphere_cfg, vcenter.session, vmdk, TEMPLATE, CAPACITY)
+    spec, _, _ = vcenter.folder.creates[0]
+    assert (spec.numCPUs, spec.memoryMB) == (1, 512)
+    assert spec.guestId == "otherGuest64"
+    assert spec.files.vmPathName == "[ds-a]"
 
 
 def test_the_datastore_import_answers_with_the_vm_it_made(
@@ -511,43 +775,64 @@ def test_a_reconfigure_that_fails_stops_before_anything_is_marked(vcenter):
 
 
 def test_a_named_folder_and_resource_pool_win_over_the_defaults(
-    vsphere_cfg, vmdk, http
+    vsphere_cfg, vcenter, vmdk, http
 ):
     """Both are optional, and without them the import lands in the datacenter's
     own VM folder and the cluster's root pool."""
-    vcenter = Vcenter()
-    other = FakeFolder(name="vcows", container=vcenter.datacenter)
-    pool = FakePool(name="vcows-pool", container=vcenter.datacenter)
-    vcenter.content.objects += [other.mo, pool.mo]
     vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
     vsphere_cfg["target"]["vsphere"]["resource_pool"] = "vcows-pool"
     create_mod.import_flat(vsphere_cfg, vcenter.session, vmdk, TEMPLATE, CAPACITY)
-    _, chosen_pool, _ = other.creates[0]
-    assert chosen_pool is pool.mo
+    _, chosen_pool, _ = vcenter.named_folder.creates[0]
+    assert chosen_pool is vcenter.named_pool.mo
     assert vcenter.folder.creates == []
 
 
-def test_a_host_placement_uses_that_host_s_own_root_pool(vsphere_cfg, vmdk, http):
+def test_a_host_placement_uses_that_host_s_own_root_pool(
+    vsphere_cfg, vcenter, vmdk, http
+):
     """`parent` is the host's ComputeResource, not a cluster, which is what an
     unclustered host has and what `CreateVM_Task` wants."""
-    vcenter = Vcenter()
-    pool = FakePool(name="Resources", container=vcenter.datacenter)
-    compute = mo(vim.ComputeResource, "domain-s1", resourcePool=pool.mo)
-    vcenter.content.objects.append(
-        mo(
-            vim.HostSystem,
-            "host-1",
-            name="esx1.example.com",
-            container=vcenter.datacenter,
-            parent=compute,
-        )
-    )
     del vsphere_cfg["target"]["vsphere"]["cluster"]
     vsphere_cfg["target"]["vsphere"]["host"] = "esx1.example.com"
     create_mod.import_flat(vsphere_cfg, vcenter.session, vmdk, TEMPLATE, CAPACITY)
     _, chosen_pool, host = vcenter.folder.creates[0]
-    assert chosen_pool is pool.mo
-    assert host.name == "esx1.example.com"
+    assert chosen_pool is vcenter.host_pool.mo
+    assert host is vcenter.host
+
+
+def test_the_host_a_config_names_is_the_one_the_import_lands_on(vsphere_cfg, ovf, http):
+    """`ImportVApp` takes the host as well as the pool, and a lease opened on
+    the wrong one puts the template where the clones cannot reach it."""
+    vcenter = Vcenter()
+    vsphere_cfg["target"]["vsphere"]["host"] = "esx1.example.com"
+    imported(vsphere_cfg, vcenter)
+    assert vcenter.host_pool.imports[0][2] is vcenter.host
+
+
+def test_every_name_resolves_inside_the_configured_datacenter(vsphere_cfg, ovf, http):
+    """Two datacenters on one vCenter may each hold a datastore, a folder or a
+    cluster of the same name, so every lookup is rooted at the one
+    `target.vsphere` names. The decoys are listed first, so a lookup that lost
+    its root finds one of them."""
+    vcenter = Vcenter(decoys=True)
+    vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
+    imported(vsphere_cfg, vcenter)
+    _, pool, datastore, _ = vcenter.content.ovfManager.specs[0]
+    assert datastore is vcenter.datastore
+    assert pool is vcenter.pool.mo
+    assert vcenter.pool.imports[0][1] is vcenter.named_folder.mo
+
+
+def test_the_host_and_the_resource_pool_are_rooted_there_too(vsphere_cfg, ovf, http):
+    """The other two optional names, which the branch above does not reach: a
+    resource pool outranks both placements, and the host is resolved whichever
+    of them the pool came from."""
+    vcenter = Vcenter(decoys=True)
+    vsphere_cfg["target"]["vsphere"]["resource_pool"] = "vcows-pool"
+    vsphere_cfg["target"]["vsphere"]["host"] = "esx1.example.com"
+    imported(vsphere_cfg, vcenter)
+    assert vcenter.content.ovfManager.specs[0][1] is vcenter.named_pool.mo
+    assert vcenter.named_pool.imports[0][2] is vcenter.host
 
 
 def test_a_name_that_stopped_resolving_is_an_error_naming_the_field(

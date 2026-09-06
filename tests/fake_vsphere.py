@@ -726,9 +726,12 @@ class FakeHttp:
     body with no length would be sent chunked, which the NFC endpoint refuses.
     """
 
-    def __init__(self, status_code: int = 200, text: str = ""):
+    def __init__(self, status_code: int = 200, text: str = "", chunk: int = CHUNK):
         self.status_code = status_code
         self.text = text
+        #: How much of the body is read at a time. urllib3's own size unless a
+        #: test wants the reads finer than that.
+        self.chunk = chunk
         #: One dict per request, in order.
         self.calls: list[dict] = []
 
@@ -748,7 +751,7 @@ class FakeHttp:
     def _record(self, method: str, url: str, kw: dict) -> FakeResponse:
         body = kw.pop("data")
         read = b""
-        while chunk := body.read(CHUNK):
+        while chunk := body.read(self.chunk):
             read += chunk
         self.calls.append(
             {
