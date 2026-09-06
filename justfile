@@ -76,6 +76,14 @@ check: lint typecheck test
 smoke-libvirt:
     ./scripts/smoke-libvirt.sh
 
+# The same shape against vSphere, with the pinned govmomi simulator standing in
+# for a vCenter: `vcows deploy` then `vcows destroy` through the shipped CLI,
+# asserted against what vcsim holds. Out of `check` for the reason above -- it
+# starts a server and drives a whole deploy -- and it proves the call shapes and
+# the ordering, never that a vCenter would accept them.
+smoke-vsphere:
+    ./scripts/smoke-vsphere.sh
+
 # Build the container image.
 image:
     ./scripts/image-build.sh

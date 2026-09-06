@@ -145,6 +145,21 @@ smoke:
     - *bootstrap
     - just smoke-libvirt
 
+# The same shape for the third backend, against the pinned govmomi simulator
+# rather than a real vCenter. Unlike the job above it needs no privileged
+# executor and no root: it starts vcsim on the loopback and drives the shipped
+# CLI at it. Ceiling and measurement in .github/workflows/ci.yml.
+smoke-vsphere:
+  stage: check
+  timeout: 15m
+  cache: [*tools_cache, *uv_cache]
+  # *bootstrap for its `just dev-env`: the gate's assertions are
+  # tests/test_vsphere_smoke.py, and its `./scripts/os-deps.sh` is what brings
+  # the qemu-img the conversion needs.
+  script:
+    - *bootstrap
+    - just smoke-vsphere
+
 image:
   stage: image
   tags: [podman]
