@@ -605,6 +605,14 @@ wheels = [
 ]
 
 [[package]]
+name = "pyvmomi"
+version = "9.1.1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/18/044c8a0c8f6ac16642e65f4fac19653291c7f6c5ab61a3734c9f6066a87b/pyvmomi-9.1.1.0-py3-none-any.whl", hash = "sha256:76af3cba85573769daf4e6760aace32e7af34e1bbf343895b8c4798b6bc0e2d2", size = 557324, upload-time = "2026-09-03T11:42:04.524Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -993,6 +1001,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "proxmoxer" },
     { name = "pycdlib" },
+    { name = "pyvmomi" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "requests-toolbelt" },
@@ -1015,6 +1024,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.19" },
     { name = "proxmoxer", specifier = ">=2.3" },
     { name = "pycdlib", specifier = ">=1.16" },
+    { name = "pyvmomi", specifier = ">=9.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
     { name = "requests-toolbelt", specifier = ">=1.0" },

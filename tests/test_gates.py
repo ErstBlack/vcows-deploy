@@ -25,7 +25,16 @@ TESTS = Path(__file__).resolve().parent
 #: Every gate name the suite is allowed to use. Adding one here is deliberate;
 #: `demanded()` matches on these strings and silently ignores anything else, so
 #: a typo in a `require()` call would otherwise create a gate nobody can demand.
-KNOWN = {"image", "rig", "pycdlib", "libvirt", "smoke", "proxmox"}
+KNOWN = {
+    "image",
+    "rig",
+    "pycdlib",
+    "libvirt",
+    "smoke",
+    "proxmox",
+    "vsphere",
+    "vcsim",
+}
 
 #: `conftest.py` is where the mechanism is implemented, so it is the one file
 #: allowed to call pytest's skip machinery directly.

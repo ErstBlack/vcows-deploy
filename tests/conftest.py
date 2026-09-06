@@ -183,6 +183,21 @@ needs_proxmox = gate(
     "needs VCOWS_PVE_ENDPOINT and VCOWS_PVE_TOKEN to run against a cluster",
 )
 
+#: For tests that talk to a real vCenter. All three halves are needed, for the
+#: reason the two above are: vCenter has no token form, so an endpoint alone
+#: names a server nothing can log in to. Read from the environment because the
+#: rig test *composes* the config it deploys, and `target.vsphere` is the
+#: product's only source.
+VCENTER_ENDPOINT = os.environ.get("VCOWS_VSPHERE_ENDPOINT")
+needs_vsphere = gate(
+    "vsphere",
+    bool(VCENTER_ENDPOINT)
+    and bool(os.environ.get("VCOWS_VSPHERE_USER"))
+    and bool(os.environ.get("VCOWS_VSPHERE_PASSWORD")),
+    "needs VCOWS_VSPHERE_ENDPOINT, VCOWS_VSPHERE_USER and VCOWS_VSPHERE_PASSWORD "
+    "to run against a vCenter",
+)
+
 
 #: Half a PEM header, kept in a name of its own so the other half can never join
 #: it at compile time. Adjacent literals and `"a" + "b"` are both constant-folded
@@ -209,6 +224,33 @@ CA_CERT = (
     "MIIBkTCB+wIJAOExampleNotACertificateJustEnoughToLookLikeOneAAAAAA\n"
     "-----END CERTIFICATE-----\n"
 )
+
+#: A CA certificate as `target.vsphere.ca_cert` carries one, and a real
+#: self-signed one rather than the decorative body above: `vsphere/api.connect`
+#: builds an `ssl` context out of the text, and `ssl` raises on anything it
+#: cannot parse. Generated once with `openssl req -x509`, valid to 2056, and its
+#: private key was never kept -- it signs nothing and verifies nothing.
+VSPHERE_CA_CERT = """\
+-----BEGIN CERTIFICATE-----
+MIIDEzCCAfugAwIBAgIUe5emU+CCji0LDK5ODbEqU4rV95IwDQYJKoZIhvcNAQEL
+BQAwGDEWMBQGA1UEAwwNdmNvd3MgdGVzdCBDQTAgFw0yNjA5MDYxOTIwNDhaGA8y
+MDU2MDgyOTE5MjA0OFowGDEWMBQGA1UEAwwNdmNvd3MgdGVzdCBDQTCCASIwDQYJ
+KoZIhvcNAQEBBQADggEPADCCAQoCggEBALK0auf5vTnNRtn5STtt9eHFeMwQiMAF
+feOT1nOnCPJjo04dek/uIESzBZj2HR4Y9yrzFnEdPlPrr2RswB+vJd0VN5DPUpCl
+STR5yac6/iQom5sl0FEQ34xvypV7fpgoANEd1v5aJfiOEVTjV5Y4CXfY5QZ/K5Tb
+ouoAZ4AXmGiT07MYN3MuhtlZZTj+eYU5ijgk50bIEauz9fQriTaagCsr+yzpEu7g
+q23rnLHJpjHpGOdXuq1RM6OEthhsd71fWtHwhf5xlrMPtSKQ7jL0t6BYWgaH2XZ+
+vO8fLELNXjvg2155NWQxq87/QgBg7A2qYr3i+oynSvXMs1ghVQsTVR8CAwEAAaNT
+MFEwHQYDVR0OBBYEFKhNXeHt95YUpRLcFA33dB4xJJJrMB8GA1UdIwQYMBaAFKhN
+XeHt95YUpRLcFA33dB4xJJJrMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEL
+BQADggEBADnEovRSIlfjA75vQ3USwhUm25gK2G+4xv1tbfpLkjFOXlAw++aMwgJY
+o7QHswF8weTsBGmQvjD5+DnGid3v4B3UjCGrCE3uVK5tL7CZGqGxCa+U7d7zzv19
+DMvJ/P9nTmxXL/GfP7+kk02JatwZVOl+2lz4RpzigAFL7AJRSQXpkgc8IqlHmKJ8
+Dk+vpvjd4ZiPeamS/AUfDk+qB2ROcUPTw6vRRTi+KyYPqHNXP/jcxZQGgoX+nAsq
+3GbSkVJP52Y9jZ0CP46GLd2zr8BK+/6Ci5hd+OJUivNQrfnmkle6sNT3DTINWwx8
+Ft03sKaJD2cXbdVktuRKMs28My4v9e8=
+-----END CERTIFICATE-----
+"""
 
 CONFIG: dict = {
     "schema_version": 1,
@@ -379,3 +421,67 @@ def pve_token() -> str:
     log line or a rendered values dict.
     """
     return PROXMOX_CONFIG["target"]["proxmox"]["token"]
+
+
+#: The vSphere counterpart of the two configs above, exercising what differs
+#: rather than mirroring them: the placement is a cluster and not a host, a NIC
+#: names no network because the port group is named once under the target, and
+#: there is no VLAN tag anywhere -- the port group carries it.
+VSPHERE_CONFIG: dict = {
+    "schema_version": 1,
+    "deployment": "lab-a",
+    "backend": "vsphere",
+    "target": {
+        "vsphere": {
+            "endpoint": "https://vcenter.example.com",
+            "user": "vcows@vsphere.local",
+            # An obviously-fake password for a fake that never logs in.
+            "password": "not-a-password",
+            "datacenter": "dc-a",
+            "datastore": "ds-a",
+            "network": "pg-vcows",
+            "cluster": "cluster-a",
+        }
+    },
+    "image": {
+        "source_qcow2": "/images/golden.qcow2",
+        "base_volume_name": "golden.qcow2",
+    },
+    "vms": [
+        {
+            "name": "app01",
+            "vcpus": 2,
+            "memory_mib": 4096,
+            "disk_gb": 40,
+            "nics": [
+                {
+                    "ip_cidr": "192.168.122.60/24",
+                    "gateway": "192.168.122.1",
+                    "nameservers": ["192.168.122.1"],
+                }
+            ],
+        },
+        {
+            "name": "app02",
+            "vcpus": 4,
+            "memory_mib": 8192,
+            "disk_gb": 60,
+            "firmware": "efi",
+            "user_data": "#cloud-config\npackages:\n  - tmux\n",
+            "nics": [
+                {
+                    "ip_cidr": "192.168.122.61/24",
+                    "gateway": "192.168.122.1",
+                    "nameservers": ["192.168.122.1"],
+                    "mac": "52:54:00:aa:bb:cc",
+                }
+            ],
+        },
+    ],
+}
+
+
+@pytest.fixture
+def vsphere_cfg() -> dict:
+    """A fresh deep copy, for the same reason `cfg` is one."""
+    return copy.deepcopy(VSPHERE_CONFIG)

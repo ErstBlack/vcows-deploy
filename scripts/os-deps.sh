@@ -12,6 +12,10 @@
 # back what pycdlib wrote, on the principle that a builder verified only by
 # itself is not verified.
 #
+# `qemu-img` is Debian's `qemu-utils` and everyone else's `qemu-img`. The vSphere
+# backend converts the golden image to VMDK with it, so a runner without it
+# cannot run that conversion or the smoke gate over it.
+#
 # `shellcheck` is here rather than in install-tools.sh because it is a distro
 # package on every platform this runs on, and it is a lint gate rather than a
 # build input -- there is nothing about it that needs pinning to a digest.
@@ -27,11 +31,11 @@ main() {
     [ "$(id -u || true)" -eq 0 ] || sudo=sudo
     if have apt-get; then
         $sudo apt-get update -qq
-        $sudo apt-get install -y -qq python3-libvirt xorriso shellcheck jq curl unzip git
+        $sudo apt-get install -y -qq python3-libvirt xorriso shellcheck jq curl unzip git qemu-utils
     elif have dnf; then
-        $sudo dnf install -y -q python3-libvirt xorriso ShellCheck jq curl unzip git
+        $sudo dnf install -y -q python3-libvirt xorriso ShellCheck jq curl unzip git qemu-img
     else
-        die "no apt-get or dnf -- install python3-libvirt, xorriso, shellcheck and jq by hand"
+        die "no apt-get or dnf -- install python3-libvirt, xorriso, shellcheck, jq and qemu-img by hand"
     fi
     log "os dependencies present"
 }
