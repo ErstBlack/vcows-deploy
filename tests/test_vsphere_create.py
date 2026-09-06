@@ -1,16 +1,20 @@
-"""The apply's shared half: the datastore upload, the two imports, the template.
+"""The apply: the datastore upload, the two imports, the template, the clones.
 
-The per-VM clone and the ``create`` that orders these calls are the next chunk's,
-so every test here drives one function directly rather than going through
-``VsphereBackend.create``.
+The shared half drives one function directly, because each is reachable on its
+own. The per-VM half below it goes through ``VsphereBackend.create``, for the
+reason ``tests/test_proxmox_create.py`` does: the wiring between ``render`` and
+the spec vCenter is sent is exactly what a unit test of either half cannot see,
+since a key renamed on one side and read on the other passes both.
 
-Three of the questions come from the vcsim spike rather than from the API docs,
+Four of the questions come from the vcsim spike rather than from the API docs,
 and they are the ones a fake is worth having for: the lease is read before it is
 completed and never after, the ``*``-to-host substitution is harmless when there
-is no ``*``, and the lease hears about the upload while the upload is happening.
-``tests/fake_vsphere.py``'s ``FakeLease`` faults on any read after
-``HttpNfcLeaseComplete``, which is what vcsim does, so the first of those fails
-here rather than against a vCenter.
+is no ``*``, the lease hears about the upload while the upload is happening, and
+a linked clone needs a snapshot that only exists if the template was snapshotted
+before it was marked. ``tests/fake_vsphere.py``'s ``FakeLease`` faults on any
+read after ``HttpNfcLeaseComplete`` and its ``CloneVM_Task`` refuses a linked
+spec naming no snapshot -- which vcsim does not, because A8 says it accepts the
+spec and discards it.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from typing import Any
 import pytest
 from pyVmomi import vim, vmodl
 
-from orchestrator.backends.vsphere import api
+from orchestrator.backends.vsphere import VsphereBackend, api
 from orchestrator.backends.vsphere import create as create_mod
 from tests.fake_vsphere import (
     COOKIE,
@@ -34,6 +38,7 @@ from tests.fake_vsphere import (
     FakePool,
     FakeServiceInstance,
     FakeVm,
+    disk,
     mo,
 )
 
@@ -52,6 +57,11 @@ CAPACITY = 20 * 1024**3
 
 #: `image.base_volume_name` in `VSPHERE_CONFIG`, which is the template's name.
 TEMPLATE = "golden.qcow2"
+
+#: The key vCenter gave the template's one disk. Fixed so that a `deviceChange`
+#: of operation `edit` names something: every device a fake builds otherwise has
+#: key 0, and an edit would match all of them at once.
+TEMPLATE_DISK_KEY = 2000
 
 OVF_NS = "{http://schemas.dmtf.org/ovf/envelope/1}"
 
@@ -75,8 +85,24 @@ class Vcenter:
         create_error: Any = None,
         decoys: bool = False,
     ):
-        self.imported = entity if entity is not None else FakeVm(TEMPLATE)
-        self.content = FakeContent()
+        self.imported = (
+            entity
+            if entity is not None
+            else FakeVm(
+                TEMPLATE,
+                devices=[
+                    disk(
+                        f"[ds-a] {TEMPLATE}/{TEMPLATE}.vmdk",
+                        key=TEMPLATE_DISK_KEY,
+                        capacity_kb=CAPACITY // 1024,
+                    )
+                ],
+            )
+        )
+        #: On the vCenter, not beside it: a clone is answered for by the property
+        #: collector, and the template has to be findable by name on the deploy
+        #: that does not import one.
+        self.content = FakeContent(vms=[self.imported])
         self.content.ovfManager.error = list(ovf_error)
         self.lease = FakeLease(
             self.imported.mo,
@@ -110,6 +136,11 @@ class Vcenter:
         self.datastore = mo(
             vim.Datastore, "datastore-1", name="ds-a", container=self.datacenter
         )
+        #: The port group every NIC of every VM is backed by, which `render`
+        #: puts on each of them from `target.vsphere.network`.
+        self.network = mo(
+            vim.Network, "network-1", name="pg-vcows", container=self.datacenter
+        )
         self.cluster = mo(
             vim.ClusterComputeResource,
             "domain-c1",
@@ -130,6 +161,7 @@ class Vcenter:
         self.content.objects = [
             self.datacenter,
             self.datastore,
+            self.network,
             self.cluster,
             self.folder.mo,
             self.named_folder.mo,
@@ -163,6 +195,7 @@ def _decoys() -> list:
     return [
         other,
         mo(vim.Datastore, "datastore-2", name="ds-a", container=other),
+        mo(vim.Network, "network-2", name="pg-vcows", container=other),
         mo(
             vim.ClusterComputeResource,
             "domain-c2",
@@ -872,3 +905,490 @@ def test_what_it_made_and_what_it_cost_are_logged(caplog):
     with caplog.at_level(logging.INFO), create_mod._made("template golden.qcow2"):
         pass
     assert "created template golden.qcow2 in" in caplog.text
+
+
+# -- the whole apply, through the backend --------------------------------
+
+
+@pytest.fixture
+def prepared(tmp_path, vmdk):
+    """What `prepare` handed on: the seed ISOs it built and the VMDK it wrote.
+
+    Real files, because `render` is pure but `create` opens every path the
+    values name -- and each is named something other than what it has to arrive
+    on the datastore as, so an upload that used the local name would be visible.
+    """
+    seeds = {}
+    for name in ("app01", "app02"):
+        iso = tmp_path / f"{name}-cidata.iso"
+        iso.write_bytes(f"{name} seed iso".encode())
+        seeds[name] = str(iso)
+    return {
+        "seed_isos": seeds,
+        "image": {"create": True, "template": TEMPLATE},
+        "vmdk": str(vmdk),
+        "capacity": CAPACITY,
+    }
+
+
+def deployed(cfg, vcenter, prepared) -> dict:
+    return VsphereBackend().create(cfg, vcenter.session, prepared)
+
+
+def already_there(vcenter, prepared) -> dict:
+    """The template an earlier run left behind: marked, and snapshotted first.
+
+    Built by calling the product's own `make_template`, so a test of the second
+    deploy starts from the vCenter the first deploy actually leaves.
+    """
+    create_mod.make_template(vcenter.imported.mo, "the-template-marker")
+    prepared["image"] = {"create": False, "template": TEMPLATE}
+    del prepared["vmdk"], prepared["capacity"]
+    return prepared
+
+
+def cloned(vcenter, name: str = "app01") -> tuple:
+    """The one clone made under `name`: its folder, its spec and the VM it
+    became."""
+    [(folder, _, spec, clone)] = [
+        made for made in vcenter.imported.clones if made[1] == name
+    ]
+    return folder, spec, clone
+
+
+def only_app01(cfg) -> dict:
+    """One VM, for the tests whose question is about a single clone."""
+    cfg["vms"] = [cfg["vms"][0]]
+    return cfg
+
+
+def full_clones(cfg) -> dict:
+    cfg["target"]["vsphere"]["clone"] = "full"
+    return cfg
+
+
+# -- the template the clones come from ------------------------------------
+
+
+def test_the_image_is_imported_and_marked_when_the_vcenter_has_none(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """The whole shared half, in one run: the lease import, the marker, the
+    snapshot a linked clone needs, and the mark."""
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert vcenter.content.ovfManager.specs[0][3].entityName == TEMPLATE
+    assert vcenter.imported.props["config.template"] is True
+    assert '"name":"golden.qcow2"' in vcenter.imported.props["config.annotation"]
+    assert vcenter.imported.snapshots[0][0] == create_mod.SNAPSHOT_NAME
+
+
+def test_an_existing_template_is_cloned_from_rather_than_imported(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """The reason a second deploy against the same vCenter is cheap: no
+    conversion, no lease, and no bytes but the seed ISOs."""
+    deployed(only_app01(vsphere_cfg), vcenter, already_there(vcenter, prepared))
+    assert vcenter.content.ovfManager.specs == []
+    assert [call["url"].split("/folder/")[1].split("?")[0] for call in http.calls] == [
+        "vcows/app01/app01-seed.iso"
+    ]
+    assert cloned(vcenter)[2].props["name"] == "app01"
+
+
+def test_the_import_knob_picks_the_datastore_path(vsphere_cfg, vcenter, prepared, http):
+    """The other half of #308's `import` knob, from the config an operator flips
+    rather than from a rebuild."""
+    vsphere_cfg["target"]["vsphere"]["import"] = "datastore"
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert vcenter.content.ovfManager.specs == []
+    assert vcenter.folder.creates[0][0].name == TEMPLATE
+
+
+def test_a_template_that_stopped_resolving_is_an_error_rather_than_an_import(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """`preflight` saw it, so `prepare` converted nothing and there is no VMDK on
+    this machine to import instead."""
+    prepared = already_there(vcenter, prepared)
+    vcenter.imported.destroyed = True
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert str(bad.value) == (
+        f"the template {TEMPLATE!r} is no longer on this vCenter; preflight "
+        f"found it when this run started"
+    )
+
+
+def test_a_failed_import_names_the_template_it_was_making(
+    vsphere_cfg, prepared, ovf, http
+):
+    """`run.json`'s `error` field is what an air-gapped site ships back, and a
+    vCenter fault on its own says nothing about which object was being made."""
+    vcenter = Vcenter(ovf_error=[vim.fault.OvfUnsupportedType(msg="not supported")])
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert str(bad.value).startswith(f"could not create template {TEMPLATE}: ")
+
+
+# -- the seed ISO ---------------------------------------------------------
+
+
+def test_each_seed_iso_is_uploaded_under_its_own_vm_s_folder(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """One folder per VM under `vcows/`, which is what `preflight._orphan_seeds`
+    searches and what `destroy` deletes from."""
+    deployed(vsphere_cfg, vcenter, already_there(vcenter, prepared))
+    assert [call["url"].split("/folder/")[1].split("?")[0] for call in http.calls] == [
+        "vcows/app01/app01-seed.iso",
+        "vcows/app02/app02-seed.iso",
+    ]
+    assert http.calls[0]["body"] == b"app01 seed iso"
+
+
+def test_a_failed_seed_upload_names_the_seed_and_carries_what_was_made(
+    vsphere_cfg, vcenter, prepared
+):
+    """Nothing rolls back, so the record of the VMs already running is what the
+    exception has to carry out -- `cli._deploy` reads it back with `getattr`."""
+    prepared = already_there(vcenter, prepared)
+    with pytest.MonkeyPatch.context() as patch:
+        http = FakeHttp().install(patch)
+
+        def refuse_the_second(url, **kw):
+            if "app02" in url:
+                return FakeHttp(status_code=403, text="denied").put(url, **kw)
+            return http.put(url, **kw)
+
+        patch.setattr(create_mod.requests, "put", refuse_the_second)
+        with pytest.raises(api.VsphereApiError) as bad:
+            deployed(vsphere_cfg, vcenter, prepared)
+    assert str(bad.value).startswith("could not create seed app02-seed.iso: ")
+    # `carrying` sets the attribute on whatever exception leaves the block, so
+    # no type declares it -- the Proxmox test reads it through the same local.
+    carrier: Any = bad.value
+    assert list(carrier.created) == ["app01"]
+
+
+# -- the clone ------------------------------------------------------------
+
+
+def test_the_clone_is_a_delta_over_the_template_s_own_snapshot(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """A5, and the whole reason the bytes move once. The snapshot has to be the
+    template's current one: the fake refuses a linked spec that names any
+    other, because vCenter has nothing to overlay the delta disk on."""
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    assert spec.location.diskMoveType == "createNewChildDiskBacking"
+    assert spec.snapshot is vcenter.imported.mo.snapshot.currentSnapshot
+    # Powered on by a call of its own, so the disk can be grown in between.
+    assert spec.powerOn is False
+    assert spec.template is False
+
+
+def test_a_full_clone_names_no_disk_move_type_and_no_snapshot(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """`clone: full` copies the disk. Naming the snapshot as well would make it
+    a clone of that point in time rather than of the template as it is."""
+    deployed(only_app01(full_clones(vsphere_cfg)), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    assert spec.location.diskMoveType is None
+    assert spec.snapshot is None
+
+
+def test_a_template_with_no_snapshot_fails_the_clone_rather_than_going_full(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """What a `make_template` that marked before it snapshotted leaves behind.
+    Falling back to a full clone would silently copy a multi-GB disk per VM, so
+    the refusal is vCenter's and this backend passes it on naming the VM."""
+    prepared = already_there(vcenter, prepared)
+    vcenter.imported.mo.snapshot = None
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert str(bad.value) == (
+        "could not create vm app01: clone: the task ended as error "
+        "(a linked clone is an overlay on a snapshot of its source)"
+    )
+
+
+def test_the_clone_lands_in_the_configured_placement(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """The same four names the import resolved. A cluster placement means the
+    cluster's root pool and no host, which is vCenter's cue to place it."""
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    folder, spec, _ = cloned(vcenter)
+    assert folder is vcenter.folder.mo
+    assert spec.location.pool is vcenter.pool.mo
+    assert spec.location.datastore is vcenter.datastore
+    assert spec.location.host is None
+
+
+def test_a_host_placement_puts_the_clone_on_that_host(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """The clone follows the import: a template on one host and clones on
+    another is a delta disk reaching across a datastore boundary."""
+    del vsphere_cfg["target"]["vsphere"]["cluster"]
+    vsphere_cfg["target"]["vsphere"]["host"] = "esx1.example.com"
+    deployed(only_app01(vsphere_cfg), vcenter, already_there(vcenter, prepared))
+    _, spec, _ = cloned(vcenter)
+    assert spec.location.host is vcenter.host
+    assert spec.location.pool is vcenter.host_pool.mo
+
+
+def test_the_clone_carries_its_own_marker_and_its_own_size(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """On the `CloneSpec` rather than reconfigured afterwards: a VM that
+    appeared carrying the template's annotation is one another run's `preflight`
+    reads as the golden image, and the window is as long as a disk copy."""
+    deployed(vsphere_cfg, vcenter, already_there(vcenter, prepared))
+    _, spec, clone = cloned(vcenter, "app02")
+    assert (spec.config.numCPUs, spec.config.memoryMB) == (4, 8192)
+    assert '"name":"app02"' in spec.config.annotation
+    assert clone.props["config.annotation"] == spec.config.annotation
+
+
+def test_the_firmware_the_config_named_is_the_clone_s(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """A clone inherits the template's, which `make_template` set to efi. So a
+    config saying `firmware: bios` would otherwise be a key the schema accepts
+    and nothing reads -- the other two backends both carry theirs per VM."""
+    vsphere_cfg["vms"][0]["firmware"] = "bios"
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert cloned(vcenter)[1].config.firmware == "bios"
+
+
+def test_the_seed_iso_is_in_a_drive_the_guest_finds_connected(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """A9. A CD-ROM vCenter attaches but leaves disconnected is a cloud-init
+    that never runs, and the VM comes up with no addresses and no keys."""
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    [drive] = [
+        change
+        for change in spec.config.deviceChange
+        if isinstance(change.device, vim.vm.device.VirtualCdrom)
+    ]
+    assert drive.operation == "add"
+    assert drive.device.backing.fileName == "[ds-a] vcows/app01/app01-seed.iso"
+    assert drive.device.connectable.startConnected is True
+    assert drive.device.controllerKey == create_mod.IDE_CONTROLLER_KEY
+
+
+def test_every_nic_is_a_manual_mac_on_the_resolved_port_group(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """cloud-init matches an interface by MAC, so `addressType` is what makes
+    the derived address mean anything: without it vCenter generates its own and
+    the seed ISO configures nothing."""
+    vsphere_cfg["vms"][0]["nics"].append(
+        {"ip_cidr": "10.0.0.5/24", "gateway": "10.0.0.1"}
+    )
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    nics = [
+        change.device
+        for change in spec.config.deviceChange
+        if isinstance(change.device, vim.vm.device.VirtualEthernetCard)
+    ]
+    assert [nic.addressType for nic in nics] == ["manual", "manual"]
+    assert [nic.macAddress for nic in nics] == [
+        "52:54:00:be:a8:60",
+        "52:54:00:d3:8b:f5",
+    ]
+    assert [nic.backing.deviceName for nic in nics] == ["pg-vcows", "pg-vcows"]
+    # Distinct, and negative: vCenter numbers the devices itself and reads these
+    # only as references inside this one spec.
+    assert nics[0].key != nics[1].key
+    assert max(nic.key for nic in nics) < 0
+
+
+def test_the_adapter_class_is_the_one_the_config_named(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """The schema offers three, so a value it accepts has to reach a device
+    class -- and vmxnet3 needs the guest driver the golden image ships."""
+    vsphere_cfg["vms"][0]["nics"][0]["model"] = "e1000e"
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    assert isinstance(spec.config.deviceChange[1].device, vim.vm.device.VirtualE1000e)
+
+
+def test_each_nic_gets_its_own_check_mac_address_override(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """KB 423046, always set and never a knob: a `52:54:00` address is outside
+    vCenter's own range and this is what stops it objecting."""
+    vsphere_cfg["vms"][0]["nics"].append(
+        {"ip_cidr": "10.0.0.5/24", "gateway": "10.0.0.1"}
+    )
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    _, spec, _ = cloned(vcenter)
+    assert [(o.key, o.value) for o in spec.config.extraConfig] == [
+        ("ethernet0.checkMACAddress", "FALSE"),
+        ("ethernet1.checkMACAddress", "FALSE"),
+    ]
+
+
+def test_a_port_group_that_stopped_resolving_is_an_error_naming_the_field(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """Preflight resolved it and reported a miss as a Problem. Reaching one here
+    means it went away between the two passes, and nothing above is still
+    gathering problems."""
+    vsphere_cfg["target"]["vsphere"]["network"] = "pg-gone"
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(only_app01(vsphere_cfg), vcenter, already_there(vcenter, prepared))
+    assert "target.vsphere.network names 'pg-gone'" in str(bad.value)
+    assert vcenter.imported.clones == []
+
+
+def test_every_vm_is_powered_on_once_it_is_whole(vsphere_cfg, vcenter, prepared, http):
+    """After the clone and after any growth, not as part of the clone: a VM that
+    booted at the template's size would have to be rebooted to see the rest."""
+    deployed(vsphere_cfg, vcenter, already_there(vcenter, prepared))
+    _, _, clone = cloned(vcenter, "app01")
+    assert clone.props["runtime.powerState"] == "poweredOn"
+    watched = ("CloneVM_Task", "PowerOnVM_Task")
+    assert [call for call in vcenter.content.calls if call[0] in watched] == [
+        ("CloneVM_Task", TEMPLATE, "app01"),
+        ("PowerOnVM_Task", "app01"),
+        ("CloneVM_Task", TEMPLATE, "app02"),
+        ("PowerOnVM_Task", "app02"),
+    ]
+
+
+# -- growing a full clone's disk ------------------------------------------
+
+
+def test_a_full_clone_s_disk_is_grown_to_the_configured_size(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """A clone comes back the size of the template, which is the golden image's
+    virtual size, so `disk_gb` is only honoured by growing it afterwards."""
+    deployed(only_app01(full_clones(vsphere_cfg)), vcenter, prepared)
+    _, _, clone = cloned(vcenter)
+    [spec] = clone.reconfigured
+    [change] = spec.deviceChange
+    assert change.operation == "edit"
+    assert change.device.key == TEMPLATE_DISK_KEY
+    assert change.device.capacityInKB == 40 * 1024**2
+
+
+def test_a_disk_already_the_configured_size_is_left_alone(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """`imagecheck.check_disk_capacity` refuses a `disk_gb` below the image's
+    virtual size, so equal is the ordinary case -- and vCenter refuses a resize
+    that is not a growth."""
+    vsphere_cfg["vms"][0]["disk_gb"] = CAPACITY // 1024**3
+    deployed(only_app01(full_clones(vsphere_cfg)), vcenter, prepared)
+    assert cloned(vcenter)[2].reconfigured == []
+
+
+def test_a_linked_clone_is_never_grown(vsphere_cfg, vcenter, prepared, http):
+    """A delta disk cannot be extended, which is why `schema` refuses a
+    `disk_gb` above the image's virtual size on this path at load time. Asking
+    anyway would fail mid-apply, with two VMs already running."""
+    assert vsphere_cfg["vms"][0]["disk_gb"] == 40
+    deployed(only_app01(vsphere_cfg), vcenter, prepared)
+    assert cloned(vcenter)[2].reconfigured == []
+
+
+def test_a_clone_with_no_disk_is_refused_rather_than_left_at_the_wrong_size(
+    vsphere_cfg, prepared, http
+):
+    """Returning quietly would deploy every VM at the template's size with
+    nothing saying so."""
+    vcenter = Vcenter(entity=FakeVm(TEMPLATE))
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(only_app01(full_clones(vsphere_cfg)), vcenter, prepared)
+    assert str(bad.value) == (
+        "could not create vm app01: the clone has no virtual disk, so nothing "
+        "could be grown to 40 GiB"
+    )
+
+
+# -- the inventory --------------------------------------------------------
+
+
+def test_the_inventory_is_keyed_by_logical_name_with_the_seed_it_made(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """`disks` is what `destroy._delete_seed` walks, and the configured address
+    is the config's rather than a lease -- the tool never asks vCenter what a
+    guest came up on."""
+    made = deployed(vsphere_cfg, vcenter, already_there(vcenter, prepared))
+    assert made == {
+        "app01": {
+            "name": "app01",
+            "uuid": "uuid-app01",
+            "configured_address": "192.168.122.60",
+            "disks": ["[ds-a] vcows/app01/app01-seed.iso"],
+        },
+        "app02": {
+            "name": "app02",
+            "uuid": "uuid-app02",
+            "configured_address": "192.168.122.61",
+            "disks": ["[ds-a] vcows/app02/app02-seed.iso"],
+        },
+    }
+
+
+def test_a_failed_clone_carries_the_vms_already_made(
+    vsphere_cfg, vcenter, prepared, http
+):
+    """Nothing rolls back. Without this a failure on the second VM loses every
+    record of the first, which is running and which an operator cannot
+    re-derive."""
+    prepared = already_there(vcenter, prepared)
+    vcenter.imported.clone_error = vim.fault.NoDiskSpace(msg="the datastore is full")
+    with pytest.raises(api.VsphereApiError) as bad:
+        deployed(vsphere_cfg, vcenter, prepared)
+    assert str(bad.value).startswith("could not create vm app01: ")
+    carrier: Any = bad.value
+    assert carrier.created == {}
+
+
+# -- the uuid, which is the only identity destroy is given ----------------
+
+
+def uuid_of(vcenter, **props) -> str:
+    """`_uuid` against one VM on this vCenter, with its uuid properties as a
+    test set them. Driven directly because the fake's VMs all carry the summary
+    path, and the question here is which of the two spellings is read."""
+    vm = vcenter.content.add(FakeVm("app01"))
+    vm.props.pop("summary.config.uuid")
+    vm.props.update(props)
+    return create_mod._uuid(vcenter.session, vm.mo, "app01")
+
+
+def test_the_summary_path_is_what_the_uuid_is_read_from(vcenter):
+    """Through the property collector, not `vm.summary.config.uuid`: fetching
+    the whole `summary` first raises `AttributeError` under pyVmomi 9."""
+    assert uuid_of(vcenter, **{"summary.config.uuid": "5001"}) == "5001"
+
+
+def test_the_config_path_answers_when_the_summary_one_does_not(vcenter):
+    """The same value by another name, and an unset property is absent from the
+    answer rather than None -- which is what a vCenter returns."""
+    assert uuid_of(vcenter, **{"config.uuid": "5002"}) == "5002"
+
+
+def test_a_vm_with_no_uuid_at_all_is_refused(vcenter):
+    """An inventory record carrying nothing here names a VM `vcows destroy`
+    could never match, and it does not match on the name."""
+    with pytest.raises(api.VsphereApiError) as bad:
+        uuid_of(vcenter)
+    assert str(bad.value) == (
+        "vCenter gave app01 no uuid, so nothing could identify it again; "
+        "`vcows destroy` matches a VM on it"
+    )

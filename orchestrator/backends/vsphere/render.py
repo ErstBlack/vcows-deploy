@@ -6,10 +6,11 @@ everything ``create`` needs that is not in an SDK call comes through here as
 byte for byte with no vCenter anywhere.
 
 **No credential is rendered**, and no managed object can be. ``api.connect``
-reads the user and the password out of ``target.vsphere`` itself and nothing from
-that block is copied here; ``preflight`` puts names and booleans into
-``Discovered.artifacts`` and never an object, which is what leaves this function
-able to be pure at all.
+reads the user and the password out of ``target.vsphere`` itself, and the
+``target`` block below is a chosen list of the names ``create``'s lookups
+resolve rather than a copy of that block; ``preflight`` puts names and booleans
+into ``Discovered.artifacts`` and never an object, which is what leaves this
+function able to be pure at all.
 
 Two values come from ``prepare`` rather than from the config, and both are empty
 when the template is already on the vCenter: ``vmdk`` is the file ``prepare``
@@ -55,6 +56,29 @@ def render(cfg: dict, prepared: dict[str, Any]) -> dict[str, Any]:
             "vmdk": prepared.get("vmdk", ""),
             "capacity": prepared.get("capacity", 0),
             "import": target.get("import", IMPORT_DEFAULT),
+            # The template carries a marker too, under `base_volume_name` as its
+            # logical name: `preflight._image` refuses to clone from a template
+            # that has none, so a run that imported one without this would
+            # refuse its own work on the next deploy.
+            "annotation": Marker.for_vm(
+                image["template"], cfg["deployment"]
+            ).to_description(),
+        },
+        # Everything `create`'s lookups resolve by name, and nothing that
+        # authenticates. `create` takes the session and these values and no
+        # config -- the seam `tests/test_seam.py` fixes -- and the functions
+        # behind it each resolve `target.vsphere` for themselves, so the keys
+        # they read have to travel. The list is chosen rather than the block
+        # copied, which is what keeps the user and the password out of a file
+        # that lands in the run directory.
+        "target": {
+            "endpoint": target["endpoint"],
+            "datacenter": target["datacenter"],
+            "datastore": target["datastore"],
+            "cluster": target.get("cluster"),
+            "host": target.get("host"),
+            "folder": target.get("folder"),
+            "resource_pool": target.get("resource_pool"),
         },
         "vms": {vm["name"]: _vm(vm, cfg, seeds[vm["name"]]) for vm in cfg["vms"]},
     }

@@ -1,18 +1,17 @@
-"""The vSphere backend: six methods, one of them not written yet.
+"""The vSphere backend: six methods, bound together.
 
 Two delegate to free functions in ``schema.py``, which imports nothing
 hypervisor-specific. ``connect`` and the lookups live in ``api.py``, the one
-module that reaches vCenter, and ``preflight`` and ``destroy`` drive their
-phases through them. ``create`` raises ``NotImplementedError`` here and gains
-its module in the chunk that writes it. ``prepare`` is the seventh and is
-overridden rather than inherited, the only one of the three backends to do so:
-the conversion in ``convert.py`` is what the inherited body does not do.
+module that reaches vCenter, and ``preflight``, ``create`` and ``destroy`` drive
+their phases through them. ``prepare`` is the seventh and is overridden rather
+than inherited, the only one of the three backends to do so: the conversion in
+``convert.py`` is what the inherited body does not do.
 
 **This package is deliberately not in ``orchestrator/backends/__init__.py``'s
-``REGISTRY``** until the last of those chunks lands, so no config can name a
-backend that is half built. Core takes a registry argument everywhere -- the
-tests build their own dict and compose the core schema from it, which is the
-whole of what registration would add.
+``REGISTRY``** until the register chunk lands, so no config can name a backend
+that is half built. Core takes a registry argument everywhere -- the tests build
+their own dict and compose the core schema from it, which is the whole of what
+registration would add.
 
 **No ``pyVmomi`` import at module level, here or in any module this one imports
 at import time.** The same rule the Proxmox backend follows for ``proxmoxer``
@@ -32,8 +31,10 @@ from ...problems import Problem
 from ..base import Backend, Discovered, Existing, Outcome
 from . import api as _api
 from . import convert as _convert
+from . import create as _create
 from . import destroy as _destroy
 from . import preflight as _preflight
+from . import render as _render
 from . import schema as _schema
 
 
@@ -100,4 +101,11 @@ class VsphereBackend(Backend):
         return prepared
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
-        raise NotImplementedError("the vSphere create chunk has not landed")
+        """Render the values, then make the objects they describe.
+
+        ``render`` is a step of its own even though this line is its only
+        consumer: it is the pure config-to-values half, golden-file tested byte
+        for byte, and keeping it separate lets ``create`` be tested against a
+        dict rather than against a config.
+        """
+        return _create.create(session, _render.render(cfg, prepared))

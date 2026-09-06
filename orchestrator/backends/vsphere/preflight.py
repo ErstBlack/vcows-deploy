@@ -204,7 +204,7 @@ def _image(cfg: dict, found: list[dict], problems: list[Problem]) -> dict:
     ``create`` is false once a template named ``base_volume_name`` carrying our
     marker exists: the bytes moved on the run that made it, and a linked clone
     of it moves none. The name is carried either way because it is what the
-    create chunk clones from or makes.
+    create step clones from or makes.
 
     A VM of that name that is *not* a marked template stops the deploy rather
     than planning one over it -- the never-adopt rule the whole tool is built on,

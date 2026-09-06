@@ -1,9 +1,16 @@
 """The apply, through the vCenter API and vCenter's own HTTP endpoints.
 
-What is here is the *shared image*: the golden VMDK becomes one marked template
-VM, once, and every deploy after that clones it. The per-VM half -- the seed ISO,
-the clone, the power on -- is the next chunk's, and so is the ``create`` that
-orders these calls; this module is the calls themselves.
+The *shared image* first: the golden VMDK becomes one marked template VM, once,
+and every deploy after that clones it. Then per VM the seed ISO onto the
+datastore, the clone, and the power on. ``create`` at the bottom is what orders
+the two halves, and it is the only function here a phase calls.
+
+**A linked clone is why the bytes move once.** The template is snapshotted
+before it is marked, and every VM's disk is a delta over that snapshot, so a
+second deploy against the same vCenter converts nothing and uploads nothing but
+its seed ISOs. ``clone: full`` copies the disk instead, which is the knob for a
+vCenter that will not do the first and the only path on which ``disk_gb`` can
+grow.
 
 **Two import paths, and the ``import`` knob picks between them.** ``import_ovf``
 is the default and moves a ``streamOptimized`` VMDK through an ``ImportVApp``
@@ -38,6 +45,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
+from ..base import carrying
 from . import api
 from .preflight import SEED_FOLDER
 
@@ -446,7 +454,7 @@ def _placement(cfg: dict, session: api.Session) -> tuple[Any, Any, Any, Any]:
     from pyVmomi import vim
 
     target = cfg["target"]["vsphere"]
-    datacenter = _resolve(session, vim.Datacenter, target["datacenter"], "datacenter")
+    datacenter = _datacenter(cfg, session)
     datastore = _resolve(
         session, vim.Datastore, target["datastore"], "datastore", datacenter
     )
@@ -482,6 +490,20 @@ def _placement(cfg: dict, session: api.Session) -> tuple[Any, Any, Any, Any]:
             datacenter,
         ).resourcePool
     return datastore, folder, pool, host
+
+
+def _datacenter(cfg: dict, session: api.Session) -> Any:
+    """The datacenter every other name is looked for inside.
+
+    Its own function because two callers need it and neither can take the
+    other's: ``_placement`` resolves five names under it, and a clone resolves
+    its port groups under it without wanting a placement.
+    """
+    from pyVmomi import vim
+
+    return _resolve(
+        session, vim.Datacenter, cfg["target"]["vsphere"]["datacenter"], "datacenter"
+    )
 
 
 def _resolve(
@@ -537,3 +559,325 @@ def make_template(vm: Any, marker: str) -> None:
         "snapshot",
     )
     vm.MarkAsTemplate()
+
+
+# -- the clone -----------------------------------------------------------
+
+
+def clone_vm(
+    cfg: dict, session: api.Session, template: Any, vm: dict, seed_path: str
+) -> Any:
+    """Clone the template into one VM, with its seed and its NICs, and start it.
+
+    **Linked by default, and that is what makes a second deploy cheap.**
+    ``createNewChildDiskBacking`` plus the template's own snapshot gives a delta
+    disk over bytes that are already on the datastore (A5), so nothing moves.
+    ``clone: full`` copies the disk instead, and is the knob for a vCenter that
+    refuses the first -- or for a config that wants a bigger disk, because only
+    a full clone's can be grown.
+
+    **The differences ride on the ``CloneSpec`` rather than on a reconfigure
+    afterwards.** A clone that appeared carrying the template's annotation would
+    be a VM another run's ``preflight`` reads as the golden image, and the window
+    is as long as a disk copy.
+
+    ``powerOn=False`` and a separate ``PowerOnVM_Task``: a full clone's disk is
+    grown between the two, and a VM that booted at the template's size and was
+    resized underneath would have to be rebooted to see it.
+
+    ``template.snapshot`` is read by attribute rather than through the property
+    collector, which every other read here refuses to be. It is the one read the
+    vcsim spike measured that way and it answered; ``summary`` and ``runtime``
+    are the ones that do not deserialise. A template with no snapshot reaches
+    vCenter as a linked spec naming none, which is a fault that says so.
+    """
+    from pyVmomi import vim
+
+    datastore, folder, pool, host = _placement(cfg, session)
+    linked = vm["clone"] == "linked"
+    log.info("cloning %s as a %s clone", vm["vm_name"], vm["clone"])
+    clone = api.wait(
+        template.CloneVM_Task(
+            folder=folder,
+            name=vm["vm_name"],
+            spec=vim.vm.CloneSpec(
+                location=vim.vm.RelocateSpec(
+                    pool=pool,
+                    datastore=datastore,
+                    # The same host the import landed on, or None for a cluster
+                    # placement, which is vCenter's cue to place it itself.
+                    host=host,
+                    diskMoveType=("createNewChildDiskBacking" if linked else None),
+                ),
+                snapshot=(
+                    template.snapshot.currentSnapshot
+                    if linked and template.snapshot
+                    else None
+                ),
+                powerOn=False,
+                template=False,
+                config=_clone_config(cfg, session, vm, seed_path),
+            ),
+        ),
+        "clone",
+    )
+    if not linked:
+        _grow(session, clone, vm["disk_gb"])
+    api.wait(clone.PowerOnVM_Task(), "power on")
+    return clone
+
+
+#: The IDE controller the seed ISO's drive hangs off. vSphere gives every VM
+#: ide0 and ide1 whatever else it has, at 200 and 201, and a clone inherits the
+#: template's -- so this is a reference to a device that is already there rather
+#: than a number this spec chooses.
+IDE_CONTROLLER_KEY = 200
+
+#: What the two kinds of device a clone adds are referred to by *inside its own
+#: spec*, the NICs counting down from the second. Negative because vCenter
+#: numbers new devices itself and reads these only as references; a positive key
+#: would name a device the template already has.
+CDROM_KEY = -201
+NIC_KEY = -202
+
+
+def _clone_config(cfg: dict, session: api.Session, vm: dict, seed_path: str) -> Any:
+    """What the clone differs from the template by: its size, its identity and
+    its devices.
+
+    ``checkMACAddress=FALSE`` per NIC, and it is not a knob (#308): cloud-init
+    matches an interface by MAC, so the ``52:54:00`` address ``cloudinit`` derived
+    has to be the one the guest sees, and vCenter otherwise objects to a manual
+    address outside its own range.
+    """
+    from pyVmomi import vim
+
+    # One lookup per distinct port group rather than one per NIC. `render` puts
+    # the target's single network onto every NIC of every VM, so this is one
+    # lookup -- and it is a lookup rather than a name because a port group that
+    # stopped resolving between preflight and here is an error, as `_placement`
+    # says of the other five names.
+    datacenter = _datacenter(cfg, session)
+    networks = {
+        nic["network"]: _resolve(
+            session, vim.Network, nic["network"], "network", datacenter
+        )
+        for nic in vm["nics"]
+    }
+    return vim.vm.ConfigSpec(
+        annotation=vm["annotation"],
+        numCPUs=vm["vcpus"],
+        memoryMB=vm["memory_mib"],
+        # Stated rather than inherited, even though `make_template` set the
+        # template to the same default: a clone inherits it, so a config saying
+        # `firmware: bios` would otherwise be a key the schema accepts and
+        # nothing reads. The other two backends both carry theirs per VM.
+        firmware=vm["firmware"],
+        deviceChange=[
+            vim.vm.device.VirtualDeviceSpec(operation="add", device=_cdrom(seed_path)),
+            *(
+                vim.vm.device.VirtualDeviceSpec(
+                    operation="add",
+                    device=_adapter(i, nic, networks[nic["network"]]),
+                )
+                for i, nic in enumerate(vm["nics"])
+            ),
+        ],
+        extraConfig=[
+            vim.option.OptionValue(key=f"ethernet{i}.checkMACAddress", value="FALSE")
+            for i in range(len(vm["nics"]))
+        ],
+    )
+
+
+def _cdrom(seed_path: str) -> Any:
+    """The seed ISO, in a drive the guest finds connected at its first boot.
+
+    ``startConnected`` is A9 and is the whole of it: a CD-ROM vCenter attaches
+    but leaves disconnected is a cloud-init that never runs, and the VM comes up
+    with no addresses and no keys. ``connected`` as well, because the VM is
+    powered on in the same call chain and only ``startConnected`` would leave
+    the first boot without it.
+    """
+    from pyVmomi import vim
+
+    return vim.vm.device.VirtualCdrom(
+        key=CDROM_KEY,
+        controllerKey=IDE_CONTROLLER_KEY,
+        unitNumber=0,
+        backing=vim.vm.device.VirtualCdrom.IsoBackingInfo(fileName=seed_path),
+        connectable=vim.vm.device.VirtualDevice.ConnectInfo(
+            startConnected=True, connected=True, allowGuestControl=False
+        ),
+    )
+
+
+def _adapter(index: int, nic: dict, network: Any) -> Any:
+    """One network adapter, on the target's port group, with a stated MAC.
+
+    ``addressType="manual"`` is what makes ``macAddress`` mean anything: without
+    it vCenter generates its own and the seed ISO's match-by-MAC finds no
+    interface to configure.
+
+    The backing names the port group rather than holding the resolved object,
+    which is the shape the vcsim spike measured and what a standard port group
+    takes. Resolving it is still what proves the name is there.
+    """
+    from pyVmomi import vim
+
+    adapters = {
+        "vmxnet3": vim.vm.device.VirtualVmxnet3,
+        "e1000": vim.vm.device.VirtualE1000,
+        "e1000e": vim.vm.device.VirtualE1000e,
+    }
+    return adapters[nic["model"]](
+        key=NIC_KEY - index,
+        addressType="manual",
+        macAddress=nic["mac"],
+        backing=vim.vm.device.VirtualEthernetCard.NetworkBackingInfo(
+            deviceName=network.name
+        ),
+        connectable=vim.vm.device.VirtualDevice.ConnectInfo(startConnected=True),
+    )
+
+
+def _grow(session: api.Session, clone: Any, disk_gb: int) -> None:
+    """Grow a full clone's disk to what the config asked for.
+
+    A clone comes back the size of the template, which is the golden image's
+    virtual size, so ``disk_gb`` is only honoured by growing it afterwards --
+    the same step the Proxmox backend's ``create_vm`` makes after its
+    ``import-from``. **A linked clone never reaches here**: its disk is a delta
+    on the template's and cannot be extended, which ``schema`` refuses at load
+    time rather than mid-apply.
+
+    Equal is the ordinary case and is left alone: ``imagecheck`` already refuses
+    a ``disk_gb`` below the image's virtual size, so what is left is a config
+    asking for exactly it, and vCenter refuses a resize that is not a growth.
+    """
+    from pyVmomi import vim
+
+    wanted = disk_gb * 1024**2
+    devices = api.properties(session.content, clone, ("config.hardware.device",))
+    disk = next(
+        (
+            device
+            for device in devices.get("config.hardware.device") or ()
+            if isinstance(device, vim.vm.device.VirtualDisk)
+        ),
+        None,
+    )
+    if disk is None:
+        raise api.VsphereApiError(
+            f"the clone has no virtual disk, so nothing could be grown to {disk_gb} GiB"
+        )
+    if disk.capacityInKB >= wanted:
+        return
+    disk.capacityInKB = wanted
+    api.wait(
+        clone.ReconfigVM_Task(
+            spec=vim.vm.ConfigSpec(
+                deviceChange=[
+                    vim.vm.device.VirtualDeviceSpec(operation="edit", device=disk)
+                ]
+            )
+        ),
+        "grow the disk",
+    )
+
+
+# -- the whole apply -----------------------------------------------------
+
+
+#: The two import paths, by what the ``import`` knob calls them. A dict rather
+#: than a comparison because the schema's enum is what closes the set.
+IMPORTS = {"ovf": import_ovf, "datastore": import_flat}
+
+
+def create(session: api.Session, values: dict) -> dict:
+    """Create everything ``render`` described, and report it as the inventory.
+
+    Keyed by the logical name, with the four fields ``inventory.json`` carries.
+
+    **The config is rebuilt here rather than handed in.** Every function above
+    takes one, because each resolves ``target.vsphere`` names for itself, and
+    the seam ``tests/test_seam.py`` fixes gives ``create`` the session and the
+    rendered values and nothing else. ``render`` puts exactly the keys those
+    lookups read under ``target``, and no credential is among them.
+    """
+    cfg = {"target": {"vsphere": values["target"]}}
+    template = _template(cfg, session, values["image"])
+
+    vms: dict[str, dict] = {}
+    # The return below is the only other way `vms` leaves this function.
+    with carrying(created=vms):
+        for key, vm in values["vms"].items():
+            with _made(f"seed {vm['seed_name']}"):
+                seed = upload(
+                    cfg,
+                    session,
+                    vm["seed_iso"],
+                    f"{SEED_FOLDER}/{vm['vm_name']}/{vm['seed_name']}",
+                )
+            with _made(f"vm {vm['vm_name']}"):
+                clone = clone_vm(cfg, session, template, vm, seed)
+                uuid = _uuid(session, clone, vm["vm_name"])
+            vms[key] = {
+                "name": vm["vm_name"],
+                "uuid": uuid,
+                "configured_address": vm["configured_address"],
+                "disks": [seed],
+            }
+    return vms
+
+
+def _template(cfg: dict, session: api.Session, image: dict) -> Any:
+    """The template every VM in this run is cloned from.
+
+    Imported, reconfigured, snapshotted and marked when ``preflight`` did not
+    find one; looked up by name when it did. That is the whole of what
+    ``image["create"]`` decides, and the reason a second deploy against the same
+    vCenter moves no bytes at all.
+
+    A miss on the lookup is an error rather than an import: ``preflight`` saw it
+    there, ``prepare`` therefore converted nothing, and there is no VMDK on this
+    machine to import instead.
+    """
+    from pyVmomi import vim
+
+    if not image["create"]:
+        found = api.find_by_name(session.content, vim.VirtualMachine, image["template"])
+        if found is None:
+            raise api.VsphereApiError(
+                f"the template {image['template']!r} is no longer on this vCenter; "
+                f"preflight found it when this run started"
+            )
+        return found
+
+    with _made(f"template {image['template']}"):
+        imported = IMPORTS[image["import"]](
+            cfg, session, image["vmdk"], image["template"], image["capacity"]
+        )
+        make_template(imported, image["annotation"])
+    return imported
+
+
+def _uuid(session: api.Session, clone: Any, name: str) -> str:
+    """The clone's uuid, which is the only identity ``destroy`` is ever given.
+
+    Both spellings in one call, because they are the same value by two paths and
+    a vCenter that answers one answers it. Neither is an error rather than a
+    record no teardown could match: ``destroy`` finds a VM by comparing
+    ``Existing.id`` against this, and an inventory carrying nothing here names a
+    VM that cannot be removed by name either.
+    """
+    found = api.properties(
+        session.content, clone, ("summary.config.uuid", "config.uuid")
+    )
+    uuid = found.get("summary.config.uuid") or found.get("config.uuid")
+    if not uuid:
+        raise api.VsphereApiError(
+            f"vCenter gave {name} no uuid, so nothing could identify it again; "
+            f"`vcows destroy` matches a VM on it"
+        )
+    return str(uuid)
