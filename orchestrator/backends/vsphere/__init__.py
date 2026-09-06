@@ -7,11 +7,10 @@ their phases through them. ``prepare`` is the seventh and is overridden rather
 than inherited, the only one of the three backends to do so: the conversion in
 ``convert.py`` is what the inherited body does not do.
 
-**This package is deliberately not in ``orchestrator/backends/__init__.py``'s
-``REGISTRY``** until the register chunk lands, so no config can name a backend
-that is half built. Core takes a registry argument everywhere -- the tests build
-their own dict and compose the core schema from it, which is the whole of what
-registration would add.
+``orchestrator/backends/__init__.py``'s ``REGISTRY`` names this class, which is
+the whole of what makes ``backend: vsphere`` a config a site can write. Core
+still takes a registry argument everywhere, so the shipped dict is a default and
+not a global dependency.
 
 **No ``pyVmomi`` import at module level, here or in any module this one imports
 at import time.** The same rule the Proxmox backend follows for ``proxmoxer``

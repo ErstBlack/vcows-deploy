@@ -18,10 +18,12 @@ from __future__ import annotations
 from .base import Backend
 from .libvirt import LibvirtBackend
 from .proxmox import ProxmoxBackend
+from .vsphere import VsphereBackend
 
 REGISTRY: dict[str, Backend] = {
     "libvirt": LibvirtBackend(),
     "proxmox": ProxmoxBackend(),
+    "vsphere": VsphereBackend(),
 }
 
 __all__ = ["REGISTRY", "Backend"]

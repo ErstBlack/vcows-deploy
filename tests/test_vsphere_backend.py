@@ -7,10 +7,9 @@ starts goes through it, so what it does with a task that fails or never
 finishes is decided once. `create` is two calls rather than one forwarding
 line, so one test below pins the order it makes them in.
 
-The registry here is a dict this module builds. `orchestrator.backends.REGISTRY`
-does not name this backend until the register chunk, so master never carries a
-config that can select a half-built one -- and core takes a registry argument
-everywhere, which is what makes that possible.
+The registry here is the shipped `orchestrator.backends.REGISTRY`: this backend
+is registered, so the wiring test below is over the object a real run reaches
+for rather than over a dict this module built.
 """
 
 from __future__ import annotations
@@ -27,9 +26,9 @@ import pytest
 import yaml
 from pyVmomi import vim
 
+from orchestrator.backends import REGISTRY
 from orchestrator.backends.base import Backend, Discovered
 from orchestrator.backends.vsphere import (
-    VsphereBackend,
     api,
     convert,
     create,
@@ -47,8 +46,6 @@ from tests.fake_vsphere import (
     smart_connect,
 )
 from tests.test_qcow2 import make_qcow2
-
-REGISTRY = {"vsphere": VsphereBackend()}
 
 
 @pytest.fixture
@@ -76,10 +73,10 @@ def fake_vcenter(monkeypatch):
 
 
 def test_it_is_registered_under_its_own_name(backend, tmp_path):
-    """Through a registry this module built: `config.core_schema` and
-    `config.load` both take one, so a backend is reachable end to end before it
-    is in the shipped `REGISTRY`."""
+    """Through the shipped registry: `backend: vsphere` in a config now resolves
+    to this class, and `config.core_schema` composes its sub-schema in."""
     assert isinstance(backend, Backend)
+    assert REGISTRY["vsphere"] is backend
     assert core_schema(REGISTRY)["properties"]["target"]["properties"]["vsphere"] is (
         schema.TARGET_SCHEMA
     )
@@ -178,9 +175,8 @@ def test_create_renders_first_and_hands_the_values_to_the_session(backend, monke
     functions, and the argument order it calls the second one with is not the
     order it was called with. Both are what a rename or a swapped pair breaks
     while each half keeps passing its own tests -- the same gate
-    `tests/test_seam.py` holds over the libvirt backend, which is what this
-    backend's wiring has to satisfy before the register chunk puts it in
-    `REGISTRY`.
+    `tests/test_seam.py` holds over the libvirt backend, and the one this
+    backend has to pass now that `REGISTRY` names it.
     """
     monkeypatch.setattr(
         render, "render", lambda cfg, prepared: ("rendered", cfg, prepared)

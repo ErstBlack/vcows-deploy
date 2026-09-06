@@ -14,14 +14,10 @@ import struct
 
 import pytest
 
-from orchestrator.backends.vsphere import VsphereBackend, schema
+from orchestrator.backends import REGISTRY
+from orchestrator.backends.vsphere import schema
 from orchestrator.config import validate as core_validate
 from tests.conftest import CA_CERT, VSPHERE_CA_CERT, errors, messages, wheres
-
-#: This backend is deliberately absent from `orchestrator.backends.REGISTRY`
-#: until the register chunk, so the checks that go through the composed core
-#: schema build their own.
-REGISTRY = {"vsphere": VsphereBackend()}
 
 
 def qcow2_header(virtual_size: int) -> bytes:

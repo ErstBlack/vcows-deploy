@@ -1,9 +1,9 @@
 # vcows-deploy
 
 Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`,
-or to Proxmox VE over its HTTPS API. `backend:` in the config picks one. Shipped
-as a container image, built to run at a site with no network beyond that one
-connection to the hypervisor.
+to Proxmox VE over its HTTPS API, or to VMware vCenter over its own. `backend:`
+in the config picks one. Shipped as a container image, built to run at a site
+with no network beyond that one connection to the hypervisor.
 
 ## Read this first: the config is not declarative
 
@@ -27,13 +27,13 @@ Tearing something down is `vcows destroy`, and nothing else.
 | | |
 |---|---|
 | **preflight** | Enumerates the target by ownership marker. What exists, what is ours, what conflicts. |
-| **deploy** | Python and the hypervisor's own client (`libvirt`, `proxmoxer`): the golden image once per host, then a per-VM disk, a cloud-init seed ISO, and a VM carrying its marker. |
+| **deploy** | Python and the hypervisor's own client (`libvirt`, `proxmoxer`, `pyvmomi`): the golden image once per host, then a per-VM disk, a cloud-init seed ISO, and a VM carrying its marker. On vSphere the image is converted to VMDK, imported once as a marked template VM and cloned per VM. |
 | **destroy** | The same client, directly, by marker. Works after a VM has been renamed. |
 
 Identity is the **marker**, never the name — a JSON payload in the libvirt
-domain's `<metadata>`, or in the Proxmox VM's `description`. A renamed VM is
-still ours and still destroyable; a VM vcows did not create is never adopted or
-overwritten.
+domain's `<metadata>`, in the Proxmox VM's `description`, or in the vSphere VM's
+`config.annotation`. A renamed VM is still ours and still destroyable; a VM vcows
+did not create is never adopted or overwritten.
 
 ## Requirements
 
@@ -57,6 +57,22 @@ overwritten.
   storage and is enabled under Datacenter → Storage → Content; `preflight` names
   the storage and the missing type. **vcows never creates a storage** either.
 * The bridge each NIC names must exist on the node.
+* The same golden image requirement as above: `cloud-init` and `growpart`.
+
+**On vCenter**
+
+* A user under `target.vsphere` — an SSO login and its password, the only
+  credential vCenter offers — holding the privileges to **import** an OVF,
+  **clone** a VM, take a **snapshot**, **mark a template**, change **power**
+  state, **destroy** a VM, and **write to the datastore**. Anything less fails
+  part-way through a create rather than in `validate`, which checks only the
+  shape.
+* Every name under `target.vsphere` must already exist: the datacenter, the
+  datastore, the port group, and the cluster or host. **vcows creates none of
+  them**, exactly as it creates no libvirt pool and no PVE storage. `preflight`
+  resolves each and names the one that missed.
+* **vCenter, not a standalone ESXi host.** ESXi has no clone API, which is what
+  makes one imported template serve every VM.
 * The same golden image requirement as above: `cloud-init` and `growpart`.
 
 **Where you run the container**
@@ -256,6 +272,57 @@ are rejected. **A Proxmox VM name is a DNS name**, so the `_` a libvirt domain
 name allows is refused. A libvirt config ported across hits all of these in
 `validate`, offline.
 
+And against vSphere:
+
+```yaml
+schema_version: 1
+deployment: lab-a
+backend: vsphere
+target:
+  vsphere:
+    endpoint: https://vcenter.example.com   # https, host[:port], no path, no credentials
+    user: vcows@vsphere.local               # an SSO login; vCenter has no token form
+    password: <secret>
+    datacenter: dc-a
+    datastore: ds-a                         # template disk, clones and seed ISOs
+    network: pg-vcows                       # the port group; it carries the VLAN
+    cluster: cluster-a                      # exactly one of cluster | host
+    # folder: vcows                         # optional; the datacenter's VM folder otherwise
+    # resource_pool: vcows                  # optional; the root pool otherwise
+    # ca_cert: |                            # private CA; the PEM itself
+    #   -----BEGIN CERTIFICATE-----
+    #   ...
+    # insecure: true                        # self-signed certificate; validate warns
+    # import: ovf                           # ovf | datastore
+    # clone: linked                         # linked | full
+image:
+  source_qcow2: /images/golden.qcow2
+  base_volume_name: golden.qcow2   # the template VM's name; imported once, cloned per VM
+vms:
+  - name: app01                    # a DNS name: no underscore
+    vcpus: 2
+    memory_mib: 4096
+    disk_gb: 40                    # under `clone: linked`, must equal the image's virtual size
+    nics:
+      - ip_cidr: 192.168.122.60/24  # no network: and no bridge:
+        gateway: 192.168.122.1
+        nameservers: [192.168.122.1]
+```
+
+**A vSphere NIC names no network.** The port group is named once, under
+`target.vsphere.network`, so `network:` and `bridge:` are both rejected on a NIC
+and there is no `vlan_id` — the port group carries the VLAN. `model:` is
+`vmxnet3`, `e1000` or `e1000e`. **The golden image becomes a template VM.**
+`base_volume_name` is the template's name: the qcow2 is converted to VMDK at the
+site, imported once, snapshotted and marked, and every VM is a clone of it.
+**A linked clone's disk cannot be grown**, so under the default `clone: linked`
+`disk_gb` must equal the image's virtual size; `clone: full` copies the disk and
+can grow it. `validate` refuses the mismatch offline.
+
+**The two knobs are there for first contact.** `import` and `clone` exist so a
+delivered bundle can switch paths without a rebuild, and their defaults are what
+the design expects vCenter to do.
+
 vcows owns `meta-data` and `network-config`; `user_data` is yours and is passed
 through with no interpretation.
 
@@ -419,11 +486,19 @@ Treat it as less protected than the run directory even so: that directory is
 
 ## Air gap
 
-Nothing is installed at run time: both create paths are Python against a client
+Nothing is installed at run time: every create path is Python against a client
 that ships in the image, so there is no resolver to hang on and no artifact to
 fetch. The gate for this is `tests/test_image.py`, which runs every case under
 `--network=none` and requires `libvirt`, `proxmoxer` and their dependencies to
 import, and `validate` to complete, with no network at all.
+
+**vSphere needs one connection too, and it is to vCenter.** The image and the
+seed ISOs are uploaded through vCenter's own HTTPS endpoints — the datastore
+`/folder` path and the `ImportVApp` lease — so no route to an ESXi host is
+needed. The lease device URL names a host of `*` that the SDK replaces with the
+vCenter host, which is what makes that true; it is one of the items first contact
+with a real vCenter has to confirm, and the `import: datastore` knob is the
+fallback if it does not hold.
 
 ## The image
 
@@ -476,7 +551,9 @@ bug. `docs/ci.md` records why, and what reinstating it needs.
 licence and source RPM, plus the git revision that built it. The same file is
 copied into every run directory.
 
-The image contains GPL-2.0-**only** components, and GPLv2 §3 offers no
+The image contains GPL-2.0-**only** components — `qemu-img`, which the vSphere
+backend uses to convert the golden image, is one, and it is the licence the
+base's userspace already carries — and GPLv2 §3 offers no
 network-server option for source — so **source ships as a separate medium
 accompanying the delivery**, mirrored from the `source_rpms` list in that
 manifest. The one non-RPM component has its licence and provenance vendored
@@ -514,6 +591,8 @@ explicit reason rather than quietly passing:
 |---|---|
 | `VCOWS_RIG_URI=qemu+ssh://…` | Runs preflight against a real libvirt hypervisor, and the boot gate: one VM deployed, booted, read over SSH and destroyed again. |
 | `VCOWS_PVE_ENDPOINT=https://…` **and** `VCOWS_PVE_TOKEN` | Runs against a real Proxmox cluster. Both, or the gate answers nothing. The test composes them into the config it deploys. |
+| `VCOWS_VSPHERE_ENDPOINT=https://…`, `VCOWS_VSPHERE_USER` **and** `VCOWS_VSPHERE_PASSWORD` | Runs preflight against a real vCenter. All three, or the gate answers nothing. Read-only: it creates, modifies and deletes nothing. |
+| `vcsim` on `PATH` | Reserved for the vSphere simulator smoke test. `scripts/install-tools.sh` pins the binary; no test demands the gate yet. |
 | `VCOWS_IMAGE=localhost/vcows-deploy:0.1.0.0` | Runs the offline container gate. Needs podman; buildah cannot substitute. |
 | `python3-libvirt` importable | Pins our literal flag and error constants against the real ABI. |
 | `pycdlib` importable | Builds the seed ISO. |
@@ -523,7 +602,7 @@ explicit reason rather than quietly passing:
 `VCOWS_GATES` turns a named gate's skip into a failure carrying its reason:
 
 ```bash
-VCOWS_GATES=rig just test         # or: image, libvirt, pycdlib, smoke, proxmox, or all
+VCOWS_GATES=rig just test         # or: image, libvirt, pycdlib, smoke, proxmox, vsphere, vcsim, or all
 ```
 
 It is comma-separated, case-sensitive, and does **not** strip whitespace —

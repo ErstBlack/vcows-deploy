@@ -1,7 +1,8 @@
 # vcows-deploy
 
-Deploys pre-built golden qcow2 images as VMs to KVM/libvirt or Proxmox VE from
-a container that runs air-gapped apart from that one hypervisor connection.
+Deploys pre-built golden qcow2 images as VMs to KVM/libvirt, Proxmox VE or
+vSphere from a container that runs air-gapped apart from that one hypervisor
+connection.
 
 Most rules here are counterintuitive, and the obvious helpful action breaks
 several of them.
@@ -62,15 +63,19 @@ matches a trailing attribute path rather than a literal. Introducing one is a
 test failure, not a style note.
 
 `VCOWS_GATES` (`tests/conftest.py`) turns a named gate's skip into a failure.
-Six names, a closed set: `image`, `rig`, `pycdlib`, `libvirt`, `smoke`, `proxmox`,
-plus `all`. It is case-sensitive and does not strip whitespace, so
-`VCOWS_GATES="rig, image"` silently demands only `rig`. The list is `KNOWN` in
-`tests/test_gates.py`, not this sentence: a name absent from it is a test
-failure. `smoke` is `tests/test_libvirt_smoke.py`; `proxmox` needs
-`VCOWS_PVE_ENDPOINT` **and** `VCOWS_PVE_TOKEN`, because a gate that can name a
-cluster it cannot authenticate to answers nothing. The rig test composes both
-into the config it deploys; the product itself reads every Proxmox credential
-from `target.proxmox` and from nowhere else.
+Eight names, a closed set: `image`, `rig`, `pycdlib`, `libvirt`, `smoke`,
+`proxmox`, `vsphere`, `vcsim`, plus `all`. It is case-sensitive and does not
+strip whitespace, so `VCOWS_GATES="rig, image"` silently demands only `rig`. The
+list is `KNOWN` in `tests/test_gates.py`, not this sentence: a name absent from
+it is a test failure. `smoke` is `tests/test_libvirt_smoke.py`; `vcsim` is
+reserved for the simulator gate and nothing demands it yet. `proxmox` needs
+`VCOWS_PVE_ENDPOINT` **and** `VCOWS_PVE_TOKEN`, and `vsphere` needs
+`VCOWS_VSPHERE_ENDPOINT`, `VCOWS_VSPHERE_USER` **and**
+`VCOWS_VSPHERE_PASSWORD`, because a gate that can name a cluster it cannot
+authenticate to answers nothing. Each rig test composes its own credentials into
+the config it deploys; the product itself reads every Proxmox credential from
+`target.proxmox` and every vCenter one from `target.vsphere`, and from nowhere
+else.
 
 ## Do not cite line numbers
 
