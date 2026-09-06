@@ -1,10 +1,8 @@
 # vcows-deploy
 
-Deploy pre-built golden qcow2 images as VMs to KVM/libvirt over `qemu+ssh://`,
-to Proxmox VE over its HTTPS API with a token, or to vCenter over its own HTTPS
-API with a user and a password, shipped as a container that runs air-gapped apart
-from that one connection. Python creates and destroys through the hypervisor's
-own SDK -- the `libvirt` binding, `proxmoxer`, and `pyvmomi`.
+Deploys pre-built golden qcow2 images as VMs to KVM/libvirt, Proxmox VE or
+vSphere from a container that runs air-gapped apart from that one hypervisor
+connection.
 
 Most rules here are counterintuitive, and the obvious helpful action breaks
 several of them.
@@ -155,14 +153,12 @@ warrants is itself a problem.
 
 ## Commands
 
+`just --list` is the recipe index. What it cannot tell you:
+
 | | |
 |---|---|
-| `.tools/bin/just` | Where `just` lives; it is not on PATH, so every recipe below is `.tools/bin/just <recipe>` |
+| `just` | `/usr/bin/just` (EPEL) where the RPM is installed; a tree without it gets `.tools/bin/just` from `scripts/install-tools.sh`, and every hook-made worktree carries one. A subagent brief names which, so the agent does not probe for it. |
 | `just dev-env` | The only correct venv |
-| `just lint` | Six gates: ruff check, ruff format, hadolint, shellcheck, workflows, gitleaks |
-| `just typecheck` | `ty check` |
-| `just check` | lint, typecheck, test |
-| `just image`, `just scan`, `just bundle` | Build, scan against the baseline, assemble the delivery bundle |
 | `scripts/vcows.sh` | The five-verb wrapper a site runs; `bundle` substitutes the archive's tag for its `@IMAGE@` and ships it |
 
 Three tiers: the Stop hook runs lint and typecheck every turn, `just check` adds
