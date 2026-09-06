@@ -2,7 +2,7 @@
   "generated": "2026-09-06T20:31:25Z",
   "note": "Mutation results reviewed and accepted at this tree. `survived` is a mutant some test ran and no test noticed; `no_tests` is one no test reached at all. scripts/mutants.sh fails when either rises. Lowering these is writing a test; raising one deliberately is a hand-edit with a reason in the commit body. Most of them mutate the text of a log line or a Problem message rather than a branch -- killing those means asserting on prose, so they are a floor and not a backlog -- and the rest are equivalent mutants no test can tell from the original.",
   "total": 5644,
-  "killed": 5135,
-  "survived": 508,
+  "killed": 5133,
+  "survived": 509,
   "no_tests": 0
 }
