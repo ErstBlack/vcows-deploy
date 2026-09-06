@@ -23,6 +23,7 @@ HADOLINT_VERSION=2.15.1
 TRIVY_VERSION=0.74.0
 SYFT_VERSION=1.51.1
 GITLEAKS_VERSION=8.30.1
+VCSIM_VERSION=0.56.0
 
 # tool:version -> sha256 of the artifact named in fetch() below.
 digest() {
@@ -33,6 +34,7 @@ digest() {
         trivy:0.74.0)     echo 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a ;;
         syft:1.51.1)      echo 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3 ;;
         gitleaks:8.30.1)  echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+        vcsim:0.56.0)     echo 1d207f69a1c78a4bc819a66c568013035229a91696131e9756be0444077ac2fe ;;
         *) die "no pinned digest for $1 -- add it from the project's published checksums file" ;;
     esac
 }
@@ -48,6 +50,7 @@ url() {
         # spells it that way, and the wrong spelling 404s rather than failing the
         # digest check, which reads as a network problem.
         gitleaks)   echo "https://github.com/gitleaks/gitleaks/releases/download/v${2}/gitleaks_${2}_linux_x64.tar.gz" ;;
+        vcsim)      echo "https://github.com/vmware/govmomi/releases/download/v${2}/vcsim_Linux_x86_64.tar.gz" ;;
     esac
 }
 
@@ -56,7 +59,7 @@ url() {
 # unpacking into something surprising.
 fetch() {
     local tool="$1" version="$2" dest="$3" want file src
-    # Here rather than in main(): a box that already carries all six tools never
+    # Here rather than in main(): a box that already carries all seven tools never
     # reaches this function, and should not be refused for lacking curl.
     need curl
     want="$(digest "${tool}:${version}")"
@@ -74,11 +77,19 @@ installed() {
     [ -f "$TOOLS_BIN/$1" ] && [ -x "$TOOLS_BIN/$1" ]
 }
 
-# The version a binary on PATH reports, or empty when it will not say. All six
-# put a dotted version in the first line of `--version` -- measured: `just
+# The version a binary on PATH reports, or empty when it will not say. Six of the
+# seven put a dotted version in the first line of `--version` -- measured: `just
 # 1.46.0`, `Haskell Dockerfile Linter 2.15.1`, `Version: 0.74.0`,
-# `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves all six and there is no
+# `syft 1.51.1`, `uv 0.12.5` -- so one extraction serves them and there is no
 # per-tool case arm to keep in step with the pins above.
+#
+# **vcsim is the seventh and has no version flag.** Measured on 0.56.0:
+# `vcsim --version` prints `flag provided but not defined: -version`, the usage
+# block, and exits 2. So a *system* copy of vcsim on PATH is refused by
+# install_one's die rather than reported with a warning; the pinned download is
+# the only path that installs it. Nothing in this repo ships a system vcsim, and
+# a per-tool arm here to soften that would be a case arm for one tool that no
+# caller has.
 #
 # Two failures, and they must not read the same. A tool that prints no dotted
 # triple is the empty return this function is documented to make, and install_one
@@ -107,7 +118,7 @@ install_one() {
     # `just` (EPEL). Only install what is genuinely missing.
     #
     # `have` is `command -v` and says nothing about version, and this arm covers
-    # all six tools rather than the one the sentence above names -- so on any
+    # all seven tools rather than the one the sentence above names -- so on any
     # box with a distro copy, the pins and digests at the top of this file are
     # advisory and the fetch machinery never runs. Intended, but said out loud:
     # the version is reported beside the path, and a mismatch against the pin is
@@ -194,6 +205,7 @@ main() {
         "trivy:$TRIVY_VERSION"
         "syft:$SYFT_VERSION"
         "gitleaks:$GITLEAKS_VERSION"
+        "vcsim:$VCSIM_VERSION"
     )
     log "installing tools into .tools/bin"
     for entry in "${tools[@]}"; do

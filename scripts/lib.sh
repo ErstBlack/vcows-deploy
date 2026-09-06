@@ -42,7 +42,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # Which installer provides which tool, for `need`'s message. One row per tool
 # `need` is actually passed and an installer supplies; a tool that gains a `need`
-# call later adds its row then.
+# call later adds its row then. `vcsim` is the one exception: it is pinned by
+# install-tools.sh and nothing in this tree calls `need vcsim` yet, so its row
+# sits with its pin rather than arriving in a later commit that would have to
+# remember it.
 #
 # **Keyed by command, not by package, and it cannot be generated from either
 # installer.** os-deps.sh's python3-libvirt puts no command on PATH at all.
@@ -53,7 +56,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 declare -rA TOOL_INSTALLER=(
     [jq]=os-deps          [curl]=os-deps        [unzip]=os-deps
     [git]=os-deps         [xorriso]=os-deps
-    [trivy]=install-tools [syft]=install-tools
+    [trivy]=install-tools [syft]=install-tools   [vcsim]=install-tools
 )
 
 # `have` plus the message, for the tools whose absence should stop a script.
