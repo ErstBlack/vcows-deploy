@@ -182,6 +182,19 @@ def test_an_unmarked_target_names_no_seed_to_delete(vsphere_cfg):
     assert w.fileManager.files == [APP01_SEED]
 
 
+def test_two_unmarked_records_are_not_a_match(vsphere_cfg):
+    """The trap the `is not None` in `_reverify` exists for: an unmarked VM and
+    an unmarked target both read as None, and None equals None."""
+    w = world(vms=[FakeVm("app01", power_state="poweredOff")])
+    with pytest.raises(destroy.DestroyError):
+        destroy.destroy(
+            vsphere_cfg,
+            session(w),
+            [Existing(name="app01", id="uuid-app01", marker=None)],
+        )
+    assert not w.vms[0].destroyed
+
+
 def test_a_target_that_is_a_template_now_is_left_alone(vsphere_cfg):
     """The golden image carries a marker of ours, and every other deployment's
     linked clones are overlays on its disk. #165 is where removing it would
@@ -194,6 +207,8 @@ def test_a_target_that_is_a_template_now_is_left_alone(vsphere_cfg):
     assert out.destroyed == []
     assert not w.vms[0].destroyed
     assert "is a template now" in str(caught.value)
+    # Filed under the VM, like the marker refusal: `run.json` names what to look at.
+    assert [p.where for p in out.problems] == ["app01"]
 
 
 def test_a_vm_that_vanished_is_skipped_not_failed(vsphere_cfg):
@@ -256,6 +271,20 @@ def test_media_that_is_not_this_vms_seed_is_left_alone(vsphere_cfg):
     )
     assert out.destroyed == ["app01", APP01_SEED]
     assert w.fileManager.files == [other]
+
+
+def test_media_at_the_datastore_root_is_left_alone_rather_than_read_past_its_end(
+    vsphere_cfg,
+):
+    """An ISO attached from the top of a datastore is `[ds-a] rocky10.iso`, with
+    no `/` in it at all. It is not this VM's seed, and reading it must not end
+    the teardown with an IndexError instead of an Outcome."""
+    root = "[ds-a] rocky10.iso"
+    w = world(vms=[vm("app01", power_state="poweredOff")], files=[root])
+    out = destroy.destroy(vsphere_cfg, session(w), [target("app01", disks=(root,))])
+    assert out.destroyed == ["app01"]
+    assert out.problems == []
+    assert w.fileManager.files == [root]
 
 
 def test_a_seed_that_will_not_delete_is_a_skip_not_a_stop(vsphere_cfg):

@@ -93,8 +93,13 @@ def _reverify(props: dict, target: Existing) -> bool:
     try:
         now = from_description(props.get("config.annotation"))
     except MarkerError:
-        now = None
-    return now is not None and target.marker is not None and now == target.marker
+        # Damaged rather than absent, and not ours either way.
+        return False
+    # The `is not None` is what makes this safe, and the equality alone would
+    # not be: an unmarked VM and an unmarked target both read as None, and None
+    # equals None, so the two would compare as a match and the VM would be
+    # destroyed on the strength of neither of them carrying a marker.
+    return now is not None and now == target.marker
 
 
 def destroy(cfg: dict, session: api.Session, targets: list[Existing]) -> Outcome:
@@ -179,7 +184,11 @@ def _delete_seed(
         return
     wanted = seed_name(target.marker.name)
     for path in target.disks:
-        if path.rsplit("/", 1)[-1] != wanted:
+        # `rpartition` rather than `rsplit("/", 1)[-1]`: same answer for a path
+        # with a folder in it and for one at the datastore root, and it carries
+        # neither of the two numbers, which are equivalent-mutant knobs --
+        # `preflight._orphan_seeds` is spelt this way for that reason.
+        if path.rpartition("/")[-1] != wanted:
             log.debug("leaving %s attached to %s alone", path, target.name)
             continue
         try:
