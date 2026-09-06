@@ -4,8 +4,8 @@
 TLS verification is decided, and the only place pyvmomi is constructed. `wait`
 gets its own for the reason the Proxmox backend's does: every task any phase
 starts goes through it, so what it does with a task that fails or never
-finishes is decided once. `create` is a stub until the chunk that writes it
-lands, and one test below pins that it says so rather than doing nothing.
+finishes is decided once. `create` is two calls rather than one forwarding
+line, so one test below pins the order it makes them in.
 
 The registry here is a dict this module builds. `orchestrator.backends.REGISTRY`
 does not name this backend until the register chunk, so master never carries a
@@ -32,7 +32,9 @@ from orchestrator.backends.vsphere import (
     VsphereBackend,
     api,
     convert,
+    create,
     preflight,
+    render,
     schema,
 )
 from orchestrator.config import core_schema, load
@@ -171,13 +173,28 @@ def test_the_backend_forwards_the_digest_flag(backend, vsphere_cfg, monkeypatch)
     assert seen == [True, False]
 
 
-def test_the_unwritten_method_refuses_rather_than_doing_nothing(backend, vsphere_cfg):
-    """The ABC's own argument, applied to a half-built backend: a `create` that
-    returned an empty inventory would make nothing and exit successfully.
-    `destroy` landed with its own chunk, and `tests/test_vsphere_destroy.py`
-    holds the test that it reaches this backend's module."""
-    with pytest.raises(NotImplementedError, match="chunk has not landed"):
-        backend.create(vsphere_cfg, "session", {})
+def test_create_renders_first_and_hands_the_values_to_the_session(backend, monkeypatch):
+    """The one delegation that is not a straight forwarding line: it calls two
+    functions, and the argument order it calls the second one with is not the
+    order it was called with. Both are what a rename or a swapped pair breaks
+    while each half keeps passing its own tests -- the same gate
+    `tests/test_seam.py` holds over the libvirt backend, which is what this
+    backend's wiring has to satisfy before the register chunk puts it in
+    `REGISTRY`.
+    """
+    monkeypatch.setattr(
+        render, "render", lambda cfg, prepared: ("rendered", cfg, prepared)
+    )
+    monkeypatch.setattr(
+        create, "create", lambda session, values: ("created", session, values)
+    )
+
+    cfg, prepared = {"deployment": "lab-a"}, {}
+    assert backend.create(cfg, "session", prepared) == (
+        "created",
+        "session",
+        ("rendered", cfg, prepared),
+    )
 
 
 # -- prepare -------------------------------------------------------------

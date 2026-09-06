@@ -125,17 +125,23 @@ def cdrom(path: str) -> Any:
     )
 
 
-def disk(path: str, parent: str | None = None) -> Any:
+def disk(
+    path: str, parent: str | None = None, key: int = 0, capacity_kb: int = 1024
+) -> Any:
     """A virtual disk, optionally an overlay on a parent.
 
     ``parent`` is what a linked clone's disk carries: the template's own disk,
     which every other deployment's clones are overlays on too. It is here so a
     test can prove that ``Existing.disks`` does not follow it.
+
+    ``key`` is what a ``deviceChange`` of operation ``edit`` names the device
+    by, so a disk a test intends to be grown needs one of its own: every device
+    a fake builds otherwise has key 0 and an edit would match all of them.
     """
     backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo(fileName=path)
     if parent is not None:
         backing.parent = vim.vm.device.VirtualDisk.FlatVer2BackingInfo(fileName=parent)
-    return vim.vm.device.VirtualDisk(capacityInKB=1024, backing=backing)
+    return vim.vm.device.VirtualDisk(key=key, capacityInKB=capacity_kb, backing=backing)
 
 
 class FakeVm:
@@ -177,20 +183,39 @@ class FakeVm:
         self.log: list[tuple] = []
         self.destroyed = False
         self.power_off_error: Any = None
+        self.power_on_error: Any = None
         self.destroy_error: Any = None
+        self.clone_error: Any = None
         #: Every `ConfigSpec` this VM was reconfigured with, and every snapshot
         #: taken of it, so a test reads what `make_template` asked for rather
         #: than that it asked.
         self.reconfigured: list[Any] = []
         self.snapshots: list[Any] = []
+        #: Every clone made of this VM: the folder, the name, the spec, and the
+        #: `FakeVm` the clone became -- so a test reads the devices and the
+        #: annotation the clone ended up with, and not only what was asked for.
+        self.clones: list[tuple] = []
+        #: The vCenter this VM is on, set by `FakeContent.add`. A clone has to
+        #: join it, or the property collector cannot answer for a VM the run
+        #: just made.
+        self.world: Any = None
         self.mo = mo(
             vim.VirtualMachine,
             moid or f"vm-{name}",
+            # Shadowed as well as held in `props`, because the two are read by
+            # different roads: `find_by_name` compares the managed object's own
+            # `name`, and the property collector answers for the path.
+            name=name,
             PowerOffVM_Task=self._power_off,
+            PowerOnVM_Task=self._power_on,
             Destroy_Task=self._destroy,
             ReconfigVM_Task=self._reconfigure,
             CreateSnapshot_Task=self._snapshot,
             MarkAsTemplate=self._mark_as_template,
+            CloneVM_Task=self._clone,
+            # What a linked clone is an overlay on, and None until something
+            # takes one. `create` reads `template.snapshot.currentSnapshot`.
+            snapshot=None,
         )
         self.props: dict[str, Any] = {
             "name": name,
@@ -206,6 +231,13 @@ class FakeVm:
         if self.power_off_error is not None:
             return FakeTask(error=self.power_off_error)
         self.props["runtime.powerState"] = "poweredOff"
+        return FakeTask()
+
+    def _power_on(self) -> FakeTask:
+        self.log.append(("PowerOnVM_Task", self.props["name"]))
+        if self.power_on_error is not None:
+            return FakeTask(error=self.power_on_error)
+        self.props["runtime.powerState"] = "poweredOn"
         return FakeTask()
 
     def _destroy(self) -> FakeTask:
@@ -232,10 +264,81 @@ class FakeVm:
             return FakeTask(
                 error=vmodl.fault.NotSupported(msg="this VM is a template now")
             )
+        # Recorded here rather than in `_apply`, so that `reconfigured` means
+        # what a `ReconfigVM_Task` carried and not what a clone was made with.
         self.reconfigured.append(spec)
+        self._apply(spec)
+        return FakeTask()
+
+    def _apply(self, spec: Any) -> None:
+        """One ``ConfigSpec`` onto this VM's properties.
+
+        Shared by the reconfigure and the clone, because a ``CloneSpec`` carries
+        one too and a fake that applied it on only one path would let a clone
+        that reconfigured afterwards pass -- which is the ordering the product
+        deliberately does not use.
+
+        ``edit`` matches on the device key, which is how vCenter finds the
+        device an edit means; anything but ``add`` and ``edit`` is an assertion
+        rather than a fault, because nothing here builds one and a fake that
+        quietly ignored it would hide it.
+        """
+        if spec is None:
+            return
         if spec.annotation is not None:
             self.props["config.annotation"] = spec.annotation
-        return FakeTask()
+        devices = list(self.props["config.hardware.device"])
+        for change in spec.deviceChange or ():
+            if change.operation == "add":
+                devices.append(change.device)
+            elif change.operation == "edit":
+                devices = [
+                    change.device if held.key == change.device.key else held
+                    for held in devices
+                ]
+            else:
+                raise AssertionError(
+                    f"this fake does not model a {change.operation!r} device change"
+                )
+        self.props["config.hardware.device"] = array(
+            vim.vm.device.VirtualDevice, devices
+        )
+
+    def _clone(self, folder: Any, name: str, spec: Any) -> FakeTask:
+        """``CloneVM_Task``: a second VM on the same vCenter, with the spec's own
+        config already applied to it.
+
+        **A linked spec is refused unless it names this VM's current snapshot.**
+        vCenter has nothing to overlay a delta disk on otherwise, and this is
+        where a ``make_template`` that marked before it snapshotted shows up --
+        the template it left has none, so the clone the next run makes is the
+        failure and not the template. A8 says vcsim accepts the spec and
+        discards it, so the simulator cannot ask this question at all.
+        """
+        self.log.append(("CloneVM_Task", self.props["name"], name))
+        if self.clone_error is not None:
+            return FakeTask(error=self.clone_error)
+        if spec.location.diskMoveType is not None:
+            current = (
+                None if self.mo.snapshot is None else self.mo.snapshot.currentSnapshot
+            )
+            if current is None or spec.snapshot is not current:
+                return FakeTask(
+                    error=vmodl.fault.InvalidArgument(
+                        msg="a linked clone is an overlay on a snapshot of its source"
+                    )
+                )
+        clone = FakeVm(
+            name,
+            annotation=self.props["config.annotation"],
+            devices=list(self.props["config.hardware.device"]),
+            power_state="poweredOff",
+        )
+        if self.world is not None:
+            self.world.add(clone)
+        clone._apply(spec.config)
+        self.clones.append((folder, name, spec, clone))
+        return FakeTask(result=clone.mo)
 
     def _snapshot(
         self, name: str, description: str, memory: bool, quiesce: bool
@@ -249,6 +352,9 @@ class FakeVm:
                 error=vmodl.fault.NotSupported(msg="this VM is a template now")
             )
         self.snapshots.append((name, description, memory, quiesce))
+        self.mo.snapshot = vim.vm.SnapshotInfo(
+            currentSnapshot=mo(vim.vm.Snapshot, f"snapshot-{name}")
+        )
         return FakeTask()
 
     def _mark_as_template(self) -> None:
@@ -442,12 +548,12 @@ class FakeContent:
         self.viewManager = _ViewManager(self)
         self.propertyCollector = _PropertyCollector(self)
         self.objects = list(objects)
-        self.vms = list(vms)
+        self.vms: list[Any] = []
         self.calls: list[tuple] = []
         self.fileManager = FakeFileManager(self.calls)
         self.ovfManager = FakeOvfManager(self.calls)
-        for vm in self.vms:
-            vm.log = self.calls
+        for vm in vms:
+            self.add(vm)
         #: Views handed out, and the ones destroyed. vCenter holds a view until
         #: it is destroyed or the session ends, so a run that makes one per
         #: configured name and destroys none leaks them for half an hour.
@@ -456,6 +562,16 @@ class FakeContent:
 
         self.view_error: Exception | None = None
         self.retrieve_error: Exception | None = None
+
+    def add(self, vm: Any) -> Any:
+        """Put a VM on this vCenter, which is what ``CloneVM_Task`` does with
+        what it made: visible to a container view and answerable by the property
+        collector, and appending to the one call log everything else orders
+        itself against."""
+        vm.log = self.calls
+        vm.world = self
+        self.vms.append(vm)
+        return vm
 
     def container_view(self, container: Any, types: list, recursive: bool) -> Any:
         self.calls.append(

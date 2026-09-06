@@ -21,6 +21,7 @@ import os
 import ssl
 import tempfile
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
@@ -320,6 +321,38 @@ def vms(content: Any) -> list[dict]:
         {"obj": answer.obj, **{prop.name: prop.val for prop in answer.propSet}}
         for answer in content.propertyCollector.RetrieveContents([spec])
     ]
+
+
+def properties(content: Any, vm: Any, paths: Sequence[str]) -> dict:
+    """The named leaf properties of one VM, in one ``RetrieveContents`` call.
+
+    ``vms`` above answers the same question for the whole inventory; this is the
+    single-object form the apply needs, where the VM is one the run just made
+    and the walk that would find it is a walk of everything else too.
+
+    **Not attribute access, for the reason ``wait`` gives.** ``vm.summary`` and
+    ``vm.runtime`` raise ``AttributeError`` under pyVmomi 9 against vcsim, so
+    ``vm.summary.config.uuid`` -- which fetches the whole ``summary`` first --
+    is not a leaf read however it is spelt. This is.
+
+    A property vCenter did not answer for is absent rather than None, the shape
+    ``vms`` returns and for the same reason.
+    """
+    from pyVmomi import vim, vmodl
+
+    spec = vmodl.query.PropertyCollector.FilterSpec(
+        objectSet=[vmodl.query.PropertyCollector.ObjectSpec(obj=vm)],
+        propSet=[
+            vmodl.query.PropertyCollector.PropertySpec(
+                type=vim.VirtualMachine, pathSet=list(paths)
+            )
+        ],
+    )
+    return {
+        prop.name: prop.val
+        for answer in content.propertyCollector.RetrieveContents([spec])
+        for prop in answer.propSet
+    }
 
 
 def datastore_files(datastore: Any, path: str, pattern: str) -> list[str]:
