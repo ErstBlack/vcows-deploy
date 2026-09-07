@@ -34,15 +34,16 @@ default:
 # from the install, so a refused `--locked` prints a warning that no dependencies
 # were found on stdin and **exits 0 having installed nothing** -- measured.
 # just runs each line in its own shell and stops on the first failure,
-# so three lines check what one pipe did not. .venv/ is disposable and recreated
-# by the first line, so the export needs no cleanup and no temp directory.
+# so three lines check what one pipe did not. `--clear` is what recreates .venv/
+# -- uv 0.12.5 refuses to overwrite an existing venv without it -- so the export
+# needs no cleanup and no temp directory.
 #
 # The `dev` group is uv's default here, verified byte-identical with an explicit
 # `--group dev`, so no group argument is carried.
 
 # Create .venv with the system libvirt binding visible, and install from uv.lock.
 dev-env:
-    uv venv --python /usr/bin/python3 --system-site-packages
+    uv venv --clear --python /usr/bin/python3 --system-site-packages
     uv export --locked --format requirements-txt -o .venv/requirements.txt
     uv pip install -r .venv/requirements.txt
 

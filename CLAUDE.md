@@ -108,7 +108,11 @@ the `.claude-plugin/plugin.json` manifest makes it one, so its place under
 `skills/` is incidental. It is the source of the `ty` language server, and
 `.lsp.json` resolves the binary from the checkout's own `.venv` through
 `CLAUDE_PROJECT_DIR`, so it never applies to another project and a session
-started in a worktree gets that worktree's venv.
+started in a worktree gets that worktree's venv. A session in the main checkout
+that reads files under `.claude/worktrees/` gets diagnostics resolved against the
+main checkout's venv and package root, wrong in both directions -- phantom errors,
+and nothing real caught -- so ignore them and trust that worktree's own
+`just typecheck`.
 
 ## `docs/cve-baseline.json` is a differential gate, not a list to append to
 
