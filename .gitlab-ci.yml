@@ -29,7 +29,16 @@
 stages: [check, image]
 
 default:
-  image: ubuntu:24.04
+  # Pinned by digest, like BASE_DIGEST in the Containerfile and every action
+  # in .github/workflows/. `24.04` is republished, so the tag alone lets the
+  # pipeline change under a run nobody triggered. Bumped by hand: no bot can
+  # recompute it, which is why dependabot.yml is deliberately not pointed at
+  # this file. Measured 2026-09-12 with
+  #
+  #     skopeo inspect --format '{{.Digest}}' docker://docker.io/library/ubuntu:24.04
+  #
+  # and re-measured the same way when it is bumped.
+  image: ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
   tags: [linux]
 
 # One mapping per anchor, deliberately, because a sequence alias spliced into a
