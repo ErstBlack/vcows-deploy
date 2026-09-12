@@ -243,6 +243,30 @@ def test_something_that_is_not_a_certificate_is_refused(pve_cfg, value):
     assert "ca_cert" in messages(errors(validate(pve_cfg, REGISTRY)))
 
 
+# -- the option strings ------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["datastore", "import_datastore"])
+def test_a_comma_in_a_datastore_name_is_refused(pve_cfg, field):
+    """`create_vm` formats both into comma-separated PVE option strings, where a
+    comma or an `=` appends further qemu options rather than naming a store.
+    Through `config.validate`, because the pattern on TARGET_SCHEMA is enforced
+    by the composed core schema rather than by this backend's own checks."""
+    from orchestrator.backends import REGISTRY
+    from orchestrator.config import validate
+
+    pve_cfg["target"]["proxmox"][field] = "local-lvm,discard=off"
+    assert field in messages(errors(validate(pve_cfg, REGISTRY)))
+
+
+def test_a_comma_in_a_bridge_name_is_refused(pve_cfg):
+    """`net{i}` is a comma-separated option string too, so 'vmbr0,firewall=0'
+    would be two settings and not one bridge name."""
+    pve_cfg["vms"][0]["nics"][0]["bridge"] = "vmbr0,firewall=0"
+    problems = errors(schema.validate(pve_cfg))
+    assert wheres(problems) == ["vms[0].nics[0].bridge"], messages(problems)
+
+
 # -- the per-VM shape --------------------------------------------------------
 
 

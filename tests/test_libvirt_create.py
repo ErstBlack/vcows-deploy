@@ -12,6 +12,7 @@ hypervisor; ``tests/test_libvirt_rig.py`` is where a domain actually boots.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import pytest
@@ -349,6 +350,72 @@ def test_every_domain_is_autostarted_and_started(cfg, conn, prepared):
         assert dom.autostart() == 1
         assert dom.active
         assert dom.log == ["autostart:1", "start"], "autostart is set before the start"
+
+
+# -- injection -------------------------------------------------------------
+
+#: A value that closes the attribute it lands in and opens elements after it.
+#: Every template here is `str.format` over a string, which escapes nothing, so
+#: without `_xml` this reaches `defineXML` whole and attaches a host disk the
+#: schema never described.
+INJECTION = "q35'/><devices><disk type='block'><source dev='/dev/sda'/></disk>"
+
+
+def test_a_quote_in_machine_stays_inside_the_attribute(cfg, conn, prepared):
+    """`machine` carries nothing but `minLength`, so the refusal cannot live in
+    the schema and has to live in the render. The marker is asserted beside it:
+    it is a pre-rendered `<vcows>` element and escaping it would emit its markup
+    as text, so it is the one value that must come through untouched."""
+    cfg["vms"][0]["machine"] = INJECTION
+    xml = defined(cfg, conn, prepared, "app01")
+    root = ET.fromstring(xml)
+
+    assert len(root.findall("devices")) == 1, "no second devices block"
+    assert root.findall(".//disk[@type='block']") == [], "no host disk"
+    assert root.findtext("os/type") == "hvm"
+    (machine,) = root.findall("os/type")
+    assert machine.get("machine") == INJECTION
+    assert '<vcows xmlns="urn:vcows:1">' in xml, "the marker is not escaped"
+
+
+def test_a_quote_in_a_nic_source_stays_inside_the_attribute(cfg, conn, prepared):
+    cfg["vms"][0]["nics"] = [
+        {
+            "bridge": INJECTION,
+            "ip_cidr": "192.168.122.60/24",
+            "gateway": "192.168.122.1",
+        }
+    ]
+    root = ET.fromstring(defined(cfg, conn, prepared, "app01"))
+
+    assert len(root.findall("devices")) == 1
+    assert root.findall(".//disk[@type='block']") == []
+    (source,) = root.findall("devices/interface/source")
+    assert source.get("bridge") == INJECTION
+
+
+def test_a_quote_in_the_base_volume_name_stays_inside_the_element(
+    cfg, conn, pool, prepared
+):
+    """The volume document is built by the same `str.format`, and this name is
+    `image.base_volume_name` -- which is why that field grew a pattern too."""
+    prepared["base_volume"]["name"] = INJECTION
+    deployed(cfg, conn, prepared)
+    root = ET.fromstring(pool.volumes[INJECTION])
+
+    assert root.findtext("name") == INJECTION
+    assert root.findall(".//disk") == []
+
+
+def test_a_quote_in_a_loader_path_stays_inside_the_element(cfg, conn, prepared):
+    """app02 is the pinned-loader VM, so this is the firmware block's own
+    f-strings rather than a template."""
+    cfg["vms"][1]["loader"] = INJECTION
+    root = ET.fromstring(defined(cfg, conn, prepared, "app02"))
+
+    assert len(root.findall("devices")) == 1
+    assert root.findall(".//disk[@type='block']") == []
+    assert root.findtext("os/loader") == INJECTION
 
 
 # -- what comes back -------------------------------------------------------

@@ -45,6 +45,12 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
+#: A PVE option-string token: no comma, no ``=``, no whitespace. ``create_vm``
+#: formats these fields into the comma-separated ``scsi0``/``ide2``/``net{i}``
+#: strings, where a comma or an ``=`` appends further qemu options -- 'vmbr0,
+#: firewall=0' is two settings, not one bridge name.
+OPTION_PATTERN = r"^[^,=\s]+\Z"
+
 #: ``ca_cert`` carries the certificate itself, so this asks whether it opens like
 #: one. It also catches the mistake worth catching: a *private* key pasted where
 #: the public half belongs, which `requests` would reject and which is a
@@ -84,7 +90,7 @@ NIC_SCHEMA: dict[str, Any] = {
     # NIC to a Linux or OVS bridge and has nothing else to attach it to.
     "required": ["bridge", "ip_cidr", "gateway"],
     "properties": {
-        "bridge": {"type": "string", "minLength": 1},
+        "bridge": {"type": "string", "minLength": 1, "pattern": OPTION_PATTERN},
         "ip_cidr": {"type": "string", "minLength": 1},
         "gateway": {"type": "string", "minLength": 1},
         "nameservers": {"type": "array", "items": {"type": "string"}},
@@ -128,10 +134,14 @@ TARGET_SCHEMA: dict[str, Any] = {
         # naming it.
         "node": {"type": "string", "minLength": 1},
         # Where VM disks land -- typically an LVM-thin or ZFS store.
-        "datastore": {"type": "string", "minLength": 1},
+        "datastore": {"type": "string", "minLength": 1, "pattern": OPTION_PATTERN},
         # Where the golden image and the seed ISOs are uploaded. Must allow both
         # the `import` and `iso` content types; preflight checks and says so.
-        "import_datastore": {"type": "string", "minLength": 1},
+        "import_datastore": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": OPTION_PATTERN,
+        },
         # Exactly one of `token`, or `user` and `password` -- checked in
         # `_check_auth` rather than as a jsonschema `oneOf`, the way the libvirt
         # backend checks its NIC union in code rather than in its schema.

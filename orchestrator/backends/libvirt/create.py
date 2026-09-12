@@ -25,10 +25,27 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from xml.sax.saxutils import escape
 
 from ..base import carrying
 
 log = logging.getLogger(__name__)
+
+
+def _xml(value: Any) -> Any:
+    """Escape a leaf value for either an attribute or text position.
+
+    Every template below is ``str.format`` over a string, which does no escaping
+    of its own, so a ``'`` in a config value closes the attribute it sits in and
+    a ``<`` opens an element the schema never described. Applied at each leaf and
+    never to a fragment: ``marker_xml``, the firmware block and the concatenated
+    interfaces are already-rendered XML, and escaping those would emit their
+    markup as text.
+    """
+    if not isinstance(value, str):
+        return value
+    return escape(value, {"'": "&apos;", '"': "&quot;"})
+
 
 VOLUME_XML = """<volume type='file'>
   <name>{name}</name>
@@ -102,14 +119,14 @@ def firmware_xml(vm: dict) -> tuple[str, str]:
     fmt = vm["loader_format"]
     lines = (
         f"    <loader readonly='yes' type='pflash' format='{fmt}'>"
-        f"{vm['loader']}</loader>\n"
+        f"{_xml(vm['loader'])}</loader>\n"
     )
     if vm["nvram_template"] is not None:
         ext = "qcow2" if fmt == "qcow2" else "fd"
         nv_fmt = f" format='{fmt}'" if fmt != "raw" else ""
         lines += (
-            f"    <nvram template='{vm['nvram_template']}'{nv_fmt}>"
-            f"{NVRAM_DIR}/{vm['domain_name']}_VARS.{ext}</nvram>\n"
+            f"    <nvram template='{_xml(vm['nvram_template'])}'{nv_fmt}>"
+            f"{NVRAM_DIR}/{_xml(vm['domain_name'])}_VARS.{ext}</nvram>\n"
         )
     return "", lines
 
@@ -118,19 +135,20 @@ def domain_xml(vm: dict, overlay_path: str, seed_path: str) -> str:
     firmware, loader = firmware_xml(vm)
     interfaces = "".join(
         INTERFACE_XML.format(
-            kind=n["kind"],
-            source=n["source"],
-            mac=n["mac"],
-            model=n["model"],
+            kind=_xml(n["kind"]),
+            source=_xml(n["source"]),
+            mac=_xml(n["mac"]),
+            model=_xml(n["model"]),
         )
         for n in vm["nics"]
     )
     return DOMAIN_XML.format(
-        **vm,
+        **{k: _xml(v) for k, v in vm.items() if k != "marker_xml"},
+        marker_xml=vm["marker_xml"],
         firmware_attr=firmware,
         loader_xml=loader,
-        overlay=overlay_path,
-        seed=seed_path,
+        overlay=_xml(overlay_path),
+        seed=_xml(seed_path),
         interfaces=interfaces,
     )
 
@@ -145,7 +163,7 @@ def upload(conn: Any, pool: Any, name: str, fmt: str, source: str) -> Any:
     """
     size = os.path.getsize(source)
     vol = pool.createXML(
-        VOLUME_XML.format(name=name, capacity=size, fmt=fmt, backing=""), 0
+        VOLUME_XML.format(name=_xml(name), capacity=size, fmt=fmt, backing=""), 0
     )
     stream = conn.newStream(0)
     with open(source, "rb", buffering=0) as handle:
@@ -196,10 +214,10 @@ def overlay(pool: Any, vm: dict, base_path: str) -> Any:
     """Capacity here and only here; ``upload`` discards whatever it declares."""
     return pool.createXML(
         VOLUME_XML.format(
-            name=vm["overlay_name"],
+            name=_xml(vm["overlay_name"]),
             capacity=vm["disk_bytes"],
             fmt="qcow2",
-            backing=BACKING_XML.format(path=base_path),
+            backing=BACKING_XML.format(path=_xml(base_path)),
         ),
         0,
     )

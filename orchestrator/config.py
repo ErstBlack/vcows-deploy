@@ -60,7 +60,16 @@ IMAGE_SCHEMA = {
         # Deterministic and shared per host. Named after the image rather than
         # the deployment because the base volume is shared across deployments --
         # that sharing is the whole point of not re-pushing multi-GB images.
-        "base_volume_name": {"type": "string", "minLength": 1},
+        # No comma, no `=`, no whitespace: the Proxmox backend formats this
+        # into a comma-separated PVE option string, where either character
+        # appends further qemu options. It is also libvirt's volume name and
+        # vSphere's template name, so the rule lives here rather than in one
+        # backend.
+        "base_volume_name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": r"^[^,=\s]+\Z",
+        },
     },
 }
 
