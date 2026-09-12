@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import io
 import ipaddress
+import re
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import jsonschema
 import yaml
@@ -45,6 +47,10 @@ ISO_ARGS = {
     "rock_ridge": "1.09",
     "vol_ident": VOLUME_LABEL,
 }
+
+#: An absolute path with no whitespace. Matched only to reject it: ``ca_cert``
+#: carries the PEM itself and nothing is mounted for a path.
+PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: QEMU's OUI. Locally administered, and what every libvirt-generated MAC uses.
 #: Correct for Proxmox too, which is QEMU/KVM and assigns from the same range,
@@ -388,6 +394,117 @@ def check_addressing(
             problems.append(
                 Problem.error(f"MAC {mac} is already used by {owner}", where=at)
             )
+    return problems
+
+
+def check_endpoint(
+    target: dict,
+    where: str,
+    *,
+    allowed_paths: tuple[str, ...],
+    parse_hint: str,
+    scheme_hint: str,
+    path_hint: str,
+    credential_hint: str,
+    credential_noun: str,
+) -> list[Problem]:
+    """The endpoint ladder both API backends walk, and the TLS pair beside it.
+
+    Here rather than in a backend for the reason ``check_addressing`` is: the
+    Proxmox and vSphere copies asked the same seven questions in the same order
+    against the same ``urlsplit`` parts, and a third backend would have copied
+    one of them. ``where`` is the credential block -- ``target.proxmox`` or
+    ``target.vsphere`` -- and this appends ``.endpoint``, ``.ca_cert`` and
+    ``.insecure`` itself.
+
+    **libvirt's ladder stays its own.** It reads a ``qemu+ssh`` URI, where the
+    scheme is a transport rather than a protocol and the path is a libvirt
+    driver, so it answers different questions and not the same ones differently.
+
+    Every sentence that differed between the two copies is a keyword argument,
+    so the message an operator reads is unchanged from the backend that used to
+    build it.
+    """
+    endpoint_where = f"{where}.endpoint"
+    endpoint = target["endpoint"]
+    try:
+        parts = urlsplit(endpoint)
+    except ValueError as exc:
+        # Every check below reads `parts`, and an unhandled ValueError here
+        # would unwind past `config.load`'s every-problem contract.
+        return [
+            Problem.error(
+                f"{endpoint!r} is not a URL ({exc}); {parse_hint}",
+                where=endpoint_where,
+            )
+        ]
+
+    problems: list[Problem] = []
+    if parts.scheme != "https":
+        problems.append(
+            Problem.error(
+                f"scheme must be 'https', got {parts.scheme or '<none>'!r}. "
+                f"{scheme_hint}",
+                where=endpoint_where,
+            )
+        )
+    if not parts.hostname:
+        problems.append(Problem.error(f"no host in {endpoint!r}", where=endpoint_where))
+    if parts.path not in allowed_paths:
+        problems.append(
+            Problem.error(
+                f"path must be empty or '/', got {parts.path!r}. {path_hint}",
+                where=endpoint_where,
+            )
+        )
+    if parts.query:
+        problems.append(
+            Problem.error(
+                f"endpoint must carry no query string, got {parts.query!r}",
+                where=endpoint_where,
+            )
+        )
+    if parts.username is not None or parts.password is not None:
+        # Same refusal, and the same reason, as the libvirt backend's password
+        # check.
+        problems.append(
+            Problem.error(
+                f"endpoint must carry no credentials. Authentication is the "
+                f"{credential_hint}; anything here would be written to the run "
+                f"directory in plaintext.",
+                where=endpoint_where,
+            )
+        )
+
+    ca_cert = target.get("ca_cert")
+    if ca_cert is not None and target.get("insecure"):
+        problems.append(
+            Problem.error(
+                "ca_cert and insecure: true contradict each other. One is the CA "
+                "that must have signed the certificate, the other checks no "
+                "certificate at all. Drop whichever was not meant.",
+                where=f"{where}.ca_cert",
+            )
+        )
+    # An error rather than a warning, for the same reason the libvirt backend
+    # errors on a path: nothing is mounted for it.
+    if isinstance(ca_cert, str) and PATH_PATTERN.match(ca_cert):
+        problems.append(
+            Problem.error(
+                "ca_cert is the certificate itself, not a path to it. Paste the "
+                "PEM in -- nothing is mounted for it.",
+                where=f"{where}.ca_cert",
+            )
+        )
+
+    if target.get("insecure"):
+        problems.append(
+            Problem.warning(
+                f"certificate verification is disabled. {credential_noun} under "
+                f"{where} is sent to whatever answers at this endpoint.",
+                where=f"{where}.insecure",
+            )
+        )
     return problems
 
 

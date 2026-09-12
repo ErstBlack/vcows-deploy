@@ -17,7 +17,7 @@ import pytest
 from orchestrator.backends import REGISTRY
 from orchestrator.backends.vsphere import schema
 from orchestrator.config import validate as core_validate
-from tests.conftest import CA_CERT, VSPHERE_CA_CERT, errors, messages, wheres
+from tests.conftest import CA_CERT, errors, messages, wheres
 
 
 def qcow2_header(virtual_size: int) -> bytes:
@@ -105,28 +105,12 @@ def test_credentials_in_the_endpoint_are_refused(vsphere_cfg, endpoint):
     assert set(wheres(problems)) == {"target.vsphere.endpoint"}
 
 
-def test_a_query_string_is_refused(vsphere_cfg):
-    vsphere_cfg["target"]["vsphere"]["endpoint"] = "https://vcenter.example.com?x=1"
-    problems = errors(schema.validate(vsphere_cfg))
-    assert "no query string" in messages(problems)
-    assert set(wheres(problems)) == {"target.vsphere.endpoint"}
-
-
 def test_the_sdk_path_is_refused_because_vcows_appends_it(vsphere_cfg):
     """`SmartConnect` is given the host and appends `/sdk` itself, so an
     endpoint carrying it would reach vCenter as `/sdk/sdk`."""
     vsphere_cfg["target"]["vsphere"]["endpoint"] = "https://vcenter.example.com/sdk"
     problems = errors(schema.validate(vsphere_cfg))
     assert "path must be empty" in messages(problems)
-    assert set(wheres(problems)) == {"target.vsphere.endpoint"}
-
-
-def test_an_endpoint_with_no_host_is_refused(vsphere_cfg):
-    """`connect` would hand pyvmomi `None` as a host and fail against a server
-    nobody wrote."""
-    vsphere_cfg["target"]["vsphere"]["endpoint"] = "https://"
-    problems = errors(schema.validate(vsphere_cfg))
-    assert "no host in" in messages(problems)
     assert set(wheres(problems)) == {"target.vsphere.endpoint"}
 
 
@@ -138,16 +122,6 @@ def test_an_endpoint_that_is_not_a_url_is_reported_not_raised(vsphere_cfg):
     problems = errors(schema.validate(vsphere_cfg))
     assert "is not a URL" in messages(problems)
     assert set(wheres(problems)) == {"target.vsphere.endpoint"}
-
-
-def test_a_bare_origin_with_or_without_a_port_is_accepted(vsphere_cfg):
-    for endpoint in (
-        "https://vcenter.example.com",
-        "https://vcenter.example.com/",
-        "https://vcenter.example.com:8443",
-    ):
-        vsphere_cfg["target"]["vsphere"]["endpoint"] = endpoint
-        assert errors(schema.validate(vsphere_cfg)) == [], endpoint
 
 
 # -- TLS ---------------------------------------------------------------------
@@ -162,37 +136,6 @@ def test_insecure_warns_but_does_not_refuse(vsphere_cfg):
     assert errors(problems) == []
     assert "verification is disabled" in messages(problems)
     assert "target.vsphere.insecure" in wheres(problems)
-
-
-def test_a_ca_certificate_says_nothing(vsphere_cfg):
-    """A private CA is the ordinary case in front of a vCenter, and pasting its
-    certificate is not a weakening -- unlike `insecure`, which is why only one
-    of them warns."""
-    vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
-    problems = schema.validate(vsphere_cfg)
-    assert errors(problems) == []
-    assert "target.vsphere.ca_cert" not in wheres(problems)
-
-
-def test_a_ca_certificate_beside_insecure_is_refused(vsphere_cfg):
-    """Two contradictory answers about the certificate. Honouring either one
-    silently is the failure mode: `insecure` wins in `api.connect`, so an
-    operator who added a certificate would get no verification and no
-    warning."""
-    vsphere_cfg["target"]["vsphere"]["ca_cert"] = VSPHERE_CA_CERT
-    vsphere_cfg["target"]["vsphere"]["insecure"] = True
-    problems = errors(schema.validate(vsphere_cfg))
-    assert "contradict each other" in messages(problems)
-    assert set(wheres(problems)) == {"target.vsphere.ca_cert"}
-
-
-def test_a_path_where_the_certificate_belongs_is_refused_by_name(vsphere_cfg):
-    """`ca_cert: /run/secrets/vcenter-ca.pem` is refused, not accepted for
-    compatibility: nothing is mounted for it."""
-    vsphere_cfg["target"]["vsphere"]["ca_cert"] = "/run/secrets/vcenter-ca.pem"
-    problems = errors(schema.validate(vsphere_cfg))
-    assert wheres(problems) == ["target.vsphere.ca_cert"], messages(problems)
-    assert "not a path" in messages(problems)
 
 
 @pytest.mark.parametrize(

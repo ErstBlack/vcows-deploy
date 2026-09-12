@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit
 
 from ...cloudinit import (
     check_addressing,
+    check_endpoint,
     check_vm_structure,
     nic_checks_are_safe,
 )
@@ -45,17 +45,17 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\Z"
 
 MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 
+#: A PVE option-string token: no comma, no ``=``, no whitespace. ``create_vm``
+#: formats these fields into the comma-separated ``scsi0``/``ide2``/``net{i}``
+#: strings, where a comma or an ``=`` appends further qemu options -- 'vmbr0,
+#: firewall=0' is two settings, not one bridge name.
+OPTION_PATTERN = r"^[^,=\s]+\Z"
+
 #: ``ca_cert`` carries the certificate itself, so this asks whether it opens like
 #: one. It also catches the mistake worth catching: a *private* key pasted where
 #: the public half belongs, which `requests` would reject and which is a
 #: credential put into a config for nothing.
 CA_CERT_PATTERN = r"^-----BEGIN CERTIFICATE-----"
-
-#: An absolute path with no whitespace. Matched only to reject it: ``ca_cert``
-#: carries the PEM itself. A literal rather than an import of the libvirt
-#: backend's: the two fields reach different libraries, and neither backend's
-#: rule is the other's to widen.
-PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: ``user@realm!tokenid=secret``. The secret half is matched but never captured
 #: into a message.
@@ -84,7 +84,7 @@ NIC_SCHEMA: dict[str, Any] = {
     # NIC to a Linux or OVS bridge and has nothing else to attach it to.
     "required": ["bridge", "ip_cidr", "gateway"],
     "properties": {
-        "bridge": {"type": "string", "minLength": 1},
+        "bridge": {"type": "string", "minLength": 1, "pattern": OPTION_PATTERN},
         "ip_cidr": {"type": "string", "minLength": 1},
         "gateway": {"type": "string", "minLength": 1},
         "nameservers": {"type": "array", "items": {"type": "string"}},
@@ -128,10 +128,14 @@ TARGET_SCHEMA: dict[str, Any] = {
         # naming it.
         "node": {"type": "string", "minLength": 1},
         # Where VM disks land -- typically an LVM-thin or ZFS store.
-        "datastore": {"type": "string", "minLength": 1},
+        "datastore": {"type": "string", "minLength": 1, "pattern": OPTION_PATTERN},
         # Where the golden image and the seed ISOs are uploaded. Must allow both
         # the `import` and `iso` content types; preflight checks and says so.
-        "import_datastore": {"type": "string", "minLength": 1},
+        "import_datastore": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": OPTION_PATTERN,
+        },
         # Exactly one of `token`, or `user` and `password` -- checked in
         # `_check_auth` rather than as a jsonschema `oneOf`, the way the libvirt
         # backend checks its NIC union in code rather than in its schema.
@@ -238,92 +242,21 @@ def _check_auth(target: dict) -> list[Problem]:
 
 def _check_target(target: dict) -> list[Problem]:
     """The endpoint is ours to use as a base URL, not the operator's to decorate."""
-    where = "target.proxmox.endpoint"
-    endpoint = target["endpoint"]
-    try:
-        parts = urlsplit(endpoint)
-    except ValueError as exc:
-        # Same early return as the libvirt backend's: every check below reads
-        # `parts`, and an unhandled ValueError here would unwind past
-        # `config.load`'s every-problem contract.
-        return [
-            Problem.error(
-                f"{endpoint!r} is not a URL ({exc}); vcows builds the API base "
-                f"URL from this field and cannot parse it",
-                where=where,
-            )
-        ]
-
-    problems: list[Problem] = []
-    if parts.scheme != "https":
-        problems.append(
-            Problem.error(
-                f"scheme must be 'https', got {parts.scheme or '<none>'!r}. The "
-                f"API token is a bearer credential and travels in a header; "
-                f"plaintext http would put it on the wire.",
-                where=where,
-            )
-        )
-    if not parts.hostname:
-        problems.append(Problem.error(f"no host in {endpoint!r}", where=where))
-    if parts.path not in ("", "/", "/api2/json", "/api2/json/"):
-        problems.append(
-            Problem.error(
-                f"path must be empty or '/', got {parts.path!r}. This is the API "
-                f"base URL; vcows appends the API path itself.",
-                where=where,
-            )
-        )
-    if parts.query:
-        problems.append(
-            Problem.error(
-                f"endpoint must carry no query string, got {parts.query!r}",
-                where=where,
-            )
-        )
-    if parts.username is not None or parts.password is not None:
-        # Same refusal, and the same reason, as the libvirt backend's password
-        # check.
-        problems.append(
-            Problem.error(
-                "endpoint must carry no credentials. Authentication is the "
-                "token, or the user and password, under target.proxmox; "
-                "anything here would be written to the run directory in "
-                "plaintext.",
-                where=where,
-            )
-        )
-
-    ca_cert = target.get("ca_cert")
-    if ca_cert is not None and target.get("insecure"):
-        problems.append(
-            Problem.error(
-                "ca_cert and insecure: true contradict each other. One is the CA "
-                "that must have signed the certificate, the other checks no "
-                "certificate at all. Drop whichever was not meant.",
-                where="target.proxmox.ca_cert",
-            )
-        )
-    # An error rather than a warning, for the same reason the libvirt backend
-    # errors on a path: nothing is mounted for it.
-    if isinstance(ca_cert, str) and PATH_PATTERN.match(ca_cert):
-        problems.append(
-            Problem.error(
-                "ca_cert is the certificate itself now, not a path to it. Paste "
-                "the PEM in -- nothing is mounted for it.",
-                where="target.proxmox.ca_cert",
-            )
-        )
-
-    if target.get("insecure"):
-        problems.append(
-            Problem.warning(
-                "certificate verification is disabled. The credential under "
-                "target.proxmox is sent to whatever answers at this endpoint.",
-                where="target.proxmox.insecure",
-            )
-        )
-    return problems
+    return check_endpoint(
+        target,
+        "target.proxmox",
+        allowed_paths=("", "/", "/api2/json", "/api2/json/"),
+        parse_hint=(
+            "vcows builds the API base URL from this field and cannot parse it"
+        ),
+        scheme_hint=(
+            "The API token is a bearer credential and travels in a header; "
+            "plaintext http would put it on the wire."
+        ),
+        path_hint="This is the API base URL; vcows appends the API path itself.",
+        credential_hint="token, or the user and password, under target.proxmox",
+        credential_noun="The credential",
+    )
 
 
 def _check_image_name(cfg: dict) -> list[Problem]:

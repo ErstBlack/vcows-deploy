@@ -127,6 +127,18 @@ def test_a_trailing_newline_is_rejected(tmp_path, registry, before, after):
         load(write(tmp_path, CONFIG.replace(before, after)), registry)
 
 
+def test_a_comma_in_the_base_volume_name_is_rejected(tmp_path, registry):
+    """The Proxmox backend formats this into a comma-separated PVE option
+    string, where a comma or an `=` appends further qemu options. The rule lives
+    here rather than in that backend because the same value is libvirt's volume
+    name and vSphere's template name."""
+    text = CONFIG.replace(
+        "base_volume_name: golden.qcow2", "base_volume_name: golden.qcow2,discard=on"
+    )
+    with pytest.raises(ConfigError):
+        load(write(tmp_path, text), registry)
+
+
 def test_a_sha256_without_a_newline_passes(tmp_path, registry):
     text = CONFIG.replace(
         "  base_volume_name: golden.qcow2",
