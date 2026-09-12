@@ -285,12 +285,18 @@ def content_of(managed_object: Any) -> Any:
     return si.RetrieveContent()
 
 
-def find_by_name(content: Any, vim_type: Any, name: str, root: Any = None) -> Any:
-    """The one object of ``vim_type`` called ``name`` under ``root``, or None.
+def find_by_name(content: Any, vim_type: Any, name: str, root: Any = None) -> list:
+    """Every object of ``vim_type`` called ``name`` under ``root``.
 
-    None rather than a raise: every caller is ``preflight`` deciding whether a
-    configured name resolves, and a miss there is a ``Problem`` naming the field
-    that holds the name. An exception would lose the field.
+    A list rather than the first match, because vCenter allows two folders, two
+    resource pools or two hosts of one name in different subtrees of a single
+    datacenter, and which of them a run meant is not a question this can answer:
+    ``preflight`` turns more than one into a ``Problem`` naming both paths, and
+    the phases after it unpack the single match it proved.
+
+    Empty rather than a raise, for the same reason a miss is not an exception:
+    ``preflight`` reports it as a ``Problem`` naming the field that holds the
+    name, and an exception would lose the field.
 
     ``root`` defaults to the root folder, which is the only container the
     datacenter itself can be found in. Everything else is looked for inside the
@@ -303,7 +309,7 @@ def find_by_name(content: Any, vim_type: Any, name: str, root: Any = None) -> An
         recursive=True,
     )
     try:
-        return next((obj for obj in view.view if obj.name == name), None)
+        return [obj for obj in view.view if obj.name == name]
     finally:
         # vCenter holds a view until it is destroyed or the session ends, and a
         # run makes one per configured name.

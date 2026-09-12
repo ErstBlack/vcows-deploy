@@ -359,6 +359,29 @@ def test_an_object_in_another_datacenter_does_not_resolve(vsphere_cfg):
     assert wheres(errors(d)) == ["target.vsphere.datastore"]
 
 
+def test_two_objects_of_one_name_in_one_datacenter_are_refused(vsphere_cfg):
+    """vCenter allows one folder name in two subtrees of a datacenter, and the
+    order a container view enumerates them in is not a placement decision. The
+    simulator's DC0 holds one of everything, so the smoke gate cannot show this
+    and it is checked here."""
+
+    def two_named_folders(dc):
+        prod = mo(vim.Folder, "group-v2", name="prod", container=dc)
+        staging = mo(vim.Folder, "group-v3", name="staging", container=dc)
+        return [
+            prod,
+            staging,
+            mo(vim.Folder, "group-v4", name="vcows", container=dc, parent=prod),
+            mo(vim.Folder, "group-v5", name="vcows", container=dc, parent=staging),
+        ]
+
+    vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
+    d = preflight.preflight(vsphere_cfg, session(world(extra=two_named_folders)))
+    assert wheres(errors(d)) == ["target.vsphere.folder"]
+    assert "2 folders named 'vcows' under datacenter 'dc-a'" in messages(d.problems)
+    assert "prod/vcows, staging/vcows" in messages(d.problems)
+
+
 # -- the golden image --------------------------------------------------------
 
 

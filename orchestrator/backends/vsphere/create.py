@@ -501,12 +501,15 @@ def _datacenter(cfg: dict, session: api.Session) -> Any:
 def _resolve(
     session: api.Session, kind: Any, name: str, field: str, root: Any = None
 ) -> Any:
-    what = api.find_by_name(session.content, kind, name, root=root)
-    if what is None:
+    found = api.find_by_name(session.content, kind, name, root=root)
+    if not found:
         raise api.VsphereApiError(
             f"target.vsphere.{field} names {name!r}, which this vCenter no "
             f"longer holds; it resolved when preflight ran"
         )
+    # Unpacked rather than indexed: preflight refused a name that resolved
+    # twice, so a second match here means it was bypassed.
+    [what] = found
     return what
 
 
@@ -843,12 +846,15 @@ def _template(cfg: dict, session: api.Session, image: dict) -> Any:
 
     if not image["create"]:
         found = api.find_by_name(session.content, vim.VirtualMachine, image["template"])
-        if found is None:
+        if not found:
             raise api.VsphereApiError(
                 f"the template {image['template']!r} is no longer on this vCenter; "
                 f"preflight found it when this run started"
             )
-        return found
+        # Unpacked rather than indexed, as `_resolve` is: two VMs of this name
+        # is not a template a run may pick one of.
+        [template] = found
+        return template
 
     with _made(f"template {image['template']}"):
         imported = IMPORTS[image["import"]](

@@ -64,6 +64,11 @@ def _check_target(cfg: dict, session: api.Session, problems: list[Problem]) -> A
     reports every problem at once: an operator at an air-gapped site should not
     round-trip once per fault.
 
+    **A name that resolves twice is a Problem too.** vCenter allows one name on
+    two folders, pools or hosts in different subtrees of a datacenter, and a
+    view enumerates them in an order nothing here may treat as a choice, so the
+    problem names the count and both inventory paths.
+
     The datacenter is the exception, and only because it is the container the
     other five are looked for inside: without it there is nowhere to look, so
     the walk stops rather than reporting five misses that all mean one.
@@ -72,8 +77,8 @@ def _check_target(cfg: dict, session: api.Session, problems: list[Problem]) -> A
 
     target = cfg["target"]["vsphere"]
     name = target["datacenter"]
-    datacenter = api.find_by_name(session.content, vim.Datacenter, name)
-    if datacenter is None:
+    found = api.find_by_name(session.content, vim.Datacenter, name)
+    if not found:
         problems.append(
             Problem.error(
                 f"this vCenter has no datacenter named {name!r}. vcows never "
@@ -83,6 +88,17 @@ def _check_target(cfg: dict, session: api.Session, problems: list[Problem]) -> A
             )
         )
         return None
+    if len(found) > 1:
+        problems.append(
+            Problem.error(
+                f"{len(found)} datacenters named {name!r} on this vCenter, under "
+                f"{', '.join(one.parent.name for one in found)}. vcows will not "
+                f"pick one by enumeration order.",
+                where="target.vsphere.datacenter",
+            )
+        )
+        return None
+    [datacenter] = found
 
     resolved: dict[str, Any] = {}
     for field, kind in (
@@ -101,10 +117,8 @@ def _check_target(cfg: dict, session: api.Session, problems: list[Problem]) -> A
         wanted = target.get(field)
         if wanted is None:
             continue
-        resolved[field] = api.find_by_name(
-            session.content, kind, wanted, root=datacenter
-        )
-        if resolved[field] is None:
+        found = api.find_by_name(session.content, kind, wanted, root=datacenter)
+        if not found:
             problems.append(
                 Problem.error(
                     f"datacenter {name!r} has no {field.replace('_', ' ')} named "
@@ -112,7 +126,34 @@ def _check_target(cfg: dict, session: api.Session, problems: list[Problem]) -> A
                     where=f"target.vsphere.{field}",
                 )
             )
+        elif len(found) > 1:
+            paths = ", ".join(_path(one, datacenter) for one in found)
+            problems.append(
+                Problem.error(
+                    f"{len(found)} {field.replace('_', ' ')}s named {wanted!r} under "
+                    f"datacenter {name!r}: {paths}. vcows will not pick one by "
+                    f"enumeration order.",
+                    where=f"target.vsphere.{field}",
+                )
+            )
+        else:
+            [resolved[field]] = found
     return resolved.get("datastore")
+
+
+def _path(obj: Any, datacenter: Any) -> str:
+    """One object's inventory path inside the datacenter, walked up ``parent``.
+
+    What tells two same-named folders apart in the problem above, and both
+    fields are on ``vim.ManagedEntity``, which every object resolved here is.
+    The datacenter is where the walk stops, so the path reads from inside the
+    thing the config named.
+    """
+    names = []
+    while obj is not None and obj is not datacenter:
+        names.append(obj.name)
+        obj = obj.parent
+    return "/".join(reversed(names))
 
 
 def _existing(cfg: dict, found: list[dict], problems: list[Problem]) -> list[Existing]:
