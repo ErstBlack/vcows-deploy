@@ -223,11 +223,9 @@ def _made(what: str) -> Iterator[None]:
     translate through ``errors``: no code here matches on a code, and no failure
     here is the benign one.
 
-    **Only ``libvirtError`` is caught, where the Proxmox ``_made`` catches every
-    ``Exception``, and the divergence is deliberate**: the ``args`` rewrite is
-    specific to this type, and the other failure that reaches here -- an
-    ``OSError`` from ``upload``'s ``open(source)`` -- already names the file it
-    could not read.
+    Only ``libvirtError`` is caught: the ``args`` rewrite is specific to that
+    type, and the other failure that reaches here -- an ``OSError`` from
+    ``upload``'s ``open(source)`` -- already names the file it could not read.
     """
     import libvirt
 

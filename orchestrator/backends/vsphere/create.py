@@ -146,14 +146,6 @@ def _made(what: str) -> Iterator[None]:
     objects was being made. **This is the only thing that names the resource**,
     which is why the ``what`` handed to ``api.wait`` inside is the bare step.
 
-    Copied from the Proxmox backend rather than lifted into ``base.py`` with the
-    two of them, and the copy is the smaller change: all three bodies differ.
-    This one reads ``.msg`` off the exception, the Proxmox one interpolates the
-    exception itself, the libvirt one rewrites ``args`` in place instead of
-    raising its own type -- so a shared version would take the type to raise
-    *and* the way to render what it caught as parameters, and would edit two
-    working backends to pass them.
-
     ``.msg`` when there is one, for the reason ``api.wait`` uses it: pyvmomi
     renders a fault as its whole field list, which buries the one sentence
     vCenter wrote. What else reaches here -- an ``OSError`` from opening the

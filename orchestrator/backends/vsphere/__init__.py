@@ -7,17 +7,9 @@ their phases through them. ``prepare`` is the seventh and is overridden rather
 than inherited, the only one of the three backends to do so: the conversion in
 ``convert.py`` is what the inherited body does not do.
 
-``orchestrator/backends/__init__.py``'s ``REGISTRY`` names this class, which is
-the whole of what makes ``backend: vsphere`` a config a site can write. Core
-still takes a registry argument everywhere, so the shipped dict is a default and
-not a global dependency.
-
-**No ``pyVmomi`` import at module level, here or in any module this one imports
-at import time.** The same rule the Proxmox backend follows for ``proxmoxer``
-and the libvirt backend for ``libvirt``, and for the same reason: once the
-registry names this class, importing the registry drags this file in on every
-run, including runs that will never speak to a vCenter. ``api.py`` imports
-``pyVim.connect`` inside the function that needs it.
+The three rules every backend package follows are in
+``orchestrator/backends/__init__.py``. ``api.py`` imports ``pyVim.connect``
+inside the function that needs it.
 """
 
 from __future__ import annotations
@@ -100,11 +92,4 @@ class VsphereBackend(Backend):
         return prepared
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
-        """Render the values, then make the objects they describe.
-
-        ``render`` is a step of its own even though this line is its only
-        consumer: it is the pure config-to-values half, golden-file tested byte
-        for byte, and keeping it separate lets ``create`` be tested against a
-        dict rather than against a config.
-        """
         return _create.create(session, _render.render(cfg, prepared))

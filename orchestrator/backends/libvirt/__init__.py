@@ -2,15 +2,10 @@
 
 Two of them delegate to the free functions in ``schema.py``, which imports
 nothing hypervisor-specific. The four that hold a connection live in
-``preflight.py``, ``destroy.py`` and ``create.py``. There is no ``prepare``
-here: the inherited ``Backend.prepare`` builds the seed ISOs through core's
-``cloudinit`` and carries ``preflight``'s ``base_volume`` through to ``create``.
-
-**No libvirt import at module level, here or in any module this one imports at
-import time.** ``orchestrator/backends/__init__.py`` names this class, so importing
-the registry drags this file in on every run -- including runs on a machine with no
-libvirt at all. ``tests/test_seam.py`` breaks the import and checks exactly that.
-The hypervisor import lives inside the methods that need a connection.
+``preflight.py``, ``destroy.py`` and ``create.py``. The three rules every
+backend package follows are in ``orchestrator/backends/__init__.py``; the
+inherited ``prepare`` carries ``preflight``'s ``base_volume`` through to
+``create``.
 
 The class is here rather than in a submodule for the reason findings.md §3
 wants an ABC at all: the registry names one object, and every method core calls
@@ -58,11 +53,4 @@ class LibvirtBackend(Backend):
     # -- apply -----------------------------------------------------------
 
     def create(self, cfg: dict, session: Any, prepared: dict[str, Any]) -> dict:
-        """Render the values, then make the objects they describe.
-
-        ``render`` is a step of its own even though this line is its only
-        consumer: it is the pure config-to-values half, golden-file tested byte
-        for byte, and keeping it separate lets ``create`` be tested against a
-        dict rather than against a config.
-        """
         return _create.create(session, _render.render(cfg, prepared))
