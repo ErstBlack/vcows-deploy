@@ -1,29 +1,12 @@
 """The backend seam: an ABC, the records that cross it, and the ownership policy.
 
 Adding a second backend should require no edit to any core file. Every method on
-``Backend`` is a signature rather than an implementation, bar the one named
-below.
+``Backend`` is a signature rather than an implementation, bar ``prepare``.
 
-**One core block is the exception, and it is known.** ``config.IMAGE_SCHEMA`` is
-written in qcow2-and-libvirt terms -- ``source_qcow2`` and ``base_volume_name``
-are the field *names*, not just their meanings -- and unlike ``target`` it is
-wired into the core schema directly rather than composed from the registry. A
-vSphere or Proxmox backend wanting an OVA or a template id opens ``config.py``.
-The reader behind it, ``orchestrator/qcow2.py``, is core too and is imported by
-exactly one backend. Neither is speculative to fix and both are cheap to move
-when there is a second backend to move them for; they are named here so the "no
-core edit" claim is not read as complete.
-
-**One default implementation, and the bar it has to clear.** The thing to avoid
-is *noop defaults*, not ABCs: a backend that forgets ``destroy`` and inherits a
-no-op deletes nothing and exits successfully; one that forgets ``preflight``
-skips the safety check entirely. An ABC fails loudly at instantiation, which
-beats a Protocol that only complains if someone remembers to run a type checker.
-So a default is allowed only where forgetting to override cannot silently do
-nothing, and ``prepare`` is the only method that clears it: both shipped backends
-want the identical body, the work is core's ``cloudinit`` either way, and a
-backend needing more than the default fails in ``create`` on the key it did not
-build.
+docs/findings.md §3 is where the argument lives: why an ABC rather than a
+Protocol, why ``prepare`` is the one method allowed a default, and the one core
+block that keeps the "no core edit" claim from being complete --
+``config.IMAGE_SCHEMA``, and ``orchestrator/qcow2.py`` behind it.
 """
 
 from __future__ import annotations
@@ -45,10 +28,7 @@ from ..problems import Problem
 class Existing:
     """One VM that already exists on the target, as every backend reports it.
 
-    libvirt reads domain ``<metadata>``; vSphere would read an annotation;
-    Proxmox a description. All three produce this, and core decides what it
-    means -- which is why a backend author cannot implement the refusal
-    incorrectly. They never implement it.
+    Mechanism is per-backend, policy is core: docs/findings.md §3.
     """
 
     name: str
@@ -82,18 +62,10 @@ class Discovered:
     """Everything one ``preflight`` walk found. The only thing that crosses from
     the connected half of the pipeline into the pure half.
 
-    It exists because ``prepare`` cannot reach the target while ``create`` only
-    ever creates, so something has to say which of the things ``create`` would
-    make are already there. For libvirt that is the shared golden image, and
-    preflight is *already* walking the pool to satisfy findings.md §2's
-    orphan-volume refusal, so the answer is a lookup on data it is holding
-    rather than a second round trip.
-
-    Core reads ``vms`` and forwards the record without ever reading
-    ``artifacts``, which is what keeps core from learning what a storage volume
-    is. And because ``prepare`` takes *this* rather than a session, a backend
-    cannot reach the hypervisor from ``prepare`` at all -- a guarantee rather
-    than a rule someone has to remember.
+    Core reads ``vms`` and ``problems`` and forwards the record without ever
+    reading ``artifacts``. ``prepare`` receives this rather than a session, so a
+    backend cannot reach the hypervisor from ``prepare`` at all. docs/findings.md
+    §3 argues both.
     """
 
     vms: tuple[Existing, ...]
@@ -105,18 +77,11 @@ class Discovered:
     problems: tuple[Problem, ...] = ()
     """What the backend found wrong with the *target*, as opposed to the config.
 
-    A missing pool, an orphaned volume, a base image whose size disagrees with the
-    local one: none of these are ownership questions, so ``decide()`` cannot reach
-    them, and all of them must stop a deploy. They are a list rather than an
-    exception for the same reason ``config.load`` reports every problem at once --
-    an operator at an air-gapped site should not round-trip once per fault.
-
-    Core reads this and ``vms``, and still never reads ``artifacts``.
-
-    A tuple, like ``Existing.disks``: ``frozen=True`` blocks rebinding only, so a
-    list field leaves ``d.problems.append(...)`` working on the one record
-    documented as crossing from the connected half of the pipeline into the pure
-    half. ``artifacts`` stays a dict because it is genuinely opaque.
+    A missing pool, an orphaned volume, a base image whose size disagrees with
+    the local one. None of these is an ownership question, so ``decide()`` cannot
+    reach them, and every one of them must stop a deploy. Reported all at once
+    rather than raised one at a time, and a tuple rather than a list, for the
+    reasons docs/findings.md §3 gives.
     """
 
 
@@ -225,17 +190,14 @@ def decide(
       ``<metadata>``; on vSphere and Proxmox cloning is the normal idiom and the
       annotation travels by default.
     * A marked VM carrying a logical name we want, from this deployment ->
-      **skip**, reported as "exists (not compared)". No half-comparator: libvirt
-      rewrites domain XML on define -- adding defaults, PCI addresses, device
-      aliases -- so a naive diff produces permanent false drift, and the natural
-      fix is a normalisation layer. That is precisely how the last version
-      sprawled.
+      **skip**, reported as "exists (not compared)". No half-comparator; §2 of
+      findings.md says why not.
     * The same, but from a *different* deployment -> **refuse**. Someone else
       owns that name here.
-    * Any VM whose hypervisor name we want -> **refuse**. libvirt would reject
-      the duplicate itself; checking here buys a clear message instead of a raw
-      libvirt error, and buys it *before* the apply writes that VM's overlay and
-      seed ISO. The check does not decide ownership.
+    * Any VM whose hypervisor name we want -> **refuse**. The check does not
+      decide ownership; it buys the clear message *before* the apply writes that
+      VM's overlay and seed ISO, which is what checking here rather than letting
+      the hypervisor reject the name adds.
     * Otherwise -> **create**.
 
     Marked VMs *not* in the config are reported and left alone. Consistent with
@@ -365,19 +327,16 @@ class Backend(ABC):
         image": ``imagecheck.check_image_digest`` hashes the whole file, ~59 s
         for 10 GiB, and ``destroy`` never touches it. Every other verb leaves it
         true. A backend that reads the image in some other check owes it the same
-        skip; one that ignores the flag entirely is correct and slow, so this is
-        a cost seam and not a safety one.
+        skip.
         """
 
     @abstractmethod
     def connect(self, cfg: dict) -> AbstractContextManager[Any]:
         """Open a session against the target, and close it on the way out.
 
+        The backend owns it, and the session stays opaque to everything above.
         Not in findings.md §3's interface, which takes ``session`` as a parameter
-        without saying who builds it. Somebody must, and if that is core then
-        core imports libvirt and the seam is fake -- which is exactly what the
-        fake-backend test exists to catch. So the backend owns it, and the
-        session stays opaque to everything above.
+        without saying who builds it.
         """
 
     @abstractmethod
@@ -404,18 +363,10 @@ class Backend(ABC):
         are forwarded whole rather than picked out by key, since picking would
         mean core naming ``base_volume``.
 
-        **The one concrete method here.** The module docstring says why a default
-        is allowed for this one and for nothing else; ``cloudinit`` is core
-        because nothing in a seed ISO is hypervisor-specific, so the default
-        reaches no hypervisor either.
-
-        **Takes what ``preflight`` found, not a connection.** It needs the
-        target's state -- which of the things ``create`` would make already
-        exist -- but not the ability to go and look, which ``preflight`` has
-        already done. Being written here rather than in each backend makes that
-        structural: there is no session in this scope to reach with. Passing data
-        rather than a session also makes "prepare runs after preflight" a type
-        dependency instead of a convention.
+        **The one concrete method here**, and the only one allowed a default:
+        docs/findings.md §3 sets the bar and says why nothing else clears it.
+        Being written here rather than in each backend is what makes "reaches
+        nothing" structural -- there is no session in this scope to reach with.
         """
         return {"seed_isos": cloudinit.build_all(cfg, workdir), **discovered.artifacts}
 
