@@ -164,7 +164,10 @@ main() {
         die "$config is not a readable file (-c/--config)"
     fi
     config="$(realpath "$config")"
-    local -a mounts=(-v "$config:/config.yaml:ro,z")
+    # `:ro,Z` and not `:ro,z`: the config holds every credential in cleartext,
+    # and a `:z` relabel hands it to every container on the host and outlives
+    # the run. The images below stay `:z`; the rest of the host shares them.
+    local -a mounts=(-v "$config:/config.yaml:ro,Z")
     local -a args=("$verb" /config.yaml)
 
     # `mkdir -p` because a site's first run has neither directory, and a tool
@@ -195,8 +198,8 @@ main() {
             [ -w "$dir" ] || die "$dir is not a writable directory ($flag)"
             dir="$(realpath "$dir")"
             # `:Z` relabels the host path into a category private to one
-            # container, which is right for a directory belonging to one run and
-            # wrong for the config and the shared golden images above.
+            # container, which is right for a directory belonging to one run,
+            # as it is for the config above, and wrong for the golden images.
             mounts+=(-v "$dir:/runs:Z")
             [ -z "$run_dir" ] || args+=(--run-dir /runs)
             ;;

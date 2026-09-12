@@ -661,7 +661,7 @@ def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opt
         "--security-opt=no-new-privileges",
         *opts,
         "-v",
-        f"{tree}/config.yaml:/config.yaml:ro,z",
+        f"{tree}/config.yaml:/config.yaml:ro,Z",
     ]
     if images:
         argv += ["-v", f"{tree}/images:/images:ro,z"]
@@ -675,8 +675,9 @@ def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opt
 
 #: One row per verb, plus `destroy -y`. The labels are the assertion as much as
 #: the paths are: `:Z` relabels the host path into a category private to one
-#: container, which is right for `runs/` and would take a shared golden-image
-#: directory away from everything else on the host.
+#: container, which is right for `runs/` and for a config holding cleartext
+#: credentials, and would take a shared golden-image directory away from
+#: everything else on the host.
 WRAPPER_ROWS = [
     pytest.param(("validate",), {"images": True}, id="validate"),
     pytest.param(("preflight",), {"images": True, "runs": True}, id="preflight"),
@@ -715,7 +716,7 @@ def test_a_relative_path_reaches_podman_absolute(tmp_path):
     shutil.move(tree / "config.yaml", tree / "sub" / "config.yaml")
     done, argv = _wrapper(tree, "validate", "-c", "sub/config.yaml")
     assert done.returncode == 0, done.stderr
-    assert f"{tree}/sub/config.yaml:/config.yaml:ro,z" in argv
+    assert f"{tree}/sub/config.yaml:/config.yaml:ro,Z" in argv
 
 
 def test_the_two_directories_are_made_when_they_are_not_there(tmp_path):
@@ -848,7 +849,7 @@ def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
         "--cap-drop=all",
         "--security-opt=no-new-privileges",
         "-v",
-        f"{tree}/config.yaml:/config.yaml:ro,z",
+        f"{tree}/config.yaml:/config.yaml:ro,Z",
         "-v",
         f"{tree}/images:/images:ro,z",
         "-v",

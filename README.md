@@ -148,7 +148,7 @@ directory inside the container for as long as the connection is open.
 
 ```bash
 podman run --rm \
-  -v ./lab-a.yaml:/config.yaml:ro,z \
+  -v ./lab-a.yaml:/config.yaml:ro,Z \
   -v /srv/images:/images:ro,z \
   -v ./runs:/runs:Z \
   vcows-deploy:0.1.0.0 preflight /config.yaml
@@ -161,11 +161,15 @@ self-signed certificate, and `validate` warns about it — the credential goes t
 whatever answers. The two together are refused; they are two contradictory
 answers about the same certificate.
 
-**The read-only mounts are `:z` and the run directory is `:Z`.** On an SELinux
-host `:Z` relabels the *host* path with a category private to one container, so
-nothing else — including your own `ssh` — can read it afterwards. That is right
-for `./runs`, which belongs to that run alone, and wrong for a config and a
-golden-image directory the rest of the host shares.
+**The images mount is `:z`; the config and the run directory are `:Z`.** On an
+SELinux host `:Z` relabels the *host* path with a category private to one
+container, so no other container can read it afterwards. That is wrong for a
+golden-image directory the rest of the host shares, which is why `/images` is
+`:z`. It is right for `./runs`, which belongs to that run alone, and right for
+the config, which holds every credential in cleartext ("The config is a secret
+artifact" below): `:z` would relabel it into the category every container on the
+host reads, and that relabel outlives the run. An unconfined shell — yours —
+reads the file whatever its label, so this costs you nothing.
 
 Each run writes `/runs/<deployment>/<timestamp>/` — its seed ISOs, its inventory
 and a `run.json` saying what happened. `--run-dir` puts one run somewhere else
