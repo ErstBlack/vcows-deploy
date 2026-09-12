@@ -926,6 +926,27 @@ def test_an_ordinary_key_and_known_hosts_pass(cfg, registry):
     assert errors(core_validate(cfg, registry)) == []
 
 
+def test_no_known_hosts_warns_that_no_host_key_is_pinned(cfg):
+    """Without it `preflight.ssh_files` writes no wrapper, so ssh answers the
+    first host key it is offered from its own defaults. A warning rather than an
+    error because the rig tests and a developer's own ~/.ssh rely on the
+    absence."""
+    del cfg["target"]["libvirt"]["known_hosts"]
+    problems = schema.validate(cfg)
+    assert errors(problems) == [], messages(problems)
+    pinning = [p for p in problems if p.where == "target.libvirt.known_hosts"]
+    assert len(pinning) == 1, messages(problems)
+    assert "no host key is pinned for vcows" in pinning[0].message
+
+
+def test_a_local_uri_without_known_hosts_has_no_host_key_to_pin(cfg):
+    """The scheme check refuses it for other reasons; there is no second
+    complaint about a host key a local socket does not have."""
+    cfg["target"]["libvirt"]["uri"] = "qemu:///system"
+    del cfg["target"]["libvirt"]["known_hosts"]
+    assert "target.libvirt.known_hosts" not in wheres(schema.validate(cfg))
+
+
 def test_an_empty_known_hosts_is_rejected(cfg, registry):
     """It has no pattern -- a host key line is `host algo base64` with any
     algorithm name -- so `minLength` is the whole of what can be said here."""

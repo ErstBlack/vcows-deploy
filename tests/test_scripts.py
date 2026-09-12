@@ -654,7 +654,15 @@ def _wrapper(
 
 def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opts=()):
     """The command line each verb is supposed to build, in order."""
-    argv = ["run", "--rm", *opts, "-v", f"{tree}/config.yaml:/config.yaml:ro,z"]
+    argv = [
+        "run",
+        "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        *opts,
+        "-v",
+        f"{tree}/config.yaml:/config.yaml:ro,Z",
+    ]
     if images:
         argv += ["-v", f"{tree}/images:/images:ro,z"]
     if runs:
@@ -667,8 +675,9 @@ def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opt
 
 #: One row per verb, plus `destroy -y`. The labels are the assertion as much as
 #: the paths are: `:Z` relabels the host path into a category private to one
-#: container, which is right for `runs/` and would take a shared golden-image
-#: directory away from everything else on the host.
+#: container, which is right for `runs/` and for a config holding cleartext
+#: credentials, and would take a shared golden-image directory away from
+#: everything else on the host.
 WRAPPER_ROWS = [
     pytest.param(("validate",), {"images": True}, id="validate"),
     pytest.param(("preflight",), {"images": True, "runs": True}, id="preflight"),
@@ -707,7 +716,7 @@ def test_a_relative_path_reaches_podman_absolute(tmp_path):
     shutil.move(tree / "config.yaml", tree / "sub" / "config.yaml")
     done, argv = _wrapper(tree, "validate", "-c", "sub/config.yaml")
     assert done.returncode == 0, done.stderr
-    assert f"{tree}/sub/config.yaml:/config.yaml:ro,z" in argv
+    assert f"{tree}/sub/config.yaml:/config.yaml:ro,Z" in argv
 
 
 def test_the_two_directories_are_made_when_they_are_not_there(tmp_path):
@@ -783,7 +792,16 @@ def test_version_needs_neither_a_config_nor_a_mount(tmp_path):
     tree = _wrapper_tree(tmp_path, config=False)
     done, argv = _wrapper(tree, "version", VCOWS_LOG_LEVEL="DEBUG")
     assert done.returncode == 0, done.stderr
-    assert argv == ["run", "--rm", "-e", "VCOWS_LOG_LEVEL", PLACEHOLDER, "version"]
+    assert argv == [
+        "run",
+        "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "-e",
+        "VCOWS_LOG_LEVEL",
+        PLACEHOLDER,
+        "version",
+    ]
 
 
 def test_a_vcows_variable_set_beside_the_wrapper_reaches_the_container(tmp_path):
@@ -828,8 +846,10 @@ def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
     assert argv == [
         "run",
         "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
         "-v",
-        f"{tree}/config.yaml:/config.yaml:ro,z",
+        f"{tree}/config.yaml:/config.yaml:ro,Z",
         "-v",
         f"{tree}/images:/images:ro,z",
         "-v",
