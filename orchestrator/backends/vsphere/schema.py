@@ -26,13 +26,12 @@ it applies only under the default ``clone: linked``.
 
 from __future__ import annotations
 
-import re
 from typing import Any
-from urllib.parse import urlsplit
 
 from ... import qcow2
 from ...cloudinit import (
     check_addressing,
+    check_endpoint,
     check_vm_structure,
     nic_checks_are_safe,
 )
@@ -56,10 +55,6 @@ MAC_PATTERN = r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\Z"
 #: catches the mistake worth catching: a *private* key pasted where the public
 #: half belongs, a credential put into a config for nothing.
 CA_CERT_PATTERN = r"^-----BEGIN CERTIFICATE-----"
-
-#: An absolute path with no whitespace. Matched only to reject it: ``ca_cert``
-#: carries the PEM itself and nothing is mounted for a path.
-PATH_PATTERN = re.compile(r"^/[^\s]*\Z")
 
 #: How the golden image reaches the datastore. ``ovf`` uploads a
 #: streamOptimized VMDK through an ``ImportVApp`` lease; ``datastore`` PUTs a
@@ -213,92 +208,25 @@ def _check_placement(target: dict) -> list[Problem]:
 def _check_target(target: dict) -> list[Problem]:
     """The endpoint is ours to build the SDK URL from, not the operator's to
     decorate."""
-    where = "target.vsphere.endpoint"
-    endpoint = target["endpoint"]
-    try:
-        parts = urlsplit(endpoint)
-    except ValueError as exc:
-        # Same early return as the other two backends': every check below reads
-        # `parts`, and an unhandled ValueError here would unwind past
-        # `config.load`'s every-problem contract.
-        return [
-            Problem.error(
-                f"{endpoint!r} is not a URL ({exc}); vcows takes the vCenter host "
-                f"and port from this field and cannot parse it",
-                where=where,
-            )
-        ]
-
-    problems: list[Problem] = []
-    if parts.scheme != "https":
-        problems.append(
-            Problem.error(
-                f"scheme must be 'https', got {parts.scheme or '<none>'!r}. The "
-                f"password is sent to vCenter in the login call and the session "
-                f"cookie authorises every upload after it; plaintext http would "
-                f"put both on the wire.",
-                where=where,
-            )
-        )
-    if not parts.hostname:
-        problems.append(Problem.error(f"no host in {endpoint!r}", where=where))
-    if parts.path not in ("", "/"):
-        problems.append(
-            Problem.error(
-                f"path must be empty or '/', got {parts.path!r}. This is the "
-                f"vCenter base URL; vcows appends '/sdk' and the datastore paths "
-                f"itself.",
-                where=where,
-            )
-        )
-    if parts.query:
-        problems.append(
-            Problem.error(
-                f"endpoint must carry no query string, got {parts.query!r}",
-                where=where,
-            )
-        )
-    if parts.username is not None or parts.password is not None:
-        # Same refusal, and the same reason, as the other two backends'.
-        problems.append(
-            Problem.error(
-                "endpoint must carry no credentials. Authentication is the user "
-                "and password under target.vsphere; anything here would be "
-                "written to the run directory in plaintext.",
-                where=where,
-            )
-        )
-
-    ca_cert = target.get("ca_cert")
-    if ca_cert is not None and target.get("insecure"):
-        problems.append(
-            Problem.error(
-                "ca_cert and insecure: true contradict each other. One is the CA "
-                "that must have signed the certificate, the other checks no "
-                "certificate at all. Drop whichever was not meant.",
-                where="target.vsphere.ca_cert",
-            )
-        )
-    # An error rather than a warning, for the same reason the libvirt backend
-    # errors on a path: nothing is mounted for it.
-    if isinstance(ca_cert, str) and PATH_PATTERN.match(ca_cert):
-        problems.append(
-            Problem.error(
-                "ca_cert is the certificate itself, not a path to it. Paste the "
-                "PEM in -- nothing is mounted for it.",
-                where="target.vsphere.ca_cert",
-            )
-        )
-
-    if target.get("insecure"):
-        problems.append(
-            Problem.warning(
-                "certificate verification is disabled. The password under "
-                "target.vsphere is sent to whatever answers at this endpoint.",
-                where="target.vsphere.insecure",
-            )
-        )
-    return problems
+    return check_endpoint(
+        target,
+        "target.vsphere",
+        allowed_paths=("", "/"),
+        parse_hint=(
+            "vcows takes the vCenter host and port from this field and cannot parse it"
+        ),
+        scheme_hint=(
+            "The password is sent to vCenter in the login call and the session "
+            "cookie authorises every upload after it; plaintext http would put "
+            "both on the wire."
+        ),
+        path_hint=(
+            "This is the vCenter base URL; vcows appends '/sdk' and the "
+            "datastore paths itself."
+        ),
+        credential_hint="user and password under target.vsphere",
+        credential_noun="The password",
+    )
 
 
 def _check_linked_clone_disk(cfg: dict) -> list[Problem]:
