@@ -82,7 +82,9 @@ main() {
     shift
 
     local name
-    local -a opts=(--rm)
+    # Nothing vcows runs needs a capability: ssh, proxmoxer and pyvmomi open
+    # outbound sockets and write under /runs and /tmp.
+    local -a opts=(--rm --cap-drop=all --security-opt=no-new-privileges)
 
     # podman copies the value of a bare `-e NAME` from its own environment, so
     # this forwards whatever is set without the wrapper knowing any of the

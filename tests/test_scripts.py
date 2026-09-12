@@ -654,7 +654,15 @@ def _wrapper(
 
 def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opts=()):
     """The command line each verb is supposed to build, in order."""
-    argv = ["run", "--rm", *opts, "-v", f"{tree}/config.yaml:/config.yaml:ro,z"]
+    argv = [
+        "run",
+        "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        *opts,
+        "-v",
+        f"{tree}/config.yaml:/config.yaml:ro,z",
+    ]
     if images:
         argv += ["-v", f"{tree}/images:/images:ro,z"]
     if runs:
@@ -783,7 +791,16 @@ def test_version_needs_neither_a_config_nor_a_mount(tmp_path):
     tree = _wrapper_tree(tmp_path, config=False)
     done, argv = _wrapper(tree, "version", VCOWS_LOG_LEVEL="DEBUG")
     assert done.returncode == 0, done.stderr
-    assert argv == ["run", "--rm", "-e", "VCOWS_LOG_LEVEL", PLACEHOLDER, "version"]
+    assert argv == [
+        "run",
+        "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "-e",
+        "VCOWS_LOG_LEVEL",
+        PLACEHOLDER,
+        "version",
+    ]
 
 
 def test_a_vcows_variable_set_beside_the_wrapper_reaches_the_container(tmp_path):
@@ -828,6 +845,8 @@ def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
     assert argv == [
         "run",
         "--rm",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
         "-v",
         f"{tree}/config.yaml:/config.yaml:ro,z",
         "-v",
