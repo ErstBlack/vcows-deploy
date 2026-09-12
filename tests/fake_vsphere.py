@@ -99,6 +99,10 @@ def mo(kind: Any, moid: str, **attrs: Any) -> Any:
     leaves every other property as the SDK has it, and leaves ``isinstance``
     telling the truth.
     """
+    # An inventory path is walked up `parent`, and for everything a fake builds
+    # that is the container it sits in unless the test named another one.
+    if "container" in attrs:
+        attrs.setdefault("parent", attrs["container"])
     shadow = type(f"Fake{kind.__name__}", (kind,), dict.fromkeys(attrs))
     obj = shadow(moid, stub=None)
     for field, value in attrs.items():

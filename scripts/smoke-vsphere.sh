@@ -278,9 +278,10 @@ cfg = {
     }
 }
 with api.connect(cfg) as session:
-    vm = api.find_by_name(session.content, vim.VirtualMachine, name)
-    if vm is None:
+    found = api.find_by_name(session.content, vim.VirtualMachine, name)
+    if not found:
         raise SystemExit(f"{name} is not on the simulator; the deploy did not run")
+    [vm] = found
     api.wait(
         vm.ReconfigVM_Task(
             spec=vim.vm.ConfigSpec(

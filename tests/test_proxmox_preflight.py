@@ -12,7 +12,7 @@ import pytest
 from orchestrator.backends.proxmox import preflight
 from orchestrator.marker import Marker
 from orchestrator.problems import Severity
-from tests.conftest import messages, session, wheres
+from tests.conftest import errors, messages, session, wheres
 from tests.fake_proxmox import FakeProxmox, ResourceException
 
 STORAGES = [
@@ -33,10 +33,6 @@ def marked(name: str, deployment: str = "lab-a", **extra) -> dict:
     return vm
 
 
-def errors(d):
-    return [p for p in d.problems if p.severity is Severity.ERROR]
-
-
 def paths(w):
     return {"/".join(parts) for _verb, parts in w.calls}
 
@@ -48,7 +44,7 @@ def test_an_empty_cluster_discovers_nothing_and_refuses_nothing(pve_cfg):
     w = world()
     d = preflight.preflight(pve_cfg, session(w))
     assert d.vms == ()
-    assert errors(d) == []
+    assert errors(d.problems) == []
 
 
 def test_a_marked_vm_is_discovered_with_its_marker(pve_cfg):
@@ -112,7 +108,7 @@ def test_an_unreadable_vm_is_reported_and_the_run_continues(pve_cfg):
     # The name when PVE gave one, the vmid when it did not: either way something
     # an operator can go and look at.
     assert set(wheres(d.problems)) == {"app01", "101"}
-    assert errors(d) == []
+    assert errors(d.problems) == []
 
 
 def test_a_vm_pve_lists_without_a_name_is_discovered_with_an_empty_one(pve_cfg):
@@ -156,14 +152,14 @@ def test_a_storage_without_the_import_type_is_refused_with_the_fix(pve_cfg):
     assert "does not allow content type(s) import" in messages(d.problems)
     assert "Datacenter -> Storage" in messages(d.problems)
     assert set(wheres(d.problems)) == {"target.proxmox.import_datastore"}
-    assert errors(d)
+    assert errors(d.problems)
 
 
 def test_a_second_missing_storage_is_reported_too(pve_cfg):
     """Both storages are checked, so an operator configuring a fresh cluster
     hears about both in one run rather than one per round trip."""
     d = preflight.preflight(pve_cfg, session(world(storages=[])))
-    assert len(errors(d)) == 2
+    assert len(errors(d.problems)) == 2
     assert set(wheres(d.problems)) == {
         "target.proxmox.import_datastore",
         "target.proxmox.datastore",
@@ -256,7 +252,7 @@ def test_a_storage_that_cannot_be_listed_is_refused_not_assumed_empty(pve_cfg):
     w = world()
     w.content_error = ResourceException("403 Forbidden")
     d = preflight.preflight(pve_cfg, session(w))
-    assert errors(d)
+    assert errors(d.problems)
     assert "cannot tell whether the golden image is already there" in messages(
         d.problems
     )
@@ -276,7 +272,7 @@ def test_a_leftover_seed_for_a_vm_that_does_not_exist_is_refused(pve_cfg):
     Left alone it collides with this run's upload, mid-apply."""
     w = world(content={"local": {"import": [], "iso": ["local:iso/app01-seed.iso"]}})
     d = preflight.preflight(pve_cfg, session(w))
-    assert len(errors(d)) == 1
+    assert len(errors(d.problems)) == 1
     assert "residue of an earlier run" in messages(d.problems)
     assert "'app01-seed.iso'" in messages(d.problems)
     # The VM the seed belongs to, by index, because that is what the operator
@@ -297,7 +293,7 @@ def test_a_seed_belonging_to_a_live_vm_is_not_an_orphan(pve_cfg):
         },
     )
     d = preflight.preflight(pve_cfg, session(w))
-    assert len(errors(d)) == 1
+    assert len(errors(d.problems)) == 1
     assert set(wheres(d.problems)) == {"vms[1].name"}
 
 

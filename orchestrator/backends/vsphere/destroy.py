@@ -113,9 +113,12 @@ def destroy(cfg: dict, session: api.Session, targets: list[Existing]) -> Outcome
         # A name that stopped resolving between the two is not refused here: the
         # VMs are still destroyable, and the seed that could not be deleted is
         # reported as the leak it is.
-        datacenter = api.find_by_name(
+        # Preflight refuses a datacenter name that resolves twice, so what
+        # comes back here is one datacenter or none.
+        found = api.find_by_name(
             session.content, vim.Datacenter, cfg["target"]["vsphere"]["datacenter"]
         )
+        datacenter = found[0] if found else None
         for target in targets:
             _one(session, datacenter, target, out)
     if out.failed:
