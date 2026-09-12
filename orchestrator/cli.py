@@ -42,6 +42,7 @@ from .backends.base import (
     Action,
     Decision,
     Discovered,
+    Existing,
     decide,
 )
 from .config import ConfigError, load
@@ -486,12 +487,32 @@ def _destroy(
         discovered = backend.preflight(cfg, session)
 
         marked = [e for e in discovered.vms if e.marker is not None]
+        # The teardown half of the rule `decide` applies on deploy: two VMs
+        # carrying one logical name is ownership vcows cannot resolve, and a
+        # filter on `deployment` alone resolves it by enumeration order --
+        # destroying both copies of the state deploy refuses to touch.
+        holders: dict[str, list[Existing]] = {}
+        for e in marked:
+            assert e.marker is not None  # noqa: S101  `marked` is the filter above
+            holders.setdefault(e.marker.name, []).append(e)
+        ambiguous = {
+            e.name: (
+                f"{len(held)} VMs carry the marker for logical name {logical!r}; "
+                f"vcows cannot tell which one it owns, and will not decide it by "
+                f"enumeration order"
+            )
+            for logical, held in holders.items()
+            if len(held) > 1
+            for e in held
+        }
         targets = [
             e
             for e in marked
-            if e.marker is not None and e.marker.deployment == deployment
+            if e.marker is not None
+            and e.marker.deployment == deployment
+            and e.name not in ambiguous
         ]
-        others = [e for e in marked if e not in targets]
+        others = [e for e in marked if e not in targets and e.name not in ambiguous]
 
         # Advisory here, fatal on deploy: a base image whose size disagrees with
         # the local copy, or an orphaned volume, must not block a teardown. Said
@@ -516,7 +537,7 @@ def _destroy(
             e.name: e.marker.deployment or "<unset>"
             for e in others
             if e.marker is not None
-        }
+        } | ambiguous
         for e in others:
             assert e.marker is not None  # noqa: S101  `others` comes from `marked`
             log.info(
@@ -528,6 +549,8 @@ def _destroy(
                     f"{e.marker.deployment or '<unset>'!r}, not {deployment!r}",
                 ),
             )
+        for name, reason in sorted(ambiguous.items()):
+            log.info("%s", _row(name, "skip", reason))
         for e in targets:
             # The marker's logical name, and only when it differs: where the
             # domain is named after it, repeating it would make the detail
