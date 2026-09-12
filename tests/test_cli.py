@@ -731,6 +731,33 @@ def test_destroy_takes_only_this_deployment(backend, config, tmp_path, capsys):
     assert record["left_alone"] == {"elsewhere": "lab-b", "stray": "<unset>"}
 
 
+def test_destroy_leaves_a_duplicate_marker_pair_alone(
+    backend, config, tmp_path, capsys
+):
+    """`decide` refuses to deploy over two VMs holding one logical name, and a
+    teardown that filtered on `deployment` alone would tear both down instead --
+    by enumeration order, which is the thing neither side is allowed to do."""
+    marker = Marker.for_vm("app02", "lab-a")
+    twins = [
+        Existing(name=hv, id=f"uuid-of-{hv}", marker=marker)
+        for hv in ("twin-a", "twin-b")
+    ]
+    backend.world = [ours("app01"), *twins]
+
+    assert cli.main(["destroy", config, "--yes"]) == 0
+
+    assert backend.sessions[-1].destroyed == ["app01"]
+    out = capsys.readouterr().err
+    skips = [ln for ln in out.splitlines() if "cannot tell which one it owns" in ln]
+    assert len(skips) == 2, out
+    assert all("2 VMs carry the marker for logical name 'app02'" in ln for ln in skips)
+    assert sorted(ln.split()[3] for ln in skips) == ["twin-a", "twin-b"]
+    record = json.loads((latest_run(tmp_path) / "run.json").read_text())
+    assert record["destroyed"] == ["app01"]
+    assert sorted(record["left_alone"]) == ["twin-a", "twin-b"]
+    assert "enumeration order" in record["left_alone"]["twin-a"]
+
+
 def test_a_destroy_that_could_not_finish_says_what_it_left(
     backend, config, tmp_path, capsys
 ):
