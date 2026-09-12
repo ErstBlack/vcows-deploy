@@ -20,7 +20,7 @@ from pyVmomi import vim
 from orchestrator.backends.vsphere import api, preflight
 from orchestrator.marker import Marker
 from orchestrator.problems import Severity
-from tests.conftest import messages, wheres
+from tests.conftest import errors, messages, wheres
 from tests.fake_vsphere import (
     COOKIE,
     FakeBrowser,
@@ -90,10 +90,6 @@ def marked(name: str, deployment: str = "lab-a", **kw) -> FakeVm:
     return FakeVm(name, annotation=annotation(name, deployment), **kw)
 
 
-def errors(d):
-    return [p for p in d.problems if p.severity is Severity.ERROR]
-
-
 def browser(content: FakeContent) -> FakeBrowser:
     return next(o for o in content.objects if isinstance(o, vim.Datastore)).browser
 
@@ -104,7 +100,7 @@ def browser(content: FakeContent) -> FakeBrowser:
 def test_an_empty_vcenter_discovers_nothing_and_refuses_nothing(vsphere_cfg):
     d = preflight.preflight(vsphere_cfg, session(world()))
     assert d.vms == ()
-    assert errors(d) == []
+    assert errors(d.problems) == []
 
 
 def test_a_marked_vm_is_discovered_with_its_marker(vsphere_cfg):
@@ -188,7 +184,7 @@ def test_a_vm_with_no_uuid_is_reported_rather_than_dropped(vsphere_cfg):
     assert [e.name for e in d.vms] == ["app02"]
     assert wheres(d.problems) == ["<unnamed>"]
     assert "cannot identify it" in messages(d.problems)
-    assert errors(d) == []
+    assert errors(d.problems) == []
 
 
 def test_a_vm_vcenter_lists_without_a_name_is_discovered_with_an_empty_one(
@@ -293,13 +289,13 @@ def test_a_missing_datacenter_stops_the_walk_after_one_problem(vsphere_cfg):
     """Every other name is resolved inside it, so five further misses would all
     mean this one."""
     d = preflight.preflight(vsphere_cfg, session(world(missing=("datacenter",))))
-    assert wheres(errors(d)) == ["target.vsphere.datacenter"]
+    assert wheres(errors(d.problems)) == ["target.vsphere.datacenter"]
     assert "vcows never creates one" in messages(d.problems)
 
 
 def test_a_missing_datastore_is_refused(vsphere_cfg):
     d = preflight.preflight(vsphere_cfg, session(world(missing=("datastore",))))
-    assert wheres(errors(d)) == ["target.vsphere.datastore"]
+    assert wheres(errors(d.problems)) == ["target.vsphere.datastore"]
     assert "has no datastore named 'ds-a'" in messages(d.problems)
 
 
@@ -309,7 +305,10 @@ def test_every_name_is_looked_at_rather_than_the_first_miss_ending_the_walk(
     """An operator at an air-gapped site should not round-trip once per fault."""
     w = world(missing=("cluster", "network"))
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["target.vsphere.cluster", "target.vsphere.network"]
+    assert wheres(errors(d.problems)) == [
+        "target.vsphere.cluster",
+        "target.vsphere.network",
+    ]
 
 
 def test_a_host_resolves_where_a_cluster_would_have(vsphere_cfg):
@@ -327,7 +326,7 @@ def test_a_host_resolves_where_a_cluster_would_have(vsphere_cfg):
 
     vsphere_cfg["target"]["vsphere"]["host"] = "esx2.example.com"
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["target.vsphere.host"]
+    assert wheres(errors(d.problems)) == ["target.vsphere.host"]
 
 
 def test_an_optional_placement_is_only_checked_when_it_is_named(vsphere_cfg):
@@ -339,7 +338,7 @@ def test_an_optional_placement_is_only_checked_when_it_is_named(vsphere_cfg):
     vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
     vsphere_cfg["target"]["vsphere"]["resource_pool"] = "vcows-pool"
     d = preflight.preflight(vsphere_cfg, session(world()))
-    assert wheres(errors(d)) == [
+    assert wheres(errors(d.problems)) == [
         "target.vsphere.folder",
         "target.vsphere.resource_pool",
     ]
@@ -356,7 +355,7 @@ def test_an_object_in_another_datacenter_does_not_resolve(vsphere_cfg):
 
     w = world(missing=("datastore",), extra=in_another_datacenter)
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["target.vsphere.datastore"]
+    assert wheres(errors(d.problems)) == ["target.vsphere.datastore"]
 
 
 def test_two_objects_of_one_name_in_one_datacenter_are_refused(vsphere_cfg):
@@ -377,7 +376,7 @@ def test_two_objects_of_one_name_in_one_datacenter_are_refused(vsphere_cfg):
 
     vsphere_cfg["target"]["vsphere"]["folder"] = "vcows"
     d = preflight.preflight(vsphere_cfg, session(world(extra=two_named_folders)))
-    assert wheres(errors(d)) == ["target.vsphere.folder"]
+    assert wheres(errors(d.problems)) == ["target.vsphere.folder"]
     assert "2 folders named 'vcows' under datacenter 'dc-a'" in messages(d.problems)
     assert "prod/vcows, staging/vcows" in messages(d.problems)
 
@@ -410,7 +409,7 @@ def test_a_template_of_ours_from_another_deployment_is_still_ours(vsphere_cfg):
 def test_a_vm_holding_the_image_name_is_refused_rather_than_cloned(vsphere_cfg):
     w = world(vms=[marked("golden.qcow2")])
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["image.base_volume_name"]
+    assert wheres(errors(d.problems)) == ["image.base_volume_name"]
     assert "rather than a template" in messages(d.problems)
     # Present is present: there is nothing to create over it, and the fatal
     # problem is what stops the deploy.
@@ -422,7 +421,7 @@ def test_an_unmarked_template_is_not_adopted(vsphere_cfg):
     built and named the same thing is not ours to clone from or replace."""
     w = world(vms=[FakeVm("golden.qcow2", template=True)])
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["image.base_volume_name"]
+    assert wheres(errors(d.problems)) == ["image.base_volume_name"]
     assert "carries no vcows marker" in messages(d.problems)
     assert "will not adopt or overwrite it" in messages(d.problems)
 
@@ -435,12 +434,12 @@ def test_a_leftover_seed_for_a_vm_that_does_not_exist_is_refused(vsphere_cfg):
     the residue of a run that uploaded a seed then failed before cloning its VM.
     Left alone it collides with this run's upload, mid-apply."""
     d = preflight.preflight(vsphere_cfg, session(world(files=(APP01_SEED,))))
-    assert len(errors(d)) == 1
+    assert len(errors(d.problems)) == 1
     assert "residue of an earlier run" in messages(d.problems)
     assert APP01_SEED in messages(d.problems), "the path an operator has to delete"
     # The VM the seed belongs to, by index, because that is what the operator
     # edits or destroys.
-    assert wheres(errors(d)) == ["vms[0].name"]
+    assert wheres(errors(d.problems)) == ["vms[0].name"]
 
 
 def test_a_seed_belonging_to_a_live_vm_is_not_an_orphan(vsphere_cfg):
@@ -448,7 +447,7 @@ def test_a_seed_belonging_to_a_live_vm_is_not_an_orphan(vsphere_cfg):
     folder produce exactly one refusal."""
     w = world(vms=[marked("app01")], files=(APP01_SEED, APP02_SEED))
     d = preflight.preflight(vsphere_cfg, session(w))
-    assert wheres(errors(d)) == ["vms[1].name"]
+    assert wheres(errors(d.problems)) == ["vms[1].name"]
 
 
 def test_the_search_names_the_vcows_folder_and_the_seed_pattern(vsphere_cfg):

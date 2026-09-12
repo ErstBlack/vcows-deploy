@@ -142,22 +142,21 @@ class Marker:
             f"{self.to_json()}</{MARKER_ELEMENT}>"
         )
 
-    def to_description(self, note: str = "") -> str:
-        """The Proxmox form: one prefixed line, optionally under operator text.
+    def to_description(self) -> str:
+        """The Proxmox form: one prefixed line.
 
         ``description`` is what the PVE UI shows as a VM's notes, so this is a
         field a human reads and edits. The marker therefore takes one line and
-        announces itself, rather than owning the field -- ``note`` renders above
-        it, and anything an operator adds later is preserved by
-        ``from_description``, which reads the marker line and ignores the rest.
+        announces itself, rather than owning the field -- anything an operator
+        adds later is preserved by ``from_description``, which reads the marker
+        line and ignores the rest.
 
         **This is the whole of Proxmox's marker storage.** There is no structured
         metadata to nest in the way libvirt's ``<metadata>`` allows, and ``tags``
         cannot carry it: PVE lowercases every tag and restricts the charset, so a
         base64 or JSON payload does not survive a round trip.
         """
-        line = f"{MARKER_PREFIX}{self.to_json()}"
-        return f"{note.rstrip()}\n\n{line}\n" if note.strip() else f"{line}\n"
+        return f"{MARKER_PREFIX}{self.to_json()}\n"
 
 
 def from_description(text: str | None) -> Marker | None:
