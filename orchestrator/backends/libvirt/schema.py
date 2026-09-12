@@ -297,6 +297,21 @@ def _check_target(target: dict) -> list[Problem]:
                     where=f"target.libvirt.{field}",
                 )
             )
+
+    # A warning rather than an error: without `known_hosts`, `preflight`'s
+    # `ssh_files` writes no wrapper and `ssh` reads the caller's own ~/.ssh,
+    # which its docstring says the rig tests rely on -- right for a developer,
+    # and worth saying out loud for a site. A local URI pins nothing because
+    # there is no host key to pin.
+    if parts.scheme == "qemu+ssh" and target.get("known_hosts") is None:
+        problems.append(
+            Problem.warning(
+                f"no known_hosts, so no host key is pinned for "
+                f"{parts.hostname or '<none>'}; ssh's own policy decides "
+                f"whether to trust the first answer it gets.",
+                where="target.libvirt.known_hosts",
+            )
+        )
     return problems
 
 
