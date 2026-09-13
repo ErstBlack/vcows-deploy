@@ -84,7 +84,16 @@ main() {
     local name
     # Nothing vcows runs needs a capability: ssh, proxmoxer and pyvmomi open
     # outbound sockets and write under /runs and /tmp.
-    local -a opts=(--rm --cap-drop=all --security-opt=no-new-privileges)
+    #
+    # The image is `USER 1000`, so `keep-id` maps the invoking user onto that
+    # uid: the config and run-directory mounts keep the owner they have on the
+    # host, and the run directory comes back owned by the caller rather than by
+    # a subuid. A `--userns` given after `--` lands after this one and wins --
+    # podman takes the last, measured, with no error for the repetition.
+    local -a opts=(
+        --rm --cap-drop=all --security-opt=no-new-privileges
+        "--userns=keep-id:uid=1000,gid=0"
+    )
 
     # podman copies the value of a bare `-e NAME` from its own environment, so
     # this forwards whatever is set without the wrapper knowing any of the
@@ -188,7 +197,7 @@ main() {
             # `--run-dir` mounts the run's own directory at /runs and names it
             # inside the container, so vcows writes the record into the mount
             # rather than into a subdirectory of it. That is the shape README
-            # describes, and the one that works under `--user`.
+            # describes.
             local dir="${runs:-runs}" flag="-r/--runs"
             if [ -n "$run_dir" ]; then
                 dir="$run_dir"
