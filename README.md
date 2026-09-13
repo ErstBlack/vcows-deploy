@@ -77,48 +77,23 @@ did not create is never adopted or overwritten.
 
 **Where you run the container**
 
-Rootless podman. The image sets no `USER`: under rootless podman container root
-*is* the invoking user, which is what makes a bind-mounted run directory work
-without a UID-mapping dance.
+Rootless podman, which is what the `keep-id` mapping below needs. The image
+runs as uid 1000, gid 0, not root, so a process holding the SSH key or the API
+token for a run never holds it as root.
 
-**`--user` works, and it needs one thing lined up.** Measured with
-`--user 4242`:
+The wrapper passes `--userns=keep-id:uid=1000,gid=0`, which maps your own UID
+onto that uid: the config mount stays readable, the run directory comes back
+owned by you, and nothing on the host is chowned.
 
-* the run directory mount is owned by the mapped host UID and is `0755`, so uid 4242
-  cannot create `runs/<deployment>/<timestamp>` inside it. `deploy` and `destroy`
-  stop before connecting, with `vcows: cannot create the run directory
-  /runs/<deployment>/<timestamp>: Permission denied`, and write nothing.
-  `validate` and `preflight` create no run directory and are unaffected, so a
-  clean `preflight` says nothing about `deploy`.
+Without that mapping — running the image by hand, or overriding `--userns`
+after a bare `--` — the mounts are owned by root inside the container. `deploy`
+and `destroy` stop before connecting, with `vcows: cannot create the run
+directory /runs/<deployment>/<timestamp>: Permission denied`, and write
+nothing. `validate` and `preflight` create no run directory and are unaffected,
+so a clean `preflight` says nothing about `deploy`.
 
 The SSH credentials need no home directory: `connect` writes them under `/tmp`
 for the length of the connection, which any UID can do.
-
-That one thing is a mount owned by the wrong UID, and it has two remedies that
-are **not** equivalent:
-
-* `--userns=keep-id:uid=4242,gid=0` maps your own UID to 4242 inside the
-  container, so the mount already has the owner it needs. Nothing on the host
-  is chowned, and the run directory comes back owned by you. It sets the
-  container UID itself, so `--user` becomes redundant. Measured: all four verbs
-  behave.
-* `:U` on the run directory mount chowns that *host* path to the subuid backing
-  4242. It also works, and it charges you the output: `./runs/<deployment>` lands
-  `drwx------` owned by a subuid, so `ls`, `cat` and `rm -rf` all answer
-  `Permission denied`, and reading back the `run.json` an air-gapped site ships
-  home takes `podman unshare`.
-
-**`--run-dir` on that same mount stops before either verb does anything.** The
-run-directory bullet above is the default path, where vcows creates a
-subdirectory inside the mount and cannot. `--run-dir /runs` names the mount
-itself, which already exists and is empty, so nothing stops it there — the
-`0700` is refused and that is deliberately only a warning. The run then stops
-opening `<run>/log`, before it connects and before either verb touches the
-hypervisor, with `PermissionError: [Errno 13] Permission denied: '/runs/log'` on
-stderr and nothing written.
-
-`--userns=keep-id:uid=4242,gid=0` fixes it, exactly as above. Through the
-wrapper that is `./vcows.sh deploy -- --userns=keep-id:uid=4242,gid=0`.
 
 ## Using it
 
@@ -142,12 +117,14 @@ podman runs — a relative `-v` source is a *named volume* to podman, not a path
 variable set beside the wrapper is forwarded into the container, and everything
 after a bare `--` is passed to `podman run`.
 
-What it runs is one `podman run` per verb, with no key or `known_hosts` mount:
-both are inline in the config, and vcows writes them to a private temporary
-directory inside the container for as long as the connection is open.
+What it runs is one `podman run` per verb, with the UID mapping above and with
+no key or `known_hosts` mount: both are inline in the config, and vcows writes
+them to a private temporary directory inside the container for as long as the
+connection is open.
 
 ```bash
 podman run --rm \
+  --userns=keep-id:uid=1000,gid=0 \
   -v ./lab-a.yaml:/config.yaml:ro,Z \
   -v /srv/images:/images:ro,z \
   -v ./runs:/runs:Z \

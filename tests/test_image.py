@@ -184,6 +184,18 @@ def test_the_labels_are_ours_and_not_the_bases():
     assert labels["org.opencontainers.image.base.digest"].startswith("sha256:")
 
 
+# -- who it runs as ---------------------------------------------------------
+
+
+def test_the_image_does_not_run_as_root_by_default():
+    """#336: root inside the container holds the SSH key or API token and writes
+    the /runs mount. Read from the process that runs, not from the Containerfile:
+    `USER root`, or a later stage resetting it, would pass a text check."""
+    result = run("-c", "import os; print(os.getuid())", entrypoint="python3")
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout) != 0, "the image runs as uid 0 by default"
+
+
 #: What the Containerfile's documented build command computes, and the only two
 #: shapes `container/manifest.py` will record.
 GIT_SHA = re.compile(r"[0-9a-f]{40}(-dirty)?\Z")
