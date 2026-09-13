@@ -231,5 +231,12 @@ LABEL org.opencontainers.image.title="vcows-deploy" \
 # anyway; the point is that it stays true if either of those changes.
 WORKDIR /
 
+# Not root: a process inside this image holds the SSH key or the API token for
+# the run, and there is no reason for it to hold them as uid 0 (#336). No
+# `useradd` -- podman writes the passwd entry for an image-config uid itself, so
+# `ssh`'s getpwuid lookup resolves. `scripts/vcows.sh` maps the invoking user
+# onto this uid with `--userns=keep-id`, which is what keeps the mounts readable.
+USER 1000:0
+
 ENTRYPOINT ["/usr/local/bin/vcows"]
 CMD ["--help"]
