@@ -36,6 +36,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -659,6 +660,7 @@ def _expected(tree: Path, verb: str, *, images=False, runs=False, yes=False, opt
         "--rm",
         "--cap-drop=all",
         "--security-opt=no-new-privileges",
+        "--userns=keep-id:uid=1000,gid=0",
         *opts,
         "-v",
         f"{tree}/config.yaml:/config.yaml:ro,Z",
@@ -797,6 +799,7 @@ def test_version_needs_neither_a_config_nor_a_mount(tmp_path):
         "--rm",
         "--cap-drop=all",
         "--security-opt=no-new-privileges",
+        "--userns=keep-id:uid=1000,gid=0",
         "-e",
         "VCOWS_LOG_LEVEL",
         PLACEHOLDER,
@@ -823,10 +826,9 @@ def test_a_vcows_variable_set_beside_the_wrapper_reaches_the_container(tmp_path)
 
 
 def test_everything_after_a_bare_dash_dash_is_podman_s(tmp_path):
-    """`--userns=keep-id:uid=4242,gid=0` is the remedy README prescribes for a
-    run directory owned by the wrong UID, and the wrapper has to pass it
-    through. The flags land before the image, the only place podman reads
-    them."""
+    """Everything after `--` reaches podman, and lands before the image -- the
+    only place podman reads a flag. A `--userns` given there arrives after the
+    wrapper's own and overrides it, because podman takes the last one."""
     tree = _wrapper_tree(tmp_path)
     done, argv = _wrapper(tree, "preflight", "--", "--userns=keep-id")
     assert done.returncode == 0, done.stderr
@@ -835,10 +837,25 @@ def test_everything_after_a_bare_dash_dash_is_podman_s(tmp_path):
     )
 
 
+def test_the_wrapper_maps_onto_the_uid_the_image_runs_as():
+    """The uid lives in two files with nothing else tying them together: the
+    `USER` the image runs as, and the uid the wrapper maps the invoking user
+    onto. A wrapper that maps onto a uid the image does not run as puts the
+    config and run-directory mounts back under the wrong owner."""
+    image = re.search(
+        r"^USER (\d+):0$", (REPO / "Containerfile").read_text(), re.MULTILINE
+    )
+    wrapper = re.search(
+        r"keep-id:uid=(\d+),gid=0", (REPO / "scripts" / "vcows.sh").read_text()
+    )
+    assert image is not None, "Containerfile no longer declares USER <uid>:0"
+    assert wrapper is not None, "the wrapper no longer passes --userns=keep-id"
+    assert image.group(1) == wrapper.group(1)
+
+
 def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
     """`--run-dir` names the mount itself rather than a parent to create under,
-    so the mount *is* the run directory -- the shape README gives as the one
-    that works when the mount is owned by another UID."""
+    so the mount *is* the run directory -- the shape README describes."""
     tree = _wrapper_tree(tmp_path)
     done, argv = _wrapper(tree, "deploy", "--run-dir", "d")
     assert done.returncode == 0, done.stderr
@@ -848,6 +865,7 @@ def test_run_dir_mounts_the_run_s_own_directory_and_names_it(tmp_path):
         "--rm",
         "--cap-drop=all",
         "--security-opt=no-new-privileges",
+        "--userns=keep-id:uid=1000,gid=0",
         "-v",
         f"{tree}/config.yaml:/config.yaml:ro,Z",
         "-v",
