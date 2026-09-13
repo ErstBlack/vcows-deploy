@@ -187,6 +187,8 @@ defaults:                        # optional; folded into every VM omitting the k
   vcpus: 2
   memory_mib: 4096
   firmware: efi                  # efi | bios, default efi
+  nic:                           # folded into every NIC of every VM
+    nameservers: [192.168.122.1]
 vms:
   - name: app01
     disk_gb: 40
@@ -196,8 +198,7 @@ vms:
     nics:
       - network: default           # exactly one of network | bridge
         ip_cidr: 192.168.122.60/24
-        gateway: 192.168.122.1
-        nameservers: [192.168.122.1]
+        gateway: 192.168.122.1     # nameservers come from defaults.nic
 ```
 
 **`defaults` fills in what a VM leaves out.** A value written on the VM
@@ -205,6 +206,15 @@ vms:
 scalars, strings, booleans and lists, no mappings. `name` and `nics` cannot be
 defaulted -- one is identity, and one whole-list NIC default would give every VM
 the same `ip_cidr`.
+
+`defaults.nic` is the per-field form of that, and the one mapping the block
+takes: every key in it is folded into **every NIC of every VM**, and a NIC's own
+value replaces it by the same rule. It is flat too, and `ip_cidr`, `mac` and
+`primary` are refused in it for the reason `nics` is refused outright -- one
+address and one MAC for the whole config, or every NIC primary. The snag is that
+there is no way to unset an inherited key: a defaulted `bridge` on a NIC that
+sets `network` fails as "exactly one of `bridge` or `network`", and the fix is to
+take `bridge` out of `defaults.nic` and write it on the NICs that use it.
 
 The same deployment against Proxmox:
 

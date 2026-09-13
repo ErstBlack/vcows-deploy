@@ -334,6 +334,37 @@ def test_a_default_fills_what_a_vm_omits_and_never_replaces_what_it_sets(
     assert [vm["vcpus"] for vm in cfg["vms"]] == [4, 2]
 
 
+def test_a_nic_default_fills_every_nic_and_never_replaces_what_one_sets(
+    tmp_path, registry
+):
+    """The whole-list form is refused, so the per-field one is how `bridge` and
+    `nameservers` get written once for every NIC in the config."""
+    text = CONFIG.replace(
+        "vms:\n  - name: app01\n  - name: app02\n",
+        "defaults:\n"
+        "  nic:\n"
+        "    bridge: br0\n"
+        "    nameservers: [10.0.0.1]\n"
+        "vms:\n"
+        "  - name: app01\n"
+        "    nics:\n"
+        "      - ip_cidr: 10.0.0.10/24\n"
+        "        nameservers: [10.0.0.2]\n"
+        "      - ip_cidr: 10.0.0.11/24\n"
+        "  - name: app02\n"
+        "    nics:\n"
+        "      - ip_cidr: 10.0.0.12/24\n",
+    )
+    cfg, _ = load(write(tmp_path, text), registry)
+    nics = [nic for vm in cfg["vms"] for nic in vm["nics"]]
+    assert [nic["bridge"] for nic in nics] == ["br0", "br0", "br0"]
+    assert [nic["nameservers"] for nic in nics] == [
+        ["10.0.0.2"],
+        ["10.0.0.1"],
+        ["10.0.0.1"],
+    ]
+
+
 @pytest.mark.parametrize(
     "block, where",
     [
@@ -346,8 +377,28 @@ def test_a_default_fills_what_a_vm_omits_and_never_replaces_what_it_sets(
         ("defaults:\n  user_data:\n    packages: [tmux]\n", "defaults.user_data"),
         # The block itself has to be a mapping: `resolve` splats it into every VM.
         ("defaults:\n  - vcpus\n", "defaults"),
+        # The three NIC fields that collide the way `name` does: one address and
+        # one MAC for every NIC in the config, or every NIC primary.
+        ("defaults:\n  nic:\n    ip_cidr: 10.0.0.10/24\n", "defaults.nic.ip_cidr"),
+        ('defaults:\n  nic:\n    mac: "52:54:00:00:00:01"\n', "defaults.nic.mac"),
+        ("defaults:\n  nic:\n    primary: true\n", "defaults.nic.primary"),
+        # `nic` is the one mapping allowed, and it is flat for the same reason
+        # the block around it is.
+        ("defaults:\n  nic:\n    bridge:\n      name: br0\n", "defaults.nic.bridge"),
+        # And it has to be a mapping: `resolve` splats it into every NIC.
+        ("defaults:\n  nic:\n    - bridge\n", "defaults.nic"),
     ],
-    ids=["name", "nics", "mapping", "not-a-mapping"],
+    ids=[
+        "name",
+        "nics",
+        "mapping",
+        "not-a-mapping",
+        "nic-ip_cidr",
+        "nic-mac",
+        "nic-primary",
+        "nic-mapping",
+        "nic-not-a-mapping",
+    ],
 )
 def test_what_cannot_be_defaulted_is_refused_at_the_key(
     tmp_path, registry, block, where
@@ -367,6 +418,27 @@ def test_resolve_changes_nothing_it_has_already_changed():
     assert once == {"defaults": {"vcpus": 2}, "vms": [{"name": "app01", "vcpus": 2}]}
     assert resolve(once) == once
 
+    # `nic` is folded into the NICs and never into the VM, and a VM that wrote
+    # no `nics` does not gain the key -- the backend schema reports it missing.
+    cfg = {
+        "defaults": {"vcpus": 2, "nic": {"model": "virtio"}},
+        "vms": [{"name": "app01"}, {"name": "app02", "nics": [{"model": "e1000"}, {}]}],
+    }
+    once = resolve(cfg)
+    assert once == {
+        "defaults": {"vcpus": 2, "nic": {"model": "virtio"}},
+        "vms": [
+            {"name": "app01", "vcpus": 2},
+            {
+                "name": "app02",
+                "vcpus": 2,
+                "nics": [{"model": "e1000"}, {"model": "virtio"}],
+            },
+        ],
+    }
+    assert "nics" not in once["vms"][0]
+    assert resolve(once) == once
+
 
 # -- naming the VM ----------------------------------------------------------
 
@@ -379,6 +451,17 @@ VM_SCHEMA = {
     "properties": {
         "name": {"type": "string"},
         "disk_gb": {"type": "integer", "maximum": 64},
+        # Enough of a NIC to file a problem at `vms[N].nics[M].<key>`. `model`
+        # takes libvirt's rule, non-empty, spelled out here rather than imported
+        # so a core test holds no backend's schema.
+        "nics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"model": {"type": "string", "minLength": 1}},
+            },
+        },
     },
 }
 
@@ -453,6 +536,40 @@ def test_a_default_blamed_problem_is_left_unprefixed(tmp_path, vm_registry):
         load(write(tmp_path, text), vm_registry)
     assert [p.where for p in exc.value.problems] == ["defaults.disk_gb"]
     assert not exc.value.problems[0].message.startswith("VM ")
+
+
+#: The same three VMs, each with one NIC of its own for `defaults.nic` to fill.
+NIC_VMS = THREE.replace("  - name: ", "  - nics: [{}]\n    name: ")
+
+
+def test_a_nic_default_is_blamed_at_its_own_key(tmp_path, vm_registry):
+    """One bad NIC default is one mistake, however many NICs inherited it."""
+    text = NIC_VMS.replace("vms:\n", 'defaults:\n  nic:\n    model: ""\nvms:\n')
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text), vm_registry)
+    assert [p.where for p in exc.value.problems] == ["defaults.nic.model"]
+    assert not exc.value.problems[0].message.startswith("VM ")
+
+
+@pytest.mark.parametrize(
+    "block",
+    ["defaults:\n  nic:\n    model: virtio\n", "defaults:\n  disk_gb: 40\n"],
+    ids=["default-overridden", "no-nic-default"],
+)
+def test_a_nic_that_set_the_key_itself_is_blamed_at_the_nic(
+    tmp_path, vm_registry, block
+):
+    """The NIC's own value replaced the default, so the default is not what the
+    operator has to edit. The second VM, not the first, so that the VM index and
+    the NIC index cannot be confused for each other."""
+    text = NIC_VMS.replace("vms:\n", block + "vms:\n")
+    text = text.replace(
+        "  - nics: [{}]\n    name: app02\n",
+        '  - nics: [{model: ""}]\n    name: app02\n',
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(write(tmp_path, text), vm_registry)
+    assert [p.where for p in exc.value.problems] == ["vms[1].nics[0].model"]
 
 
 def test_the_shipped_template_cannot_be_deployed_unedited():

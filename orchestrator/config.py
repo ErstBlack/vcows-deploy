@@ -17,9 +17,12 @@ one of bridge/network, found both".
 
 A top-level ``defaults`` block holds flat per-VM values -- scalars, strings,
 booleans and lists -- folded into every VM that omits the key, and a per-VM value
-**replaces** rather than merges (``backends/libvirt/schema.py``). Resolution is
-``resolve`` here, so a backend is only ever handed a VM already carrying every
-value it will be judged against, and no backend needs a merge rule of its own.
+**replaces** rather than merges (``backends/libvirt/schema.py``). The one
+exception is ``defaults.nic``, an equally flat mapping folded per field into
+every NIC of every VM, because the whole-list form would give every VM the same
+address. Resolution is ``resolve`` here, so a backend is only ever handed a VM
+already carrying every value it will be judged against, and no backend needs a
+merge rule of its own.
 """
 
 from __future__ import annotations
@@ -101,17 +104,33 @@ def core_schema(registry: dict[str, Any]) -> dict:
                 "properties": {n: registry[n].config_schema() for n in names},
             },
             "image": IMAGE_SCHEMA,
-            # Flat values only. A mapping would need a merge rule and a per-VM
-            # value replaces, so there is nothing to merge. `name` is identity;
-            # `nics` collides on `ip_cidr` for any second VM, and the useful
-            # form is per-field. `{"not": {}}` rather than `False`: a `False`
-            # sub-schema files its error against `defaults` with no property in
-            # the path, so the message would not name the key the operator has
-            # to delete.
+            # Flat values only, with one exception. A mapping would need a merge
+            # rule and a per-VM value replaces, so there is nothing to merge.
+            # `name` is identity; `nics` collides on `ip_cidr` for any second VM,
+            # and the useful form is per-field, which is `nic`: the one mapping
+            # allowed, folded into every NIC and itself flat for the same reason.
+            # Its three refused keys collide the way `name` does -- one address
+            # and one MAC across the whole config, or every NIC primary.
+            # `properties` wins over `additionalProperties` at both levels.
+            # `{"not": {}}` rather than `False`: a `False` sub-schema files its
+            # error against `defaults` with no property in the path, so the
+            # message would not name the key the operator has to delete.
             "defaults": {
                 "type": "object",
                 "additionalProperties": {"not": {"type": "object"}},
-                "properties": {"name": {"not": {}}, "nics": {"not": {}}},
+                "properties": {
+                    "name": {"not": {}},
+                    "nics": {"not": {}},
+                    "nic": {
+                        "type": "object",
+                        "additionalProperties": {"not": {"type": "object"}},
+                        "properties": {
+                            "ip_cidr": {"not": {}},
+                            "mac": {"not": {}},
+                            "primary": {"not": {}},
+                        },
+                    },
+                },
             },
             "vms": {
                 "type": "array",
@@ -188,11 +207,26 @@ def resolve(cfg: dict) -> dict:
     wrong. ``defaults`` stays on the result -- backends read ``vms`` and nothing
     else, so stripping it would be code with no reader.
 
+    ``defaults.nic`` is the one key not folded into the VM: it is folded into
+    every NIC of every VM, per field and by the same replace rule. A VM that
+    wrote no ``nics`` does not gain one -- the backend schema is what reports
+    that key missing -- and a NIC that is not a mapping is passed through for the
+    backend to reject.
+
     Correct only once the core schema has passed, since it assumes ``defaults``
     is a mapping and every VM is one. ``validate`` is what enforces that order.
     """
-    defaults = cfg.get("defaults", {})
-    return {**cfg, "vms": [{**defaults, **vm} for vm in cfg["vms"]]}
+    defaults = dict(cfg.get("defaults", {}))
+    nic = defaults.pop("nic", {})
+    vms = []
+    for vm in cfg["vms"]:
+        vm = {**defaults, **vm}
+        if isinstance(vm.get("nics"), list):
+            vm["nics"] = [
+                {**nic, **n} if isinstance(n, dict) else n for n in vm["nics"]
+            ]
+        vms.append(vm)
+    return {**cfg, "vms": vms}
 
 
 def _blame_the_filename(problem: Problem, path: Path) -> Problem:
@@ -218,9 +252,28 @@ def _blame_the_filename(problem: Problem, path: Path) -> Problem:
 #: reaches into below it: ``vms[0].nics[1].mac`` -> ``0``, ``nics``, ``[1].mac``.
 _AT_A_VM_KEY = re.compile(r"vms\[(\d+)\]\.([^.\[]+)(.*)")
 
+#: One NIC's key: ``vms[0].nics[1].model`` -> ``0``, ``1``, ``model``, ``''``.
+#: Checked before ``_AT_A_VM_KEY``, which also matches these paths with the key
+#: ``nics`` -- never a name in ``defaults``, so the order is for clarity.
+_AT_A_NIC_KEY = re.compile(r"vms\[(\d+)\]\.nics\[(\d+)\]\.([^.\[]+)(.*)")
+
 #: A problem filed anywhere inside one VM, including at the VM itself: an
 #: unknown key renders as ``vms[2]`` with no key below it.
 _AT_A_VM = re.compile(r"vms\[(\d+)\]")
+
+
+def _blamed_on_a_nic_default(where: str, cfg: dict, nic_defaults: dict) -> str | None:
+    """``defaults.nic.<key>`` when that block is what supplied the value.
+
+    ``None`` when the NIC wrote the key itself. No guard on the lookup: a problem
+    filed below ``nics[M]`` exists only because ``resolve`` folded into a mapping
+    there, and it folds into nothing else, so the unresolved NIC is a mapping too.
+    """
+    found = _AT_A_NIC_KEY.fullmatch(where)
+    if not found or found[3] not in nic_defaults:
+        return None
+    nic = cfg["vms"][int(found[1])]["nics"][int(found[2])]
+    return None if found[3] in nic else f"defaults.nic.{found[3]}{found[4]}"
 
 
 def _blame_the_defaults(problems: list[Problem], cfg: dict) -> list[Problem]:
@@ -238,8 +291,13 @@ def _blame_the_defaults(problems: list[Problem], cfg: dict) -> list[Problem]:
         return problems
     out: list[Problem] = []
     for problem in problems:
+        nic_key = _blamed_on_a_nic_default(problem.where, cfg, defaults.get("nic", {}))
         found = _AT_A_VM_KEY.fullmatch(problem.where)
-        if found and found[2] in defaults and found[2] not in cfg["vms"][int(found[1])]:
+        if nic_key:
+            problem = Problem(problem.severity, problem.message, where=nic_key)
+        elif (
+            found and found[2] in defaults and found[2] not in cfg["vms"][int(found[1])]
+        ):
             problem = Problem(
                 problem.severity,
                 problem.message,

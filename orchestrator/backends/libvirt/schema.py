@@ -11,8 +11,10 @@ Two rules the schema settles, because nothing else can:
   address is the one the inventory reports, and its gateway is the one that
   becomes the guest's default route.
 * A per-VM value **replaces**, never merges. The config's ``defaults`` block is
-  flat for exactly that reason, and core resolves it before this module runs, so
-  every VM reaching here already carries the values it will be judged against.
+  flat for exactly that reason -- ``defaults.nic`` is the one nested key, and
+  core folds it per field into every NIC -- and core resolves the block before
+  this module runs, so every VM reaching here already carries the values it will
+  be judged against.
 
 The split with core: core's ``vms`` schema requires only ``name``, and
 everything about a VM's shape -- especially NICs, whose valid forms are entirely
