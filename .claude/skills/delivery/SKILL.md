@@ -85,6 +85,6 @@ even though every gate is green.
 
 1. `just image`
 2. `just scan` -- green, or triage via `cve-triage`
-3. `just bundle` -- check `.cache/delivery/vcows.sh` names the tag you expect
+3. `just bundle` -- verify the output contains the correct tag
 4. `reposync` the `source_rpms` list from the manifest onto the source medium
 5. Ship both media together

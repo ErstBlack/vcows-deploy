@@ -103,9 +103,8 @@ not by anything in this repo, so `.gitignore` will not tell you and a clean
 change confined to the local file leaves no artifact to review and cannot close
 an issue from a commit body.
 
-`.claude/skills/ty-lsp/` is tracked too, and it is a plugin rather than a skill:
-the `.claude-plugin/plugin.json` manifest makes it one, so its place under
-`skills/` is incidental. It is the source of the `ty` language server, and
+`.claude/skills/ty-lsp/` is tracked too; it is a plugin rather than a skill, so
+its place under `skills/` is incidental. It is the source of the `ty` language server, and
 `.lsp.json` resolves the binary from the checkout's own `.venv` through
 `CLAUDE_PROJECT_DIR`, so it never applies to another project and a session
 started in a worktree gets that worktree's venv. A session in the main checkout
@@ -161,7 +160,7 @@ warrants is itself a problem.
 
 | | |
 |---|---|
-| `just` | `/usr/bin/just` (EPEL) where the RPM is installed; a tree without it gets `.tools/bin/just` from `scripts/install-tools.sh`, and every hook-made worktree carries one. A subagent brief names which, so the agent does not probe for it. |
+| `just` | System-installed from EPEL or from `scripts/install-tools.sh`; every hook-made worktree carries one. A subagent brief names which, so the agent does not probe for it. |
 | `just dev-env` | The only correct venv |
 | `scripts/vcows.sh` | The five-verb wrapper a site runs; `bundle` substitutes the archive's tag for its `@IMAGE@` and ships it |
 
