@@ -13,6 +13,7 @@ VM actually boots.
 
 from __future__ import annotations
 
+import importlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -487,6 +488,4 @@ def test_requests_toolbelt_is_importable():
     in `orchestrator/` imports it, so this is the only thing that would notice an
     image or a venv built without it.
     """
-    import requests_toolbelt
-
-    assert requests_toolbelt.__version__
+    importlib.import_module("requests_toolbelt")
